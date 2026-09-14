@@ -9,7 +9,7 @@
  * benchmarks. The output is deliberately a qualification framework: a matrix,
  * reusable evidence commands, and manual continuation notes.
  */
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -63,6 +63,13 @@ const writeMode = process.argv.includes('--write');
 const checkMode = process.argv.includes('--check');
 const printCommands = process.argv.includes('--print-evidence-commands');
 const printFirstCommand = process.argv.includes('--print-first-manual-command');
+const checkGoogleSttWiring = process.argv.includes('--check-google-stt-wiring');
+
+const GOOGLE_STT_CANDIDATE_LOCALES = {
+  ha: 'ha-NG',
+  ig: 'ig-NG',
+  yo: 'yo-NG',
+};
 
 function loadDocument() {
   return JSON.parse(readFileSync(ROUTE_DOCUMENT, 'utf8'));
@@ -159,7 +166,13 @@ function scopeField(route, scope) {
 }
 
 function sttEvidence(sourceLanguage) {
-  if (['en', 'es', 'yo'].includes(sourceLanguage)) {
+  if (Object.hasOwn(GOOGLE_STT_CANDIDATE_LOCALES, sourceLanguage)) {
+    return `Google Cloud Speech-to-Text V2 / Chirp candidate (${GOOGLE_STT_CANDIDATE_LOCALES[sourceLanguage]}); repo/server wiring not verified; live accuracy unqualified`;
+  }
+  if (sourceLanguage === 'pcm') {
+    return 'pcm unresolved: no STT candidate is recorded by this framework';
+  }
+  if (['en', 'es'].includes(sourceLanguage)) {
     return 'existing Deepgram harness has clean TTS fixtures; rerun required';
   }
   return 'manual fixture corpus needed before accuracy can be claimed';
@@ -232,13 +245,23 @@ function evidenceCommands(routes) {
     '',
     '## STT evidence for live surfaces',
     '',
+    '### Google STT configuration and wiring verification',
+    '',
+    'For Hausa, Igbo and Yoruba, treat Google Cloud Speech-to-Text V2 / Chirp as the candidate provider. This is not a live-accuracy qualification and not a production approval. Verify repo/server wiring and configuration first:',
+    '',
+    '```bash',
+    'node scripts/qualification/programme-language-surface.mjs --check-google-stt-wiring',
+    '```',
+    '',
+    'That check must find a Google STT adapter/wiring path, candidate locales `ha-NG`, `ig-NG`, `yo-NG`, and non-secret configuration names before any live benchmark is commissioned. Google Translation is already integrated separately; do not use that fact as STT evidence.',
+    '',
     'Deepgram support and accuracy collection through the shipped adapter:',
     '',
     '```bash',
-    'sudo node --env-file=/etc/videofy/media-ingest.env scripts/certify/deepgram.mjs --language-support en,fr,es,pt,ha,ig,yo,pcm --languages en,es,yo --out /tmp/videofy-programme-language-surface/deepgram-live-stt.json',
+    'sudo node --env-file=/etc/videofy/media-ingest.env scripts/certify/deepgram.mjs --language-support en,fr,es,pt,pcm --languages en,es --out /tmp/videofy-programme-language-surface/deepgram-live-stt.json',
     '```',
     '',
-    'Do not read the `language-support` result as accuracy. For fr, pt, ha, ig and pcm, add approved spoken fixtures before marking STT accuracy complete.',
+    'Do not read the Deepgram `language-support` result as accuracy. For ha/ig/yo, Deepgram refusal does not close the STT lane because Google STT V2 / Chirp is the candidate. For fr, pt and pcm, add approved spoken fixtures or a candidate decision before marking STT accuracy complete.',
     '',
     '## TTS evidence for live surfaces',
     '',
@@ -272,7 +295,7 @@ function evidenceCommands(routes) {
 }
 
 function firstManualCommand() {
-  return 'node scripts/qualification/programme-language-surface.mjs --print-evidence-commands';
+  return 'node scripts/qualification/programme-language-surface.mjs --check-google-stt-wiring';
 }
 
 function matrixDocument(routes) {
@@ -329,6 +352,8 @@ function matrixDocument(routes) {
     '',
     'For live surfaces, one route is not enough. The source language must pass STT, the direction must pass translation, the target language must pass TTS, and the combined path must pass an end-to-end programme/call proof. A green technical row still does not replace human review or licence clearance.',
     '',
+    'Google Cloud Translation is already integrated as a translation provider. Google Cloud STT is a separate candidate lane: for `ha-NG`, `ig-NG` and `yo-NG`, this framework names Google Cloud Speech-to-Text V2 / Chirp as the candidate, while repo/server wiring, configuration and live accuracy remain unqualified. Production approval remains false.',
+    '',
     table(
       ['Direction', 'STT source evidence', 'Translation route evidence', 'TTS target evidence', 'End-to-end proof', 'Current readiness'],
       pipelineRows,
@@ -338,6 +363,8 @@ function matrixDocument(routes) {
     '',
     '- `messaging`, `programme-live` and `call-live` are separate decisions from the registry. Approval in one must never imply approval in another.',
     '- `call-live: refused` is a decision, not a missing benchmark. Do not move it with automated evidence alone.',
+    '- Hausa, Igbo and Yoruba STT are not provider-blocked here. Google Cloud Speech-to-Text V2 / Chirp is the candidate, pending repo/server wiring verification and live accuracy evidence.',
+    '- Nigerian Pidgin (`pcm`) remains separate and unresolved unless repo evidence proves a specific STT candidate.',
     '- Human review, commercial clearance, latency and integrity evidence are separate fields. Completing one does not complete the others.',
     '- Programme readiness requires STT, translation, TTS and end-to-end evidence for the same direction and service surface.',
   ].join('\n');
@@ -358,10 +385,22 @@ function manualContinuation(routes) {
     missingHuman.map((key) => `   - ${key}`).join('\n'),
     '',
     '3. Complete licence/commercial clearance for every third-party model named by the registry. Apache-2.0 identifiers are not enough; obligations and redistribution requirements must be reviewed.',
-    '4. Add or approve missing fixture corpora before claiming STT accuracy for fr, pt, ha, ig and pcm.',
-    '5. Add Portuguese TTS evidence before any route targeting pt can be considered live-ready.',
-    '6. Extend the deterministic end-to-end verifier before using it for pt, ha, ig, yo or pcm directions.',
-    '7. After evidence is gathered, update the registry only through a reviewed route-document change. Do not approve scopes by editing generated framework docs.',
+    '4. Verify Google Cloud STT V2 / Chirp repo/server wiring and non-secret configuration names before any ha-NG, ig-NG or yo-NG live benchmark.',
+    '5. Add or approve missing fixture corpora before claiming STT accuracy for fr, pt, ha, ig, yo and pcm.',
+    '6. Keep pcm separate and unresolved unless repo evidence proves a specific STT candidate.',
+    '7. Add Portuguese TTS evidence before any route targeting pt can be considered live-ready.',
+    '8. Extend the deterministic end-to-end verifier before using it for pt, ha, ig, yo or pcm directions.',
+    '9. After evidence is gathered, update the registry only through a reviewed route-document change. Do not approve scopes by editing generated framework docs.',
+    '',
+    '## Google STT manual verification before live benchmarks',
+    '',
+    'Google Translation and Google STT are separate provider surfaces. The existing Google translation integration does not prove STT wiring. Before any live STT run for Hausa, Igbo or Yoruba, verify all of the following:',
+    '',
+    '- A Google Cloud Speech-to-Text V2 / Chirp adapter or selector is present in the media-ingest runtime.',
+    '- Non-secret configuration names exist for the resource project, location and recognizer/model selection.',
+    '- ADC/quota-project handling is explicitly compatible with the existing Google authorization path.',
+    '- The configured candidate locales are exactly `ha-NG`, `ig-NG` and `yo-NG` for this gate.',
+    '- No result is written as production approval; live accuracy remains unqualified until a benchmark and human review are complete.',
     '',
     '## Exact first manual command',
     '',
@@ -379,6 +418,81 @@ function generatedFiles(routes) {
     ['EVIDENCE_COMMANDS.md', `${evidenceCommands(routes)}\n`],
     ['MANUAL_CONTINUATION.md', `${manualContinuation(routes)}\n`],
   ]);
+}
+
+function collectFiles(dir, predicate, found = []) {
+  if (!existsSync(dir)) return found;
+  for (const entry of readdirSync(dir)) {
+    const path = join(dir, entry);
+    const stats = statSync(path);
+    if (stats.isDirectory()) {
+      collectFiles(path, predicate, found);
+    } else if (predicate(path)) {
+      found.push(path);
+    }
+  }
+  return found;
+}
+
+function readIfExists(path) {
+  return existsSync(path) ? readFileSync(path, 'utf8') : '';
+}
+
+function runGoogleSttWiringCheck() {
+  const mediaIngest = join(ROOT, 'services', 'media-ingest', 'src');
+  const aiRegistry = join(ROOT, 'services', 'ai-registry', 'src');
+  const googleProviderDir = join(mediaIngest, 'providers', 'google');
+  const googleFiles = collectFiles(
+    googleProviderDir,
+    (path) => /\.(ts|tsx|js|mjs)$/u.test(path),
+  );
+  const allRelevantFiles = [
+    ...collectFiles(mediaIngest, (path) => /\.(ts|tsx|js|mjs)$/u.test(path)),
+    ...collectFiles(aiRegistry, (path) => /\.(ts|tsx|js|mjs)$/u.test(path)),
+  ];
+  const relevantText = allRelevantFiles.map(readIfExists).join('\n');
+  const googleText = googleFiles.map(readIfExists).join('\n');
+  const checks = [
+    {
+      label: 'Google Translation integration remains present',
+      ok:
+        /providerId:\s*'google-cloud'/u.test(relevantText) &&
+        /translation:\s*\{\s*requestResponse:\s*'yes'/u.test(relevantText),
+    },
+    {
+      label: 'Google STT adapter or provider file exists',
+      ok:
+        googleFiles.some((path) => /stt|speech|transcription/iu.test(path)) ||
+        /Google.*(Speech|STT|Transcription)|Speech-to-Text|Chirp/iu.test(googleText),
+    },
+    {
+      label: 'Google STT V2 / Chirp candidate is named in repo wiring',
+      ok: /Chirp|Speech-to-Text V2|speech-to-text.*v2|recognizers/iu.test(relevantText),
+    },
+    {
+      label: 'Nigerian Google STT candidate locales are configured or declared',
+      ok: ['ha-NG', 'ig-NG', 'yo-NG'].every((locale) => relevantText.includes(locale)),
+    },
+    {
+      label: 'Non-secret Google STT config names are present',
+      ok: /GOOGLE_(STT|SPEECH)_[A-Z0-9_]*(PROJECT|LOCATION|RECOGNIZER|MODEL)/u.test(
+        relevantText,
+      ),
+    },
+  ];
+  for (const check of checks) {
+    console.log(`${check.ok ? 'PASS' : 'MISSING'}  ${check.label}`);
+  }
+  const ok = checks.every((check) => check.ok);
+  if (!ok) {
+    console.log('');
+    console.log(
+      'Google STT remains a candidate only. Do not benchmark or approve ha-NG, ig-NG or yo-NG STT until the missing wiring/configuration checks are closed.',
+    );
+    process.exit(1);
+  }
+  console.log('');
+  console.log('Google STT wiring/configuration is statically present; live accuracy remains unqualified.');
 }
 
 function writeFiles(files) {
@@ -415,6 +529,10 @@ if (printFirstCommand) {
   console.log(firstManualCommand());
 }
 
+if (checkGoogleSttWiring) {
+  runGoogleSttWiringCheck();
+}
+
 if (writeMode) {
   writeFiles(files);
   console.log(`wrote ${files.size} files to ${outDir}`);
@@ -424,6 +542,6 @@ if (checkMode) {
   checkFiles(files);
 }
 
-if (!writeMode && !checkMode && !printCommands && !printFirstCommand) {
-  console.log('Usage: node scripts/qualification/programme-language-surface.mjs --write|--check|--print-evidence-commands|--print-first-manual-command');
+if (!writeMode && !checkMode && !printCommands && !printFirstCommand && !checkGoogleSttWiring) {
+  console.log('Usage: node scripts/qualification/programme-language-surface.mjs --write|--check|--print-evidence-commands|--print-first-manual-command|--check-google-stt-wiring');
 }

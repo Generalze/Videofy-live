@@ -35,13 +35,23 @@ Pidgin is intentionally not listed above because both pcm directions are `provid
 
 ## STT evidence for live surfaces
 
+### Google STT configuration and wiring verification
+
+For Hausa, Igbo and Yoruba, treat Google Cloud Speech-to-Text V2 / Chirp as the candidate provider. This is not a live-accuracy qualification and not a production approval. Verify repo/server wiring and configuration first:
+
+```bash
+node scripts/qualification/programme-language-surface.mjs --check-google-stt-wiring
+```
+
+That check must find a Google STT adapter/wiring path, candidate locales `ha-NG`, `ig-NG`, `yo-NG`, and non-secret configuration names before any live benchmark is commissioned. Google Translation is already integrated separately; do not use that fact as STT evidence.
+
 Deepgram support and accuracy collection through the shipped adapter:
 
 ```bash
-sudo node --env-file=/etc/videofy/media-ingest.env scripts/certify/deepgram.mjs --language-support en,fr,es,pt,ha,ig,yo,pcm --languages en,es,yo --out /tmp/videofy-programme-language-surface/deepgram-live-stt.json
+sudo node --env-file=/etc/videofy/media-ingest.env scripts/certify/deepgram.mjs --language-support en,fr,es,pt,pcm --languages en,es --out /tmp/videofy-programme-language-surface/deepgram-live-stt.json
 ```
 
-Do not read the `language-support` result as accuracy. For fr, pt, ha, ig and pcm, add approved spoken fixtures before marking STT accuracy complete.
+Do not read the Deepgram `language-support` result as accuracy. For ha/ig/yo, Deepgram refusal does not close the STT lane because Google STT V2 / Chirp is the candidate. For fr, pt and pcm, add approved spoken fixtures or a candidate decision before marking STT accuracy complete.
 
 ## TTS evidence for live surfaces
 
