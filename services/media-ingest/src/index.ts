@@ -507,15 +507,20 @@ app.get('/vocabulary/capabilities', (_req, res) => {
   // Read from the SAME env the wiring reads, with the SAME default, so the
   // reported model is the one actually requested rather than a second guess.
   const sttSelected = config.streamingTranscriptionProvider;
-  const sttModel =
+  const deepgramModel =
     (process.env['DEEPGRAM_MODEL'] ?? '').trim() ||
     (sttSelected === 'deepgram-flux' ? 'flux-general-en' : 'nova-3');
+  const googleModel = (process.env['GOOGLE_STT_MODEL'] ?? '').trim();
+  const sttModel =
+    sttSelected === 'deepgram-google-stt'
+      ? `deepgram=${deepgramModel}; google=${googleModel}`.trim()
+      : deepgramModel;
   res.json({
     service: 'media-ingest',
     sttRouteName:
       sttSelected === 'off' ? 'no recognition route' : `${sttSelected} ${sttModel}`.trim(),
     // The identical predicate the request builder uses.
-    sttKeyterms: sttSelected.startsWith('deepgram') && supportsKeyterms(sttModel),
+    sttKeyterms: sttSelected.startsWith('deepgram') && supportsKeyterms(deepgramModel),
     synthesisRouteName: streamingSynthesis?.name ?? 'no synthesis route',
     /*
      * NO SYNTHESIS ROUTE ON THIS DEPLOYMENT ACCEPTS A PRONUNCIATION HINT.

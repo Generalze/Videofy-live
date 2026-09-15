@@ -159,7 +159,12 @@ export interface IngestConfig {
    * on without one would open a socket, forward audio correctly, and transcribe
    * nothing -- succeeding at every step and producing no captions.
    */
-  streamingTranscriptionProvider: 'off' | 'mock' | 'deepgram-nova' | 'deepgram-flux';
+  streamingTranscriptionProvider:
+    | 'off'
+    | 'mock'
+    | 'deepgram-nova'
+    | 'deepgram-flux'
+    | 'deepgram-google-stt';
   /** Streaming synthesis for the live path. `off` means captions only. */
   /**
    * `chain` is elevenlabs then azure, in that order, with the second used
@@ -454,7 +459,13 @@ export function loadConfig(): IngestConfig {
       );
     }
   }
-  const streamingTranscriptionChoices = ['off', 'mock', 'deepgram-nova', 'deepgram-flux'] as const;
+  const streamingTranscriptionChoices = [
+    'off',
+    'mock',
+    'deepgram-nova',
+    'deepgram-flux',
+    'deepgram-google-stt',
+  ] as const;
   const streamingTranscriptionProvider = selectorOrDefault(
     'STREAMING_TRANSCRIPTION_PROVIDER',
     'off',
@@ -464,8 +475,8 @@ export function loadConfig(): IngestConfig {
     !(streamingTranscriptionChoices as readonly string[]).includes(streamingTranscriptionProvider)
   ) {
     throw new Error(
-      'STREAMING_TRANSCRIPTION_PROVIDER must be "off", "mock", "deepgram-nova" or ' +
-        `"deepgram-flux"; received "${streamingTranscriptionProvider}"`,
+      'STREAMING_TRANSCRIPTION_PROVIDER must be "off", "mock", "deepgram-nova", ' +
+        `"deepgram-flux" or "deepgram-google-stt"; received "${streamingTranscriptionProvider}"`,
     );
   }
   const streamingSynthesisChoices = ['off', 'mock', 'elevenlabs', 'azure', 'chain'] as const;

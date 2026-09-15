@@ -127,6 +127,8 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          packages: platform-tools
 
       # Does the Expo config parse and resolve at all? A malformed app.json or
       # a plugin that cannot be found fails here, in seconds, rather than
