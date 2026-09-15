@@ -35,20 +35,20 @@ Pidgin is intentionally not listed above because both pcm directions are `provid
 
 ## STT evidence for live surfaces
 
-### Google STT configuration and wiring verification
+### Google STT Chirp 3 configuration and wiring verification
 
-For Hausa, Igbo and Yoruba, treat Google Cloud Speech-to-Text V2 / Chirp as the candidate provider. This is not a live-accuracy qualification and not a production approval. Verify repo-side wiring first:
+For Hausa and Yoruba, treat Google Cloud Speech-to-Text V2 / Chirp 3 as the candidate provider. Igbo remains a declared live-STT gap and must fail closed pending a qualified real-time recognizer. This is not a live-accuracy qualification and not a production approval. Verify repo-side wiring first:
 
 ```bash
 node scripts/qualification/programme-language-surface.mjs --check-google-stt-wiring
 ```
 
-That check must find a language-routed live recognizer, Deepgram as the general/default route, Google STT for `ha-NG`, `ig-NG` and `yo-NG`, explicit refusal of unsupported source languages such as `pcm`, and non-secret configuration names before any live benchmark is commissioned. Google Translation is already integrated separately; do not use that fact as STT evidence.
+That check must find a language-routed live recognizer, Deepgram as the general/default route, Google STT Chirp 3 for `ha-NG` and `yo-NG`, explicit refusal of unsupported live source languages `ig` and `pcm`, and non-secret configuration names before any live benchmark is commissioned. Google Translation is already integrated separately; do not use that fact as STT evidence.
 
 Read-only server configuration verification, names only and no secrets:
 
 ```bash
-ssh c7-claude 'cd /srv/videofy-prod/current && git rev-parse HEAD && node scripts/qualification/programme-language-surface.mjs --check-google-stt-wiring && sudo awk -F= '"'"'/^(STREAMING_TRANSCRIPTION_PROVIDER|DEEPGRAM_API_KEY|DEEPGRAM_MODEL|GOOGLE_STT_PROJECT_ID|GOOGLE_STT_LOCATION|GOOGLE_STT_RECOGNIZER|GOOGLE_STT_MODEL|GOOGLE_CLOUD_QUOTA_PROJECT)=/ {print $1"=<set>"}'"'"' /etc/videofy/media-ingest.env'
+ssh c7-claude 'echo ===PRODUCTION_SHA===; cd /srv/videofy-prod/current && git rev-parse HEAD; echo ===QUALIFICATION_SHA===; cd /home/claude/videofy-qualification-language-surface && git rev-parse HEAD && node scripts/qualification/programme-language-surface.mjs --check-google-stt-wiring; echo ===CONFIG_NAMES===; sudo awk -F= '"'"'/^(STREAMING_TRANSCRIPTION_PROVIDER|DEEPGRAM_API_KEY|DEEPGRAM_MODEL|GOOGLE_STT_PROJECT_ID|GOOGLE_STT_LOCATION|GOOGLE_STT_RECOGNIZER|GOOGLE_STT_MODEL|GOOGLE_CLOUD_QUOTA_PROJECT)=/ {print $1"=<set>"}'"'"' /etc/videofy/media-ingest.env'
 ```
 
 Deepgram support and accuracy collection through the shipped adapter:
@@ -57,7 +57,7 @@ Deepgram support and accuracy collection through the shipped adapter:
 sudo node --env-file=/etc/videofy/media-ingest.env scripts/certify/deepgram.mjs --language-support en,fr,es,pt,pcm --languages en,es --out /tmp/videofy-programme-language-surface/deepgram-live-stt.json
 ```
 
-Do not read the Deepgram `language-support` result as accuracy. For ha/ig/yo, Deepgram refusal does not close the STT lane because Google STT V2 / Chirp is the candidate. For fr, pt and pcm, add approved spoken fixtures or a candidate decision before marking STT accuracy complete.
+Do not read the Deepgram `language-support` result as accuracy. For ha and yo, Deepgram refusal does not close the STT lane because Google STT V2 / Chirp 3 is the candidate. Igbo and Pidgin remain live-STT gaps pending qualified real-time recognizers. For fr and pt, add approved spoken fixtures before marking STT accuracy complete.
 
 ## TTS evidence for live surfaces
 

@@ -67,7 +67,6 @@ const checkGoogleSttWiring = process.argv.includes('--check-google-stt-wiring');
 
 const GOOGLE_STT_CANDIDATE_LOCALES = {
   ha: 'ha-NG',
-  ig: 'ig-NG',
   yo: 'yo-NG',
 };
 
@@ -86,16 +85,21 @@ function fail(message) {
 
 function validateRoutes(document) {
   if (!Array.isArray(document.routes)) fail('route document has no routes array');
+
   const byDirection = new Map();
+
   for (const route of document.routes) {
     byDirection.set(direction(route.sourceLanguage, route.targetLanguage), route);
   }
+
   const missing = EXPECTED_DIRECTIONS.map(([source, target]) => direction(source, target)).filter(
     (key) => !byDirection.has(key),
   );
+
   const extra = [...byDirection.keys()].filter(
     (key) => !EXPECTED_DIRECTIONS.some(([source, target]) => direction(source, target) === key),
   );
+
   if (missing.length > 0 || extra.length > 0) {
     fail(
       [
@@ -107,6 +111,7 @@ function validateRoutes(document) {
         .join('\n'),
     );
   }
+
   return EXPECTED_DIRECTIONS.map(([source, target]) => byDirection.get(direction(source, target)));
 }
 
@@ -125,28 +130,42 @@ function table(headers, rows) {
 function routeSummary(route) {
   if (route.provider === 'unassigned') return 'declared gap';
   if (route.technicalEvidence === null) return 'technical evidence missing';
+
   const latency = route.technicalEvidence.latencyMs;
+
   return `n=${route.technicalEvidence.sampleCount}; success=${route.technicalEvidence.successRate}; median=${latency.median} ms; max=${latency.max} ms`;
 }
 
 function latencyField(route) {
   if (route.technicalEvidence === null) return 'missing';
+
   const latency = route.technicalEvidence.latencyMs;
+
   return `min ${latency.min} / median ${latency.median} / mean ${latency.mean} / max ${latency.max} ms`;
 }
 
 function integrityField(route) {
   if (route.technicalEvidence === null) return 'missing';
+
   const notes = route.technicalEvidence.notes ?? '';
   const findings = [];
-  if (/hallucinate/iu.test(notes)) findings.push('blank/emoji hallucination recorded');
-  if (/digit/iu.test(notes)) findings.push('digit corruption recorded');
+
+  if (/hallucinate/iu.test(notes)) {
+    findings.push('blank/emoji hallucination recorded');
+  }
+
+  if (/digit/iu.test(notes)) {
+    findings.push('digit corruption recorded');
+  }
+
   if (/5000-character|long input|times out|truncated/iu.test(notes)) {
     findings.push('long-input defect recorded');
   }
+
   if (/not reachable|cannot invoke|unsupported-language/iu.test(notes)) {
     findings.push('service reachability gap recorded');
   }
+
   return findings.length ? findings.join('; ') : 'basic route benchmark only';
 }
 
@@ -154,6 +173,7 @@ function humanReviewField(route) {
   const evidence = route.reviewEvidence
     ? `; evidence ${route.reviewEvidence.evidenceReference}`
     : '';
+
   return `${route.humanReviewStatus}${evidence}`;
 }
 
@@ -167,31 +187,47 @@ function scopeField(route, scope) {
 
 function sttEvidence(sourceLanguage) {
   if (Object.hasOwn(GOOGLE_STT_CANDIDATE_LOCALES, sourceLanguage)) {
-    return `Google Cloud Speech-to-Text V2 / Chirp routed live STT path present (${GOOGLE_STT_CANDIDATE_LOCALES[sourceLanguage]}); server configuration and live accuracy unqualified`;
+    return `Google Cloud Speech-to-Text V2 / Chirp 3 routed live STT path present (${GOOGLE_STT_CANDIDATE_LOCALES[sourceLanguage]}); server configuration and live accuracy unqualified`;
   }
+
+  if (sourceLanguage === 'ig') {
+    return 'ig unresolved for live STT: current Google Chirp 3 streaming support does not include ig-NG; fail closed pending a qualified real-time recognizer';
+  }
+
   if (sourceLanguage === 'pcm') {
-    return 'pcm unresolved: no STT candidate is recorded by this framework';
+    return 'pcm unresolved for live STT: no qualified real-time recognizer is recorded by this framework';
   }
+
   if (['en', 'es'].includes(sourceLanguage)) {
-    return 'existing Deepgram harness has clean TTS fixtures; rerun required';
+    return 'existing Deepgram STT harness has spoken fixtures; rerun required';
   }
-  return 'manual fixture corpus needed before accuracy can be claimed';
+
+  return 'manual spoken fixture corpus needed before STT accuracy can be claimed';
 }
 
 function ttsEvidence(targetLanguage) {
-  if (['en', 'fr', 'es'].includes(targetLanguage)) return 'general TTS harness covers language';
+  if (['en', 'fr', 'es'].includes(targetLanguage)) {
+    return 'general TTS harness covers language';
+  }
+
   if (['ha', 'ig', 'yo', 'pcm'].includes(targetLanguage)) {
     return '9jaLingo technical TTS harness covers language; human listening still required';
   }
-  if (targetLanguage === 'pt') return 'Portuguese TTS corpus/voice evidence missing';
+
+  if (targetLanguage === 'pt') {
+    return 'Portuguese TTS corpus/voice evidence missing';
+  }
+
   return 'missing';
 }
 
 function e2eEvidence(route) {
   const key = direction(route.sourceLanguage, route.targetLanguage);
+
   if (['en->fr', 'fr->en', 'en->es', 'es->en'].includes(key)) {
     return `available: node scripts/verify-language-pair.mjs ${route.sourceLanguage} ${route.targetLanguage}`;
   }
+
   return 'manual fixture/voice coverage needed before end-to-end command can prove this route';
 }
 
@@ -199,6 +235,7 @@ function overallReadiness(route) {
   if (Object.values(route.serviceScopes).every((value) => value !== 'approved')) {
     return 'not ready - no approved service scope';
   }
+
   return 'requires CTO review before any use';
 }
 
@@ -207,6 +244,7 @@ function evidenceCommands(routes) {
     .filter((route) => route.provider === 'opus-mt')
     .map((route) => `${route.sourceLanguage}-${route.targetLanguage}`)
     .join(',');
+
   return [
     '# Evidence command plan',
     '',
@@ -245,15 +283,15 @@ function evidenceCommands(routes) {
     '',
     '## STT evidence for live surfaces',
     '',
-    '### Google STT configuration and wiring verification',
+    '### Google STT Chirp 3 configuration and wiring verification',
     '',
-    'For Hausa, Igbo and Yoruba, treat Google Cloud Speech-to-Text V2 / Chirp as the candidate provider. This is not a live-accuracy qualification and not a production approval. Verify repo-side wiring first:',
+    'For Hausa and Yoruba, treat Google Cloud Speech-to-Text V2 / Chirp 3 as the candidate provider. Igbo remains a declared live-STT gap and must fail closed pending a qualified real-time recognizer. This is not a live-accuracy qualification and not a production approval. Verify repo-side wiring first:',
     '',
     '```bash',
     'node scripts/qualification/programme-language-surface.mjs --check-google-stt-wiring',
     '```',
     '',
-    'That check must find a language-routed live recognizer, Deepgram as the general/default route, Google STT for `ha-NG`, `ig-NG` and `yo-NG`, explicit refusal of unsupported source languages such as `pcm`, and non-secret configuration names before any live benchmark is commissioned. Google Translation is already integrated separately; do not use that fact as STT evidence.',
+    'That check must find a language-routed live recognizer, Deepgram as the general/default route, Google STT Chirp 3 for `ha-NG` and `yo-NG`, explicit refusal of unsupported live source languages `ig` and `pcm`, and non-secret configuration names before any live benchmark is commissioned. Google Translation is already integrated separately; do not use that fact as STT evidence.',
     '',
     'Read-only server configuration verification, names only and no secrets:',
     '',
@@ -267,7 +305,7 @@ function evidenceCommands(routes) {
     'sudo node --env-file=/etc/videofy/media-ingest.env scripts/certify/deepgram.mjs --language-support en,fr,es,pt,pcm --languages en,es --out /tmp/videofy-programme-language-surface/deepgram-live-stt.json',
     '```',
     '',
-    'Do not read the Deepgram `language-support` result as accuracy. For ha/ig/yo, Deepgram refusal does not close the STT lane because Google STT V2 / Chirp is the candidate. For fr, pt and pcm, add approved spoken fixtures or a candidate decision before marking STT accuracy complete.',
+    'Do not read the Deepgram `language-support` result as accuracy. For ha and yo, Deepgram refusal does not close the STT lane because Google STT V2 / Chirp 3 is the candidate. Igbo and Pidgin remain live-STT gaps pending qualified real-time recognizers. For fr and pt, add approved spoken fixtures before marking STT accuracy complete.',
     '',
     '## TTS evidence for live surfaces',
     '',
@@ -301,7 +339,7 @@ function evidenceCommands(routes) {
 }
 
 function firstManualCommand() {
-  return `ssh c7-claude 'cd /srv/videofy-prod/current && git rev-parse HEAD && node scripts/qualification/programme-language-surface.mjs --check-google-stt-wiring && sudo awk -F= '"'"'/^(STREAMING_TRANSCRIPTION_PROVIDER|DEEPGRAM_API_KEY|DEEPGRAM_MODEL|GOOGLE_STT_PROJECT_ID|GOOGLE_STT_LOCATION|GOOGLE_STT_RECOGNIZER|GOOGLE_STT_MODEL|GOOGLE_CLOUD_QUOTA_PROJECT)=/ {print $1"=<set>"}'"'"' /etc/videofy/media-ingest.env'`;
+  return `ssh c7-claude 'echo ===PRODUCTION_SHA===; cd /srv/videofy-prod/current && git rev-parse HEAD; echo ===QUALIFICATION_SHA===; cd /home/claude/videofy-qualification-language-surface && git rev-parse HEAD && node scripts/qualification/programme-language-surface.mjs --check-google-stt-wiring; echo ===CONFIG_NAMES===; sudo awk -F= '"'"'/^(STREAMING_TRANSCRIPTION_PROVIDER|DEEPGRAM_API_KEY|DEEPGRAM_MODEL|GOOGLE_STT_PROJECT_ID|GOOGLE_STT_LOCATION|GOOGLE_STT_RECOGNIZER|GOOGLE_STT_MODEL|GOOGLE_CLOUD_QUOTA_PROJECT)=/ {print $1"=<set>"}'"'"' /etc/videofy/media-ingest.env'`;
 }
 
 function matrixDocument(routes) {
@@ -322,7 +360,9 @@ function matrixDocument(routes) {
   const pipelineRows = routes.map((route) => [
     direction(route.sourceLanguage, route.targetLanguage),
     sttEvidence(route.sourceLanguage),
-    route.technicalEvidence === null ? 'missing or unassigned' : 'route benchmark recorded; rerun required for fresh evidence',
+    route.technicalEvidence === null
+      ? 'missing or unassigned'
+      : 'route benchmark recorded; rerun required for fresh evidence',
     ttsEvidence(route.targetLanguage),
     e2eEvidence(route),
     overallReadiness(route),
@@ -358,10 +398,17 @@ function matrixDocument(routes) {
     '',
     'For live surfaces, one route is not enough. The source language must pass STT, the direction must pass translation, the target language must pass TTS, and the combined path must pass an end-to-end programme/call proof. A green technical row still does not replace human review or licence clearance.',
     '',
-    'Google Cloud Translation is already integrated as a translation provider. Google Cloud STT is a separate candidate lane: for `ha-NG`, `ig-NG` and `yo-NG`, this framework names Google Cloud Speech-to-Text V2 / Chirp as the candidate and the repo-side routed live STT path is present. Deepgram remains the general live recognizer for existing supported source languages. Server configuration and live accuracy remain unqualified. Production approval remains false.',
+    'Google Cloud Translation is already integrated as a translation provider. Google Cloud STT is a separate candidate lane: for `ha-NG` and `yo-NG`, this framework names Google Cloud Speech-to-Text V2 / Chirp 3 as the candidate and the repo-side routed live STT path is present. Igbo (`ig-NG`) and Nigerian Pidgin (`pcm`) remain declared live-STT gaps and must fail closed. Deepgram remains the general live recognizer for existing supported source languages. Server configuration and live accuracy remain unqualified. Production approval remains false.',
     '',
     table(
-      ['Direction', 'STT source evidence', 'Translation route evidence', 'TTS target evidence', 'End-to-end proof', 'Current readiness'],
+      [
+        'Direction',
+        'STT source evidence',
+        'Translation route evidence',
+        'TTS target evidence',
+        'End-to-end proof',
+        'Current readiness',
+      ],
       pipelineRows,
     ),
     '',
@@ -369,7 +416,7 @@ function matrixDocument(routes) {
     '',
     '- `messaging`, `programme-live` and `call-live` are separate decisions from the registry. Approval in one must never imply approval in another.',
     '- `call-live: refused` is a decision, not a missing benchmark. Do not move it with automated evidence alone.',
-    '- Hausa, Igbo and Yoruba STT are not provider-blocked here. Google Cloud Speech-to-Text V2 / Chirp is the candidate; repo-side wiring is present, while server configuration and live accuracy still need evidence.',
+    '- Hausa and Yoruba STT have a Google Cloud Speech-to-Text V2 / Chirp 3 candidate path; repo-side wiring is present, while server configuration and live accuracy still need evidence. Igbo remains a live-STT provider gap and must fail closed.',
     '- Nigerian Pidgin (`pcm`) remains separate and unresolved unless repo evidence proves a specific STT candidate.',
     '- Human review, commercial clearance, latency and integrity evidence are separate fields. Completing one does not complete the others.',
     '- Programme readiness requires STT, translation, TTS and end-to-end evidence for the same direction and service surface.',
@@ -378,6 +425,7 @@ function matrixDocument(routes) {
 
 function manualContinuation(routes) {
   const missingHuman = routes.map((route) => direction(route.sourceLanguage, route.targetLanguage));
+
   return [
     '# Manual continuation',
     '',
@@ -391,21 +439,22 @@ function manualContinuation(routes) {
     missingHuman.map((key) => `   - ${key}`).join('\n'),
     '',
     '3. Complete licence/commercial clearance for every third-party model named by the registry. Apache-2.0 identifiers are not enough; obligations and redistribution requirements must be reviewed.',
-    '4. Verify Google Cloud STT V2 / Chirp server configuration and non-secret configuration names before any ha-NG, ig-NG or yo-NG live benchmark.',
-    '5. Add or approve missing fixture corpora before claiming STT accuracy for fr, pt, ha, ig, yo and pcm.',
-    '6. Keep pcm separate and unresolved unless repo evidence proves a specific STT candidate.',
+    '4. Verify Google Cloud STT V2 / Chirp 3 server configuration and non-secret configuration names before any ha-NG or yo-NG live benchmark; keep ig-NG blocked pending a qualified real-time recognizer.',
+    '5. Add or approve missing spoken fixture corpora before claiming STT accuracy for fr, pt, ha or yo. Do not claim ig or pcm STT accuracy until a qualified real-time recognizer exists.',
+    '6. Keep ig and pcm separate and unresolved for live STT unless repo evidence proves a specific qualified real-time recognizer.',
     '7. Add Portuguese TTS evidence before any route targeting pt can be considered live-ready.',
     '8. Extend the deterministic end-to-end verifier before using it for pt, ha, ig, yo or pcm directions.',
     '9. After evidence is gathered, update the registry only through a reviewed route-document change. Do not approve scopes by editing generated framework docs.',
     '',
-    '## Google STT manual verification before live benchmarks',
+    '## Google STT Chirp 3 manual verification before live benchmarks',
     '',
-    'Google Translation and Google STT are separate provider surfaces. The existing Google translation integration does not prove STT readiness. Before any live STT run for Hausa, Igbo or Yoruba, verify all of the following:',
+    'Google Translation and Google STT are separate provider surfaces. The existing Google translation integration does not prove STT readiness. Before any live Google STT run for Hausa or Yoruba, verify all of the following. Igbo is not part of this Google live lane and remains fail-closed:',
     '',
-    '- The deployed media-ingest runtime is at a SHA containing the Google Cloud Speech-to-Text V2 / Chirp adapter and `deepgram-google-stt` language-routed selector.',
+    '- The isolated qualification runtime is at the exact candidate SHA containing the Google Cloud Speech-to-Text V2 / Chirp 3 adapter and `deepgram-google-stt` language-routed selector. Production may remain on an older release until deployment is explicitly authorized.',
     '- Non-secret configuration names exist for the resource project, location and recognizer/model selection.',
     '- ADC/quota-project handling is explicitly compatible with the existing Google authorization path.',
-    '- The configured route table sends `ha-NG`, `ig-NG` and `yo-NG` to Google STT, keeps `en`, `es`, `fr` and `pt` on Deepgram, and refuses unsupported source languages such as `pcm`.',
+    '- The configured route table sends `ha-NG` and `yo-NG` to Google STT Chirp 3, keeps `en`, `es`, `fr` and `pt` on Deepgram, and refuses live STT for `ig` and `pcm`.',
+    '- Igbo remains in the 14-direction product/translation scope; only its live STT source lane is blocked pending a qualified recognizer.',
     '- No result is written as production approval; live accuracy remains unqualified until a benchmark and human review are complete.',
     '',
     '## Exact first manual command',
@@ -414,7 +463,7 @@ function manualContinuation(routes) {
     firstManualCommand(),
     '```',
     '',
-    'That command is read-only: it prints the deployed SHA, runs the repo-side wiring check on the deployed checkout, and prints only whether the non-secret Google STT configuration names are set. It does not print credentials and does not run a live benchmark.',
+    'That command is read-only: it prints the production SHA separately from the isolated qualification SHA, runs the repo-side wiring check only in the qualification checkout, and prints only whether the non-secret Google STT configuration names are set. It does not print credentials, change production, or run a live benchmark.',
   ].join('\n');
 }
 
@@ -428,15 +477,18 @@ function generatedFiles(routes) {
 
 function collectFiles(dir, predicate, found = []) {
   if (!existsSync(dir)) return found;
+
   for (const entry of readdirSync(dir)) {
     const path = join(dir, entry);
     const stats = statSync(path);
+
     if (stats.isDirectory()) {
       collectFiles(path, predicate, found);
     } else if (predicate(path)) {
       found.push(path);
     }
   }
+
   return found;
 }
 
@@ -446,18 +498,22 @@ function readIfExists(path) {
 
 function runGoogleSttWiringCheck() {
   const mediaIngest = join(ROOT, 'services', 'media-ingest', 'src');
+
   const aiRegistry = join(ROOT, 'services', 'ai-registry', 'src');
+
   const googleProviderDir = join(mediaIngest, 'providers', 'google');
-  const googleFiles = collectFiles(
-    googleProviderDir,
-    (path) => /\.(ts|tsx|js|mjs)$/u.test(path),
-  );
+
+  const googleFiles = collectFiles(googleProviderDir, (path) => /\.(ts|tsx|js|mjs)$/u.test(path));
+
   const allRelevantFiles = [
     ...collectFiles(mediaIngest, (path) => /\.(ts|tsx|js|mjs)$/u.test(path)),
     ...collectFiles(aiRegistry, (path) => /\.(ts|tsx|js|mjs)$/u.test(path)),
   ];
+
   const relevantText = allRelevantFiles.map(readIfExists).join('\n');
+
   const googleText = googleFiles.map(readIfExists).join('\n');
+
   const checks = [
     {
       label: 'Google Translation integration remains present',
@@ -472,8 +528,8 @@ function runGoogleSttWiringCheck() {
         /Google.*(Speech|STT|Transcription)|Speech-to-Text|Chirp/iu.test(googleText),
     },
     {
-      label: 'Google STT V2 / Chirp candidate is named in repo wiring',
-      ok: /Chirp|Speech-to-Text V2|speech-to-text.*v2|recognizers/iu.test(relevantText),
+      label: 'Google STT V2 / Chirp 3 candidate is named in repo wiring',
+      ok: /Chirp 3|chirp_3|Speech-to-Text V2|speech-to-text.*v2|recognizers/iu.test(relevantText),
     },
     {
       label: 'Deepgram remains the default/general live recognizer',
@@ -489,25 +545,25 @@ function runGoogleSttWiringCheck() {
         ),
     },
     {
-      label: 'ha-NG, ig-NG and yo-NG route to Google STT',
+      label: 'ha-NG and yo-NG route to Google STT Chirp 3',
       ok:
-        /GOOGLE_STT_SOURCE_LANGUAGES\s*=\s*\[\s*'ha'\s*,\s*'ig'\s*,\s*'yo'\s*\]/u.test(
-          relevantText,
-        ) &&
+        /GOOGLE_STT_SOURCE_LANGUAGES\s*=\s*\[\s*'ha'\s*,\s*'yo'\s*\]/u.test(relevantText) &&
         /createLanguageRoutedTranscriptionProvider/u.test(relevantText) &&
         /google\.openStream|options\.google/u.test(relevantText),
     },
     {
-      label: 'Unsupported source languages refuse instead of falling back',
+      label: 'Igbo and Pidgin live STT refuse instead of falling back',
       ok:
-        /UNSUPPORTED_STT_SOURCE_LANGUAGES\s*=\s*\[\s*'pcm'\s*\]/u.test(relevantText) &&
+        /UNSUPPORTED_STT_SOURCE_LANGUAGES\s*=\s*\[\s*'ig'\s*,\s*'pcm'\s*\]/u.test(relevantText) &&
         /not in the qualified routing table|unsupported\/unqualified|source language is required/u.test(
           relevantText,
         ),
     },
     {
-      label: 'Nigerian Google STT candidate locales are configured or declared',
-      ok: ['ha-NG', 'ig-NG', 'yo-NG'].every((locale) => relevantText.includes(locale)),
+      label: 'Google live STT contract pins ha-NG, yo-NG and Chirp 3',
+      ok:
+        /GOOGLE_STT_SUPPORTED_LOCALES\s*=\s*\[\s*'ha-NG'\s*,\s*'yo-NG'\s*\]/u.test(relevantText) &&
+        /GOOGLE_STT_LIVE_MODEL\s*=\s*'chirp_3'/u.test(relevantText),
     },
     {
       label: 'Non-secret Google STT config names are present',
@@ -519,23 +575,33 @@ function runGoogleSttWiringCheck() {
       ].every((name) => relevantText.includes(name)),
     },
   ];
+
   for (const check of checks) {
     console.log(`${check.ok ? 'PASS' : 'MISSING'}  ${check.label}`);
   }
+
   const ok = checks.every((check) => check.ok);
+
   if (!ok) {
     console.log('');
     console.log(
-      'Google STT remains a candidate only. Do not benchmark or approve ha-NG, ig-NG or yo-NG STT until the missing wiring/configuration checks are closed.',
+      'Google STT remains a candidate only. Do not benchmark or approve ha-NG or yo-NG STT until the missing wiring/configuration checks are closed. Keep ig-NG and pcm live STT fail-closed pending qualified recognizers.',
     );
     process.exit(1);
   }
+
   console.log('');
-  console.log('Google STT wiring/configuration is statically present; live accuracy remains unqualified.');
+
+  console.log(
+    'Google STT Chirp 3 wiring for ha-NG/yo-NG is statically present; live accuracy remains unqualified. Igbo and Pidgin remain live-STT gaps.',
+  );
 }
 
 function writeFiles(files) {
-  mkdirSync(outDir, { recursive: true });
+  mkdirSync(outDir, {
+    recursive: true,
+  });
+
   for (const [name, content] of files) {
     writeFileSync(join(outDir, name), content, 'utf8');
   }
@@ -543,16 +609,26 @@ function writeFiles(files) {
 
 function checkFiles(files) {
   const problems = [];
+
   for (const [name, expected] of files) {
     const path = join(outDir, name);
+
     if (!existsSync(path)) {
       problems.push(`${path} is missing`);
       continue;
     }
+
     const actual = readFileSync(path, 'utf8');
-    if (actual !== expected) problems.push(`${path} is not up to date`);
+
+    if (actual !== expected) {
+      problems.push(`${path} is not up to date`);
+    }
   }
-  if (problems.length > 0) fail(problems.join('\n'));
+
+  if (problems.length > 0) {
+    fail(problems.join('\n'));
+  }
+
   console.log(`programme language-surface framework ok (${files.size} files, 14 directions)`);
 }
 
@@ -574,6 +650,7 @@ if (checkGoogleSttWiring) {
 
 if (writeMode) {
   writeFiles(files);
+
   console.log(`wrote ${files.size} files to ${outDir}`);
 }
 
@@ -582,5 +659,7 @@ if (checkMode) {
 }
 
 if (!writeMode && !checkMode && !printCommands && !printFirstCommand && !checkGoogleSttWiring) {
-  console.log('Usage: node scripts/qualification/programme-language-surface.mjs --write|--check|--print-evidence-commands|--print-first-manual-command|--check-google-stt-wiring');
+  console.log(
+    'Usage: node scripts/qualification/programme-language-surface.mjs --write|--check|--print-evidence-commands|--print-first-manual-command|--check-google-stt-wiring',
+  );
 }
