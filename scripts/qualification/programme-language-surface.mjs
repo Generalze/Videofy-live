@@ -167,7 +167,7 @@ function scopeField(route, scope) {
 
 function sttEvidence(sourceLanguage) {
   if (Object.hasOwn(GOOGLE_STT_CANDIDATE_LOCALES, sourceLanguage)) {
-    return `Google Cloud Speech-to-Text V2 / Chirp repo-side live STT path present (${GOOGLE_STT_CANDIDATE_LOCALES[sourceLanguage]}); server configuration and live accuracy unqualified`;
+    return `Google Cloud Speech-to-Text V2 / Chirp routed live STT path present (${GOOGLE_STT_CANDIDATE_LOCALES[sourceLanguage]}); server configuration and live accuracy unqualified`;
   }
   if (sourceLanguage === 'pcm') {
     return 'pcm unresolved: no STT candidate is recorded by this framework';
@@ -253,7 +253,7 @@ function evidenceCommands(routes) {
     'node scripts/qualification/programme-language-surface.mjs --check-google-stt-wiring',
     '```',
     '',
-    'That check must find a Google STT adapter/wiring path, the live `google-stt` selector, candidate locales `ha-NG`, `ig-NG`, `yo-NG`, and non-secret configuration names before any live benchmark is commissioned. Google Translation is already integrated separately; do not use that fact as STT evidence.',
+    'That check must find a language-routed live recognizer, Deepgram as the general/default route, Google STT for `ha-NG`, `ig-NG` and `yo-NG`, explicit refusal of unsupported source languages such as `pcm`, and non-secret configuration names before any live benchmark is commissioned. Google Translation is already integrated separately; do not use that fact as STT evidence.',
     '',
     'Read-only server configuration verification, names only and no secrets:',
     '',
@@ -301,7 +301,7 @@ function evidenceCommands(routes) {
 }
 
 function firstManualCommand() {
-  return `ssh c7-claude 'cd /srv/videofy-prod/current && git rev-parse HEAD && node scripts/qualification/programme-language-surface.mjs --check-google-stt-wiring && sudo awk -F= '"'"'/^(STREAMING_TRANSCRIPTION_PROVIDER|GOOGLE_STT_PROJECT_ID|GOOGLE_STT_LOCATION|GOOGLE_STT_RECOGNIZER|GOOGLE_STT_MODEL|GOOGLE_CLOUD_QUOTA_PROJECT)=/ {print $1"=<set>"}'"'"' /etc/videofy/media-ingest.env'`;
+  return `ssh c7-claude 'cd /srv/videofy-prod/current && git rev-parse HEAD && node scripts/qualification/programme-language-surface.mjs --check-google-stt-wiring && sudo awk -F= '"'"'/^(STREAMING_TRANSCRIPTION_PROVIDER|DEEPGRAM_API_KEY|DEEPGRAM_MODEL|GOOGLE_STT_PROJECT_ID|GOOGLE_STT_LOCATION|GOOGLE_STT_RECOGNIZER|GOOGLE_STT_MODEL|GOOGLE_CLOUD_QUOTA_PROJECT)=/ {print $1"=<set>"}'"'"' /etc/videofy/media-ingest.env'`;
 }
 
 function matrixDocument(routes) {
@@ -358,7 +358,7 @@ function matrixDocument(routes) {
     '',
     'For live surfaces, one route is not enough. The source language must pass STT, the direction must pass translation, the target language must pass TTS, and the combined path must pass an end-to-end programme/call proof. A green technical row still does not replace human review or licence clearance.',
     '',
-    'Google Cloud Translation is already integrated as a translation provider. Google Cloud STT is a separate candidate lane: for `ha-NG`, `ig-NG` and `yo-NG`, this framework names Google Cloud Speech-to-Text V2 / Chirp as the candidate and the repo-side live STT path is present. Server configuration and live accuracy remain unqualified. Production approval remains false.',
+    'Google Cloud Translation is already integrated as a translation provider. Google Cloud STT is a separate candidate lane: for `ha-NG`, `ig-NG` and `yo-NG`, this framework names Google Cloud Speech-to-Text V2 / Chirp as the candidate and the repo-side routed live STT path is present. Deepgram remains the general live recognizer for existing supported source languages. Server configuration and live accuracy remain unqualified. Production approval remains false.',
     '',
     table(
       ['Direction', 'STT source evidence', 'Translation route evidence', 'TTS target evidence', 'End-to-end proof', 'Current readiness'],
@@ -402,10 +402,10 @@ function manualContinuation(routes) {
     '',
     'Google Translation and Google STT are separate provider surfaces. The existing Google translation integration does not prove STT readiness. Before any live STT run for Hausa, Igbo or Yoruba, verify all of the following:',
     '',
-    '- The deployed media-ingest runtime is at a SHA containing the Google Cloud Speech-to-Text V2 / Chirp adapter and `google-stt` selector.',
+    '- The deployed media-ingest runtime is at a SHA containing the Google Cloud Speech-to-Text V2 / Chirp adapter and `deepgram-google-stt` language-routed selector.',
     '- Non-secret configuration names exist for the resource project, location and recognizer/model selection.',
     '- ADC/quota-project handling is explicitly compatible with the existing Google authorization path.',
-    '- The configured candidate locales are exactly `ha-NG`, `ig-NG` and `yo-NG` for this gate.',
+    '- The configured route table sends `ha-NG`, `ig-NG` and `yo-NG` to Google STT, keeps `en`, `es`, `fr` and `pt` on Deepgram, and refuses unsupported source languages such as `pcm`.',
     '- No result is written as production approval; live accuracy remains unqualified until a benchmark and human review are complete.',
     '',
     '## Exact first manual command',
@@ -476,14 +476,34 @@ function runGoogleSttWiringCheck() {
       ok: /Chirp|Speech-to-Text V2|speech-to-text.*v2|recognizers/iu.test(relevantText),
     },
     {
-      label: 'Live transcription selector includes google-stt without replacing Deepgram',
+      label: 'Deepgram remains the default/general live recognizer',
       ok:
-        /streamingTranscriptionProvider:\s*[\s\S]*'deepgram-nova'[\s\S]*'deepgram-flux'[\s\S]*'google-stt'/u.test(
+        /streamingTranscriptionProvider:\s*[\s\S]*'deepgram-nova'[\s\S]*'deepgram-flux'[\s\S]*'deepgram-google-stt'/u.test(
           relevantText,
         ) &&
         /case\s+'deepgram-nova'/u.test(relevantText) &&
         /case\s+'deepgram-flux'/u.test(relevantText) &&
-        /case\s+'google-stt'/u.test(relevantText),
+        /case\s+'deepgram-google-stt'/u.test(relevantText) &&
+        /DEEPGRAM_STT_SOURCE_LANGUAGES\s*=\s*\[\s*'en'\s*,\s*'es'\s*,\s*'fr'\s*,\s*'pt'\s*\]/u.test(
+          relevantText,
+        ),
+    },
+    {
+      label: 'ha-NG, ig-NG and yo-NG route to Google STT',
+      ok:
+        /GOOGLE_STT_SOURCE_LANGUAGES\s*=\s*\[\s*'ha'\s*,\s*'ig'\s*,\s*'yo'\s*\]/u.test(
+          relevantText,
+        ) &&
+        /createLanguageRoutedTranscriptionProvider/u.test(relevantText) &&
+        /google\.openStream|options\.google/u.test(relevantText),
+    },
+    {
+      label: 'Unsupported source languages refuse instead of falling back',
+      ok:
+        /UNSUPPORTED_STT_SOURCE_LANGUAGES\s*=\s*\[\s*'pcm'\s*\]/u.test(relevantText) &&
+        /not in the qualified routing table|unsupported\/unqualified|source language is required/u.test(
+          relevantText,
+        ),
     },
     {
       label: 'Nigerian Google STT candidate locales are configured or declared',

@@ -21,6 +21,7 @@ import {
 import { GoogleCloudSttStreamingProvider } from './providers/google/streaming-stt.js';
 import { AzureStreamingSynthesisProvider } from './providers/azure/streaming-tts.js';
 import { createFallbackSpeechSynthesisProvider } from './fallback-speech-synthesis-provider.js';
+import { createLanguageRoutedTranscriptionProvider } from './language-routed-transcription-provider.js';
 import {
   NAIJALINGO_PUBLISHED_SPEAKER_BY_LANGUAGE,
   NAIJALINGO_SELECTED_VOICE_BY_LANGUAGE,
@@ -206,39 +207,68 @@ export function buildStreamingTranscriptionProvider(
       return null;
     case 'mock':
       return new MockStreamingTranscriptionProvider();
-    case 'deepgram-nova': {
-      const nova: DeepgramNovaStreamingConfig = {
-        apiKey: requireCredential(env.deepgramApiKey, 'DEEPGRAM_API_KEY', 'deepgram-nova'),
-        model: env.deepgramModel ?? 'nova-3',
-        sockets: createDeepgramWebSocketFactory(WebSocket),
-      };
-      return new DeepgramNovaStreamingProvider(nova);
-    }
-    case 'deepgram-flux': {
-      const flux: DeepgramFluxStreamingConfig = {
-        apiKey: requireCredential(env.deepgramApiKey, 'DEEPGRAM_API_KEY', 'deepgram-flux'),
-        model: env.deepgramModel ?? 'flux-general-en',
-        sockets: createDeepgramWebSocketFactory(WebSocket),
-      };
-      return new DeepgramFluxStreamingProvider(flux);
-    }
-    case 'google-stt':
-      return new GoogleCloudSttStreamingProvider({
+    case 'deepgram-nova':
+      return buildDeepgramNovaTranscription(env, 'deepgram-nova');
+    case 'deepgram-flux':
+      return buildDeepgramFluxTranscription(env, 'deepgram-flux');
+    case 'deepgram-google-stt': {
+      const deepgram = buildDeepgramGeneralTranscription(env, 'deepgram-google-stt');
+      const google = new GoogleCloudSttStreamingProvider({
         projectId: requireCredential(
           env.googleSttProjectId,
           'GOOGLE_STT_PROJECT_ID',
-          'google-stt',
+          'deepgram-google-stt',
         ),
-        location: requireCredential(env.googleSttLocation, 'GOOGLE_STT_LOCATION', 'google-stt'),
+        location: requireCredential(
+          env.googleSttLocation,
+          'GOOGLE_STT_LOCATION',
+          'deepgram-google-stt',
+        ),
         recognizer: requireCredential(
           env.googleSttRecognizer,
           'GOOGLE_STT_RECOGNIZER',
-          'google-stt',
+          'deepgram-google-stt',
         ),
-        model: requireCredential(env.googleSttModel, 'GOOGLE_STT_MODEL', 'google-stt'),
+        model: requireCredential(env.googleSttModel, 'GOOGLE_STT_MODEL', 'deepgram-google-stt'),
         quotaProjectId: env.googleCloudQuotaProject ?? null,
       });
+      return createLanguageRoutedTranscriptionProvider({ deepgram, google });
+    }
   }
+}
+
+function buildDeepgramNovaTranscription(
+  env: LiveProviderEnv,
+  selector: string,
+): DeepgramNovaStreamingProvider {
+  const nova: DeepgramNovaStreamingConfig = {
+    apiKey: requireCredential(env.deepgramApiKey, 'DEEPGRAM_API_KEY', selector),
+    model: env.deepgramModel ?? 'nova-3',
+    sockets: createDeepgramWebSocketFactory(WebSocket),
+  };
+  return new DeepgramNovaStreamingProvider(nova);
+}
+
+function buildDeepgramFluxTranscription(
+  env: LiveProviderEnv,
+  selector: string,
+): DeepgramFluxStreamingProvider {
+  const flux: DeepgramFluxStreamingConfig = {
+    apiKey: requireCredential(env.deepgramApiKey, 'DEEPGRAM_API_KEY', selector),
+    model: env.deepgramModel ?? 'flux-general-en',
+    sockets: createDeepgramWebSocketFactory(WebSocket),
+  };
+  return new DeepgramFluxStreamingProvider(flux);
+}
+
+function buildDeepgramGeneralTranscription(
+  env: LiveProviderEnv,
+  selector: string,
+): StreamingTranscriptionProvider {
+  if ((env.deepgramModel ?? '').startsWith('flux')) {
+    return buildDeepgramFluxTranscription(env, selector);
+  }
+  return buildDeepgramNovaTranscription(env, selector);
 }
 
 export function buildStreamingSynthesisProvider(

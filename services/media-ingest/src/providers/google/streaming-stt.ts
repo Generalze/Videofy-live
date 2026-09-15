@@ -286,7 +286,7 @@ class GoogleCloudSttSession implements StreamingTranscriptionSession {
 
 function assertPresent(value: string, name: string): void {
   if (value.trim() === '') {
-    throw new Error(`${name} is required when STREAMING_TRANSCRIPTION_PROVIDER=google-stt`);
+    throw new Error(`${name} is required when Google STT is selected for live transcription`);
   }
 }
 
@@ -298,7 +298,7 @@ function optional(value: string | undefined): string | undefined {
 function requiredOptional(env: NodeJS.ProcessEnv, name: string): string {
   const value = optional(env[name]);
   if (value === undefined) {
-    throw new Error(`${name} is required when STREAMING_TRANSCRIPTION_PROVIDER=google-stt`);
+    throw new Error(`${name} is required when Google STT is selected for live transcription`);
   }
   return value;
 }

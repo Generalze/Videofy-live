@@ -263,10 +263,11 @@ describe('Google STT live provider wiring', () => {
     ]);
   });
 
-  it('builds google-stt without requiring Deepgram and without replacing Deepgram selectors', () => {
+  it('builds the Deepgram/Google routed recognizer without replacing Deepgram selectors', () => {
     const provider = buildStreamingTranscriptionProvider(
-      { streamingTranscriptionProvider: 'google-stt' },
+      { streamingTranscriptionProvider: 'deepgram-google-stt' },
       readLiveProviderEnv({
+        DEEPGRAM_API_KEY: 'test-key',
         GOOGLE_STT_PROJECT_ID: 'speech-project',
         GOOGLE_STT_LOCATION: 'global',
         GOOGLE_STT_RECOGNIZER: '_',
@@ -274,7 +275,8 @@ describe('Google STT live provider wiring', () => {
       } as NodeJS.ProcessEnv),
     );
 
-    expect(provider?.name).toBe('google-cloud-stt:chirp_2');
+    expect(provider?.name).toContain('ha,ig,yo -> google-cloud-stt:chirp_2');
+    expect(provider?.name).toContain('en,es,fr,pt -> deepgram:nova-3');
     expect(
       buildStreamingTranscriptionProvider(
         { streamingTranscriptionProvider: 'deepgram-nova' },
@@ -286,14 +288,45 @@ describe('Google STT live provider wiring', () => {
   it('requires explicit Google STT project, location, recognizer and model when selected', () => {
     expect(() =>
       buildStreamingTranscriptionProvider(
-        { streamingTranscriptionProvider: 'google-stt' },
+        { streamingTranscriptionProvider: 'deepgram-google-stt' },
         readLiveProviderEnv({
+          DEEPGRAM_API_KEY: 'test-key',
           GOOGLE_STT_PROJECT_ID: 'speech-project',
           GOOGLE_STT_LOCATION: 'global',
           GOOGLE_STT_RECOGNIZER: '_',
         } as NodeJS.ProcessEnv),
       ),
     ).toThrow(/GOOGLE_STT_MODEL/);
+  });
+
+  it('requires Deepgram for general live STT when the routed recognizer is selected', () => {
+    expect(() =>
+      buildStreamingTranscriptionProvider(
+        { streamingTranscriptionProvider: 'deepgram-google-stt' },
+        readLiveProviderEnv({
+          GOOGLE_STT_PROJECT_ID: 'speech-project',
+          GOOGLE_STT_LOCATION: 'global',
+          GOOGLE_STT_RECOGNIZER: '_',
+          GOOGLE_STT_MODEL: 'chirp_2',
+        } as NodeJS.ProcessEnv),
+      ),
+    ).toThrow(/DEEPGRAM_API_KEY/);
+  });
+
+  it('keeps the configured Deepgram adapter family for the routed general recognizer', () => {
+    const provider = buildStreamingTranscriptionProvider(
+      { streamingTranscriptionProvider: 'deepgram-google-stt' },
+      readLiveProviderEnv({
+        DEEPGRAM_API_KEY: 'test-key',
+        DEEPGRAM_MODEL: 'flux-general-en',
+        GOOGLE_STT_PROJECT_ID: 'speech-project',
+        GOOGLE_STT_LOCATION: 'global',
+        GOOGLE_STT_RECOGNIZER: '_',
+        GOOGLE_STT_MODEL: 'chirp_2',
+      } as NodeJS.ProcessEnv),
+    );
+
+    expect(provider?.name).toContain('en,es,fr,pt -> deepgram:flux-general-en');
   });
 
   it('constructs the provider from env only when the resource project is present', () => {

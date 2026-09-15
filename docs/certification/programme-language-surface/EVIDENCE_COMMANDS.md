@@ -43,12 +43,12 @@ For Hausa, Igbo and Yoruba, treat Google Cloud Speech-to-Text V2 / Chirp as the 
 node scripts/qualification/programme-language-surface.mjs --check-google-stt-wiring
 ```
 
-That check must find a Google STT adapter/wiring path, the live `google-stt` selector, candidate locales `ha-NG`, `ig-NG`, `yo-NG`, and non-secret configuration names before any live benchmark is commissioned. Google Translation is already integrated separately; do not use that fact as STT evidence.
+That check must find a language-routed live recognizer, Deepgram as the general/default route, Google STT for `ha-NG`, `ig-NG` and `yo-NG`, explicit refusal of unsupported source languages such as `pcm`, and non-secret configuration names before any live benchmark is commissioned. Google Translation is already integrated separately; do not use that fact as STT evidence.
 
 Read-only server configuration verification, names only and no secrets:
 
 ```bash
-ssh c7-claude 'cd /srv/videofy-prod/current && git rev-parse HEAD && node scripts/qualification/programme-language-surface.mjs --check-google-stt-wiring && sudo awk -F= '"'"'/^(STREAMING_TRANSCRIPTION_PROVIDER|GOOGLE_STT_PROJECT_ID|GOOGLE_STT_LOCATION|GOOGLE_STT_RECOGNIZER|GOOGLE_STT_MODEL|GOOGLE_CLOUD_QUOTA_PROJECT)=/ {print $1"=<set>"}'"'"' /etc/videofy/media-ingest.env'
+ssh c7-claude 'cd /srv/videofy-prod/current && git rev-parse HEAD && node scripts/qualification/programme-language-surface.mjs --check-google-stt-wiring && sudo awk -F= '"'"'/^(STREAMING_TRANSCRIPTION_PROVIDER|DEEPGRAM_API_KEY|DEEPGRAM_MODEL|GOOGLE_STT_PROJECT_ID|GOOGLE_STT_LOCATION|GOOGLE_STT_RECOGNIZER|GOOGLE_STT_MODEL|GOOGLE_CLOUD_QUOTA_PROJECT)=/ {print $1"=<set>"}'"'"' /etc/videofy/media-ingest.env'
 ```
 
 Deepgram support and accuracy collection through the shipped adapter:

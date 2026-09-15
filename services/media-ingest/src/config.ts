@@ -164,7 +164,7 @@ export interface IngestConfig {
     | 'mock'
     | 'deepgram-nova'
     | 'deepgram-flux'
-    | 'google-stt';
+    | 'deepgram-google-stt';
   /** Streaming synthesis for the live path. `off` means captions only. */
   /**
    * `chain` is elevenlabs then azure, in that order, with the second used
@@ -464,7 +464,7 @@ export function loadConfig(): IngestConfig {
     'mock',
     'deepgram-nova',
     'deepgram-flux',
-    'google-stt',
+    'deepgram-google-stt',
   ] as const;
   const streamingTranscriptionProvider = selectorOrDefault(
     'STREAMING_TRANSCRIPTION_PROVIDER',
@@ -476,7 +476,7 @@ export function loadConfig(): IngestConfig {
   ) {
     throw new Error(
       'STREAMING_TRANSCRIPTION_PROVIDER must be "off", "mock", "deepgram-nova", ' +
-        `"deepgram-flux" or "google-stt"; received "${streamingTranscriptionProvider}"`,
+        `"deepgram-flux" or "deepgram-google-stt"; received "${streamingTranscriptionProvider}"`,
     );
   }
   const streamingSynthesisChoices = ['off', 'mock', 'elevenlabs', 'azure', 'chain'] as const;
