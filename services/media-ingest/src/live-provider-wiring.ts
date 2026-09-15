@@ -18,6 +18,7 @@ import {
   DeepgramFluxStreamingProvider,
   type DeepgramFluxStreamingConfig,
 } from './providers/deepgram/flux-streaming-stt.js';
+import { GoogleCloudSttStreamingProvider } from './providers/google/streaming-stt.js';
 import { AzureStreamingSynthesisProvider } from './providers/azure/streaming-tts.js';
 import { createFallbackSpeechSynthesisProvider } from './fallback-speech-synthesis-provider.js';
 import {
@@ -71,6 +72,11 @@ import type { IngestConfig } from './config.js';
 export interface LiveProviderEnv {
   readonly deepgramApiKey?: string | undefined;
   readonly deepgramModel?: string | undefined;
+  readonly googleSttProjectId?: string | undefined;
+  readonly googleSttLocation?: string | undefined;
+  readonly googleSttRecognizer?: string | undefined;
+  readonly googleSttModel?: string | undefined;
+  readonly googleCloudQuotaProject?: string | undefined;
   readonly naijaLingoBaseUrl?: string | undefined;
   readonly naijaLingoApiKey?: string | undefined;
   readonly naijaLingoSampleRate?: string | undefined;
@@ -152,6 +158,11 @@ export function readLiveProviderEnv(env: NodeJS.ProcessEnv = process.env): LiveP
   return {
     deepgramApiKey: optional(env['DEEPGRAM_API_KEY']),
     deepgramModel: optional(env['DEEPGRAM_MODEL']),
+    googleSttProjectId: optional(env['GOOGLE_STT_PROJECT_ID']),
+    googleSttLocation: optional(env['GOOGLE_STT_LOCATION']),
+    googleSttRecognizer: optional(env['GOOGLE_STT_RECOGNIZER']),
+    googleSttModel: optional(env['GOOGLE_STT_MODEL']),
+    googleCloudQuotaProject: optional(env['GOOGLE_CLOUD_QUOTA_PROJECT']),
     naijaLingoBaseUrl: optional(env['NAIJALINGO_BASE_URL']),
     naijaLingoApiKey: optional(env['NAIJALINGO_API_KEY']),
     naijaLingoSampleRate: optional(env['NAIJALINGO_SAMPLE_RATE']),
@@ -211,6 +222,22 @@ export function buildStreamingTranscriptionProvider(
       };
       return new DeepgramFluxStreamingProvider(flux);
     }
+    case 'google-stt':
+      return new GoogleCloudSttStreamingProvider({
+        projectId: requireCredential(
+          env.googleSttProjectId,
+          'GOOGLE_STT_PROJECT_ID',
+          'google-stt',
+        ),
+        location: requireCredential(env.googleSttLocation, 'GOOGLE_STT_LOCATION', 'google-stt'),
+        recognizer: requireCredential(
+          env.googleSttRecognizer,
+          'GOOGLE_STT_RECOGNIZER',
+          'google-stt',
+        ),
+        model: requireCredential(env.googleSttModel, 'GOOGLE_STT_MODEL', 'google-stt'),
+        quotaProjectId: env.googleCloudQuotaProject ?? null,
+      });
   }
 }
 

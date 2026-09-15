@@ -37,13 +37,19 @@ Pidgin is intentionally not listed above because both pcm directions are `provid
 
 ### Google STT configuration and wiring verification
 
-For Hausa, Igbo and Yoruba, treat Google Cloud Speech-to-Text V2 / Chirp as the candidate provider. This is not a live-accuracy qualification and not a production approval. Verify repo/server wiring and configuration first:
+For Hausa, Igbo and Yoruba, treat Google Cloud Speech-to-Text V2 / Chirp as the candidate provider. This is not a live-accuracy qualification and not a production approval. Verify repo-side wiring first:
 
 ```bash
 node scripts/qualification/programme-language-surface.mjs --check-google-stt-wiring
 ```
 
-That check must find a Google STT adapter/wiring path, candidate locales `ha-NG`, `ig-NG`, `yo-NG`, and non-secret configuration names before any live benchmark is commissioned. Google Translation is already integrated separately; do not use that fact as STT evidence.
+That check must find a Google STT adapter/wiring path, the live `google-stt` selector, candidate locales `ha-NG`, `ig-NG`, `yo-NG`, and non-secret configuration names before any live benchmark is commissioned. Google Translation is already integrated separately; do not use that fact as STT evidence.
+
+Read-only server configuration verification, names only and no secrets:
+
+```bash
+ssh c7-claude 'cd /srv/videofy-prod/current && git rev-parse HEAD && node scripts/qualification/programme-language-surface.mjs --check-google-stt-wiring && sudo awk -F= '"'"'/^(STREAMING_TRANSCRIPTION_PROVIDER|GOOGLE_STT_PROJECT_ID|GOOGLE_STT_LOCATION|GOOGLE_STT_RECOGNIZER|GOOGLE_STT_MODEL|GOOGLE_CLOUD_QUOTA_PROJECT)=/ {print $1"=<set>"}'"'"' /etc/videofy/media-ingest.env'
+```
 
 Deepgram support and accuracy collection through the shipped adapter:
 

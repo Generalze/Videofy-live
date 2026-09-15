@@ -23,7 +23,7 @@ This is the stop point for the automated framework work. No production configura
    - pcm->en
 
 3. Complete licence/commercial clearance for every third-party model named by the registry. Apache-2.0 identifiers are not enough; obligations and redistribution requirements must be reviewed.
-4. Verify Google Cloud STT V2 / Chirp repo/server wiring and non-secret configuration names before any ha-NG, ig-NG or yo-NG live benchmark.
+4. Verify Google Cloud STT V2 / Chirp server configuration and non-secret configuration names before any ha-NG, ig-NG or yo-NG live benchmark.
 5. Add or approve missing fixture corpora before claiming STT accuracy for fr, pt, ha, ig, yo and pcm.
 6. Keep pcm separate and unresolved unless repo evidence proves a specific STT candidate.
 7. Add Portuguese TTS evidence before any route targeting pt can be considered live-ready.
@@ -32,9 +32,9 @@ This is the stop point for the automated framework work. No production configura
 
 ## Google STT manual verification before live benchmarks
 
-Google Translation and Google STT are separate provider surfaces. The existing Google translation integration does not prove STT wiring. Before any live STT run for Hausa, Igbo or Yoruba, verify all of the following:
+Google Translation and Google STT are separate provider surfaces. The existing Google translation integration does not prove STT readiness. Before any live STT run for Hausa, Igbo or Yoruba, verify all of the following:
 
-- A Google Cloud Speech-to-Text V2 / Chirp adapter or selector is present in the media-ingest runtime.
+- The deployed media-ingest runtime is at a SHA containing the Google Cloud Speech-to-Text V2 / Chirp adapter and `google-stt` selector.
 - Non-secret configuration names exist for the resource project, location and recognizer/model selection.
 - ADC/quota-project handling is explicitly compatible with the existing Google authorization path.
 - The configured candidate locales are exactly `ha-NG`, `ig-NG` and `yo-NG` for this gate.
@@ -43,7 +43,7 @@ Google Translation and Google STT are separate provider surfaces. The existing G
 ## Exact first manual command
 
 ```bash
-node scripts/qualification/programme-language-surface.mjs --check-google-stt-wiring
+ssh c7-claude 'cd /srv/videofy-prod/current && git rev-parse HEAD && node scripts/qualification/programme-language-surface.mjs --check-google-stt-wiring && sudo awk -F= '"'"'/^(STREAMING_TRANSCRIPTION_PROVIDER|GOOGLE_STT_PROJECT_ID|GOOGLE_STT_LOCATION|GOOGLE_STT_RECOGNIZER|GOOGLE_STT_MODEL|GOOGLE_CLOUD_QUOTA_PROJECT)=/ {print $1"=<set>"}'"'"' /etc/videofy/media-ingest.env'
 ```
 
-That command prints the reusable collection commands without running provider benchmarks. Read the printed plan, then run the relevant evidence command on the qualification host.
+That command is read-only: it prints the deployed SHA, runs the repo-side wiring check on the deployed checkout, and prints only whether the non-secret Google STT configuration names are set. It does not print credentials and does not run a live benchmark.

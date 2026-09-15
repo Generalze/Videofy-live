@@ -508,8 +508,10 @@ app.get('/vocabulary/capabilities', (_req, res) => {
   // reported model is the one actually requested rather than a second guess.
   const sttSelected = config.streamingTranscriptionProvider;
   const sttModel =
-    (process.env['DEEPGRAM_MODEL'] ?? '').trim() ||
-    (sttSelected === 'deepgram-flux' ? 'flux-general-en' : 'nova-3');
+    sttSelected === 'google-stt'
+      ? (process.env['GOOGLE_STT_MODEL'] ?? '').trim()
+      : (process.env['DEEPGRAM_MODEL'] ?? '').trim() ||
+        (sttSelected === 'deepgram-flux' ? 'flux-general-en' : 'nova-3');
   res.json({
     service: 'media-ingest',
     sttRouteName:
