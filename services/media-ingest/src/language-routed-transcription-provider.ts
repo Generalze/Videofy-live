@@ -13,9 +13,9 @@ import type {
   StreamingTranscriptionSession,
 } from './streaming-transcription-provider.js';
 
-export const GOOGLE_STT_SOURCE_LANGUAGES = ['ha', 'ig', 'yo'] as const;
+export const GOOGLE_STT_SOURCE_LANGUAGES = ['ha', 'yo'] as const;
 export const DEEPGRAM_STT_SOURCE_LANGUAGES = ['en', 'es', 'fr', 'pt'] as const;
-export const UNSUPPORTED_STT_SOURCE_LANGUAGES = ['pcm'] as const;
+export const UNSUPPORTED_STT_SOURCE_LANGUAGES = ['ig', 'pcm'] as const;
 
 export interface TranscriptionRouteObservation {
   readonly requestedLanguage: string;
