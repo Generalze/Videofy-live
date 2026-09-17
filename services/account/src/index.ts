@@ -481,6 +481,14 @@ registerAccountRoutes(app, {
   store,
   contacts,
   presence,
+  /*
+   * Deliberately lazy. The dispatcher is built further down, after the device
+   * store it reads from, and these routes are registered here -- so the
+   * reference is resolved when a request arrives, long after boot, rather
+   * than at this line. Reordering the whole device/push block up here to
+   * avoid one arrow function would move more than it is worth.
+   */
+  push: { notify: (accountId, notification) => push.notify(accountId, notification) },
   secret,
   organizations,
   abuse,
@@ -625,19 +633,6 @@ console.log(
   }),
 );
 
-registerDeviceRoutes(app, {
-  devices,
-  callerAccountId: createCallerResolver({
-    store,
-    secret,
-    nowSeconds: () => Math.floor(Date.now() / 1000),
-  }),
-  onEvent: (event, detail) => {
-    // eslint-disable-next-line no-console
-    console.log(JSON.stringify({ service: 'account', event, ...detail }));
-  },
-});
-
 /*
  * PUSH.
  *
@@ -675,6 +670,25 @@ console.log(
     note: push.configured ? undefined : 'No push provider: phones cannot be rung.',
   }),
 );
+
+/*
+ * Registered AFTER the dispatcher, because a first sign-in on a new device
+ * tells the account's other devices about it.
+ */
+registerDeviceRoutes(app, {
+  devices,
+  callerAccountId: createCallerResolver({
+    store,
+    secret,
+    nowSeconds: () => Math.floor(Date.now() / 1000),
+  }),
+  push,
+  notificationsEnabled: (accountId) => store.get(accountId)?.notificationsEnabled !== false,
+  onEvent: (event, detail) => {
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify({ service: 'account', event, ...detail }));
+  },
+});
 
 /*
  * CALL HISTORY. A finished direct call is part of the account pair's

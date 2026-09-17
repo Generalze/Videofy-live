@@ -21,6 +21,30 @@ export interface DeviceRouteDependencies {
   readonly devices: DeviceStore;
   readonly callerAccountId: (req: express.Request) => Caller | null;
   readonly onEvent?: (event: string, detail: Record<string, string | number>) => void;
+  /**
+   * Tells an account's OTHER devices that it has signed in somewhere new.
+   * Optional: a deployment without push registers devices exactly as before.
+   */
+  readonly push?: {
+    notify: (
+      accountId: string,
+      notification: {
+        kind: 'system';
+        privacy: 'visible';
+        urgency: 'normal';
+        title: string;
+        body: string;
+        data: Readonly<Record<string, string>>;
+        collapseId?: string;
+      },
+      exceptDeviceIds?: readonly string[],
+    ) => Promise<unknown>;
+  };
+  /**
+   * The recipient's own notification switch. A security notice is still only
+   * a notification, so it is gated exactly where a message push is gated.
+   */
+  readonly notificationsEnabled?: (accountId: string) => boolean;
 }
 
 export function registerDeviceRoutes(app: express.Express, deps: DeviceRouteDependencies): void {
@@ -72,6 +96,44 @@ export function registerDeviceRoutes(app: express.Express, deps: DeviceRouteDepe
         deviceId: result.device.deviceId,
         from: result.reassignedFrom,
         to: account.accountId,
+      });
+    }
+
+    /*
+     * SIGNED IN SOMEWHERE NEW -- told to the devices that were already there.
+     *
+     * ONLY on `firstSeen`. Clients register on every launch, so registering is
+     * a heartbeat; alerting on it would mean an alert every time the app is
+     * opened, which trains people to ignore the one that matters.
+     *
+     * The new device is excluded: the person is holding it, and its own
+     * sign-in is not news to them. If this is their FIRST device there is
+     * nobody left to tell, and the dispatcher simply attempts nothing.
+     *
+     * Visible, not discreet: a security notice whose words are hidden until
+     * the phone is unlocked cannot do the job it exists for. The label is the
+     * device's own, which the person chose or the platform supplied -- never a
+     * token, and no location or IP, neither of which this service knows.
+     */
+    if (result.firstSeen && deps.push && deps.notificationsEnabled?.(account.accountId) !== false) {
+      void deps.push
+        .notify(
+          account.accountId,
+          {
+            kind: 'system',
+            privacy: 'visible',
+            urgency: 'normal',
+            title: 'New sign-in',
+            body: `Your account was signed in on ${result.device.label}. If this was not you, remove the device and change your password.`,
+            data: { kind: 'device-login', deviceId: result.device.deviceId },
+            collapseId: `device-login-${result.device.deviceId}`,
+          },
+          [result.device.deviceId],
+        )
+        .catch(() => undefined);
+      deps.onEvent?.('device.first-seen', {
+        deviceId: result.device.deviceId,
+        account: account.accountId,
       });
     }
 

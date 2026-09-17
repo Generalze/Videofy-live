@@ -148,6 +148,24 @@ export interface AccountRouteDependencies {
    * list and profiles simply omit it -- never a made-up 'away'.
    */
   readonly presence?: PresenceRegistry;
+  /**
+   * Tells somebody that a person has asked to add them. Optional: without it
+   * the contact graph behaves exactly as before and simply stays silent.
+   */
+  readonly push?: {
+    notify: (
+      accountId: string,
+      notification: {
+        kind: 'system';
+        privacy: 'discreet';
+        urgency: 'normal';
+        title: string;
+        body: string;
+        data: Readonly<Record<string, string>>;
+        collapseId?: string;
+      },
+    ) => Promise<unknown>;
+  };
 }
 
 interface Body {
@@ -1631,6 +1649,34 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
            * "waiting on them" from "they never saw it".
            */
           if (outcome.ok || outcome.reason === 'blocked' || outcome.reason === 'already-requested') {
+            /*
+             * ONLY `outcome.ok` NOTIFIES, and that is the whole point of
+             * putting this inside the branch rather than after it.
+             *
+             * `blocked` and `already-requested` answer like a success on
+             * purpose (see above). Pushing on either would undo that in the
+             * one place it matters most: a blocked person would learn they
+             * are blocked by watching whether the other phone lit up, and a
+             * repeat request would become a way to ring somebody at will.
+             *
+             * Discreet: the notification carries no name until the phone is
+             * unlocked, because "X wants to add you" on a lock screen
+             * discloses a relationship to whoever is holding it.
+             */
+            if (outcome.ok && deps.push && target.notificationsEnabled !== false) {
+              const asker = deps.store.get(caller.accountId);
+              void deps.push
+                .notify(target.accountId, {
+                  kind: 'system',
+                  privacy: 'discreet',
+                  urgency: 'normal',
+                  title: 'Contact request',
+                  body: `${asker?.displayName ?? asker?.username ?? 'Someone'} wants to add you`,
+                  data: { kind: 'contact-request', fromAccountId: caller.accountId },
+                  collapseId: `contact-request-${caller.accountId}`,
+                })
+                .catch(() => undefined);
+            }
             res.status(202).json({ requested: true });
             return;
           }

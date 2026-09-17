@@ -17,19 +17,37 @@ import { registerAccountRoutes } from '../routes.js';
 const SECRET = requireSessionSecret('z'.repeat(48), 'TEST_SECRET');
 const PASSWORD = 'correct horse battery staple';
 
+interface SentPush {
+  accountId: string;
+  body: string;
+  data: Readonly<Record<string, string>>;
+}
+
 interface Harness {
   url: string;
   store: AccountStore;
   contacts: ContactStore;
+  pushes: SentPush[];
   close: () => Promise<void>;
 }
 
 async function harness(): Promise<Harness> {
   const store = new AccountStore();
   const contacts = new ContactStore();
+  const pushes: SentPush[] = [];
   const app = express();
   app.use(express.json());
-  registerAccountRoutes(app, { store, contacts, secret: SECRET });
+  registerAccountRoutes(app, {
+    store,
+    contacts,
+    secret: SECRET,
+    push: {
+      notify: (accountId, notification) => {
+        pushes.push({ accountId, body: notification.body, data: notification.data });
+        return Promise.resolve();
+      },
+    },
+  });
   const server = app.listen(0);
   await new Promise<void>((r) => server.once('listening', r));
   const { port } = server.address() as AddressInfo;
@@ -37,6 +55,7 @@ async function harness(): Promise<Harness> {
     url: `http://127.0.0.1:${port}`,
     store,
     contacts,
+    pushes,
     close: () => new Promise<void>((r) => server.close(() => r())),
   };
 }
@@ -314,5 +333,52 @@ describe('another person\u2019s profile', () => {
   it('requires signing in', async () => {
     const other = await person('other', { discoverable: true });
     expect((await call('GET', `/profiles/${other.accountId}`)).status).toBe(401);
+  });
+});
+
+/**
+ * Telling somebody that a person has asked to add them.
+ *
+ * The negative cases are the security ones. This route deliberately answers a
+ * blocked sender and a repeat request exactly as it answers a success, and a
+ * notification is observable from the OTHER side -- so pushing on either would
+ * undo that design through the back door: a blocked person could watch whether
+ * the other phone lit up, and a repeat request would become a way to make
+ * somebody's phone buzz on demand.
+ */
+describe('a contact request notification', () => {
+  it('tells the person somebody has asked to add them', async () => {
+    const alice = await person('alice');
+    const bob = await person('bob', { discoverable: true });
+
+    await call('POST', '/contacts/request', { username: 'c7bob' }, alice.token);
+
+    expect(app.pushes).toHaveLength(1);
+    expect(app.pushes[0]?.accountId).toBe(bob.accountId);
+    expect(app.pushes[0]?.data['kind']).toBe('contact-request');
+    expect(app.pushes[0]?.data['fromAccountId']).toBe(alice.accountId);
+  });
+
+  it('stays silent for a blocked sender, so the block cannot be detected', async () => {
+    const alice = await person('alice');
+    const bob = await person('bob', { discoverable: true });
+    await call('POST', '/contacts/block', { accountId: alice.accountId }, bob.token);
+
+    const blocked = await call('POST', '/contacts/request', { username: 'c7bob' }, alice.token);
+
+    expect(blocked.status).toBe(202);
+    expect(app.pushes).toEqual([]);
+  });
+
+  it('stays silent on a repeat request, so it cannot be used to buzz a phone', async () => {
+    const alice = await person('alice');
+    await person('bob', { discoverable: true });
+    await call('POST', '/contacts/request', { username: 'c7bob' }, alice.token);
+    app.pushes.length = 0;
+
+    await call('POST', '/contacts/request', { username: 'c7bob' }, alice.token);
+    await call('POST', '/contacts/request', { username: 'c7bob' }, alice.token);
+
+    expect(app.pushes).toEqual([]);
   });
 });

@@ -68,9 +68,21 @@ export class PushDispatcher {
    * Never throws. A ring that failed to reach one phone must still reach the
    * others, and a caller in the middle of setting up a call has nothing useful
    * to do with an exception.
+   *
+   * `exceptDeviceIds` leaves named devices out of the fan-out. It exists for
+   * the security notice sent when an account signs in somewhere new: telling
+   * the phone in somebody's hand that it has just signed itself in is noise,
+   * and the whole value of that notice is that it reaches the OTHER devices.
    */
-  async notify(accountId: string, notification: PushNotification): Promise<PushDispatchSummary> {
-    const targets = this.devices.pushTargetsFor(accountId);
+  async notify(
+    accountId: string,
+    notification: PushNotification,
+    exceptDeviceIds: readonly string[] = [],
+  ): Promise<PushDispatchSummary> {
+    const excluded = new Set(exceptDeviceIds);
+    const targets = this.devices
+      .pushTargetsFor(accountId)
+      .filter((target) => !excluded.has(target.deviceId));
     const payload = redactForPrivacy(notification);
 
     if (!this.configured) {
