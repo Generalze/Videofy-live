@@ -558,7 +558,20 @@ export function ChatScreen({
   return (
     <View style={styles.fill}>
       <C7Ground />
-      <KeyboardAvoidingView style={styles.fill} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
+      {/*
+        Android needs a behavior too. `undefined` here meant the keyboard sat
+        ON TOP of the composer and somebody typing could not see their own
+        words -- they had to dismiss the keyboard to read what they had
+        written. It relied on the window being resized underneath, which
+        stopped happening once the app went edge-to-edge under the new
+        architecture: the app now draws behind the IME instead of being
+        shortened by it. 'height' is the Android counterpart of iOS 'padding'
+        for a screen whose input is the last child.
+      */}
+      <KeyboardAvoidingView
+        style={styles.fill}
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+      >
         <View style={styles.header}>
           <Pressable onPress={onBack} accessibilityRole="button" accessibilityLabel="Back" hitSlop={8} style={styles.back}>
             <Icon name="chevron" size={22} color={C7.text} />
