@@ -84,7 +84,14 @@ export type CallVideoSignallingEvent =
   | { kind: 'no-local-description'; participantId: string }
   | { kind: 'negotiate-failed'; participantId: string; error: string }
   | { kind: 'answer-received'; participantId: string }
-  | { kind: 'answer-applied'; participantId: string };
+  | { kind: 'answer-applied'; participantId: string }
+  /* The RECEIVING half. Every one of these was a silent exit. */
+  | { kind: 'offer-received'; participantId: string }
+  | { kind: 'offer-unknown-sender'; participantId: string }
+  | { kind: 'offer-ignored'; participantId: string }
+  | { kind: 'answer-sent'; participantId: string }
+  | { kind: 'answer-not-sent'; participantId: string }
+  | { kind: 'offer-failed'; participantId: string; error: string };
 
 /** What happened when the local video track was handed to one peer. */
 export interface CallVideoAttachResult {
@@ -269,7 +276,17 @@ export class CallVideoMesh {
 
   async handleOffer(fromParticipantId: string, payload: CallVideoSdpPayload): Promise<void> {
     const entry = this.knownSender(fromParticipantId);
-    if (!entry) return;
+    if (!entry) {
+      /*
+       * An offer from somebody this mesh has no peer for. Silent until now,
+       * and indistinguishable from an offer that never arrived -- which is
+       * exactly the state a caller sees when their `offer-sent` is answered
+       * by nothing at all.
+       */
+      this.options.onSignalling?.({ kind: 'offer-unknown-sender', participantId: fromParticipantId });
+      return;
+    }
+    this.options.onSignalling?.({ kind: 'offer-received', participantId: fromParticipantId });
     const readyForOffer =
       !entry.makingOffer &&
       (entry.pc.signalingState === 'stable' || entry.settingRemoteAnswer);
@@ -277,6 +294,7 @@ export class CallVideoMesh {
     if (entry.ignoreOffer) {
       // Impolite side of glare: our own offer stands; the polite peer will
       // roll back and answer it.
+      this.options.onSignalling?.({ kind: 'offer-ignored', participantId: fromParticipantId });
       return;
     }
     try {
@@ -295,10 +313,25 @@ export class CallVideoMesh {
           targetParticipantId: entry.participantId,
           sdp,
         });
+        this.options.onSignalling?.({ kind: 'answer-sent', participantId: entry.participantId });
+      } else {
+        /*
+         * The answering side of the same trap the offer path had: an implicit
+         * setLocalDescription can resolve and leave localDescription null on
+         * react-native-webrtc, so the answer is simply never sent and the
+         * caller waits for ever.
+         */
+        this.signallingFaultCount += 1;
+        this.options.onSignalling?.({ kind: 'answer-not-sent', participantId: entry.participantId });
       }
       await this.flushRemoteCandidates(entry);
-    } catch {
+    } catch (error) {
       this.signallingFaultCount += 1;
+      this.options.onSignalling?.({
+        kind: 'offer-failed',
+        participantId: entry.participantId,
+        error: error instanceof Error ? error.message : 'setRemoteDescription rejected',
+      });
     }
   }
 

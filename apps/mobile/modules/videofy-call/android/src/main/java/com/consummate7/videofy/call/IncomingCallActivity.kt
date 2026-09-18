@@ -40,7 +40,7 @@ class IncomingCallActivity : Activity() {
     val root = LinearLayout(this).apply {
       orientation = LinearLayout.VERTICAL
       gravity = Gravity.CENTER_HORIZONTAL
-      setBackgroundColor(Color.parseColor("#070b12"))
+      background = c7Backdrop(::dp)
       setPadding(dp(28), dp(120), dp(28), dp(60))
     }
     root.addView(TextView(this).apply {
@@ -100,6 +100,59 @@ class IncomingCallActivity : Activity() {
     })
     root.addView(buttons)
     setContentView(root)
+  }
+
+  /**
+   * THE C7 GROUND, as the app's own call screen draws it.
+   *
+   * This was a flat navy fill. It is the first thing anyone sees of the
+   * product -- on a locked phone, before a word is exchanged -- and a flat
+   * rectangle said nothing that the rest of the app says. The canon (mobile
+   * design, 29 Aug) is one ground everywhere: deep navy-black, a soft teal
+   * illumination up and to the left, and a faint orbital texture, so that
+   * arriving here reads as the same product the caller is already inside.
+   *
+   * Built in code rather than as an XML drawable because this Activity is
+   * deliberately standalone -- it runs with no JS and no React tree, on top
+   * of the lock screen, and keeping its appearance in one file is what stops
+   * it drifting from the screen it is meant to match.
+   *
+   * SUBTLE ON PURPOSE. The glow sits at fourteen percent and the rings at
+   * ten: on an OLED panel in a dark room anything stronger stops being a
+   * ground and becomes a picture competing with the caller's name, which is
+   * the one thing on this screen that has to be read instantly.
+   */
+  private fun c7Backdrop(dp: (Int) -> Int): android.graphics.drawable.Drawable {
+    val ground = android.graphics.drawable.GradientDrawable().apply {
+      setColor(Color.parseColor("#0b0f14"))
+    }
+    // The illumination: teal, fading to nothing well before the edges.
+    val glow = android.graphics.drawable.GradientDrawable().apply {
+      shape = android.graphics.drawable.GradientDrawable.OVAL
+      gradientType = android.graphics.drawable.GradientDrawable.RADIAL_GRADIENT
+      colors = intArrayOf(Color.parseColor("#243ec9c0"), Color.parseColor("#003ec9c0"))
+      gradientRadius = dp(420).toFloat()
+    }
+    fun ring(): android.graphics.drawable.GradientDrawable =
+      android.graphics.drawable.GradientDrawable().apply {
+        shape = android.graphics.drawable.GradientDrawable.OVAL
+        setColor(Color.TRANSPARENT)
+        setStroke(dp(1), Color.parseColor("#1a3ec9c0"))
+      }
+
+    val layers = android.graphics.drawable.LayerDrawable(
+      arrayOf(ground, glow, ring(), ring(), ring()),
+    )
+    /*
+     * Negative insets push each shape off-screen so only an ARC crosses the
+     * display -- the orbital look -- rather than three complete circles
+     * sitting on it like targets.
+     */
+    layers.setLayerInset(1, dp(-260), dp(-320), dp(120), dp(260))
+    layers.setLayerInset(2, dp(-150), dp(-150), dp(-150), dp(60))
+    layers.setLayerInset(3, dp(-240), dp(-240), dp(-240), dp(-40))
+    layers.setLayerInset(4, dp(-330), dp(-330), dp(-330), dp(-150))
+    return layers
   }
 
   private fun showOverLockScreen() {
