@@ -1,3 +1,4 @@
+import { LANGUAGE_CATALOGUE } from '@videofy-live/language-catalogue';
 import {
   normalizeCallCode,
   type CallAudioMode,
@@ -33,10 +34,32 @@ export interface CallJoinFormErrors {
 export const DETECT_LANGUAGE = 'auto' as const;
 export type SpeakLanguageChoice = CallLanguage | typeof DETECT_LANGUAGE;
 
+/**
+ * FROM THE CATALOGUE, not a hand-written three.
+ *
+ * This was `en`, `fr`, `es` spelled out here while the shared catalogue
+ * carried ninety-eight and production had approved translation routes for
+ * Hausa, Igbo, Yoruba and Nigerian Pidgin -- the languages this product is
+ * FOR. Nobody could pick one in the browser, so the routes could never be
+ * reached from it. The phone had the identical defect in four separate
+ * places and it was what made Nigerian-language calling unreachable
+ * everywhere at once.
+ *
+ * Ordered by the catalogue's own rank, so the common languages stay at the
+ * top of the control and English remains first, which is what the old
+ * hand-ordering was really for.
+ *
+ * WHAT A LANGUAGE CAN ACTUALLY DO is a deployment question -- which routes
+ * are approved, which have a voice -- and it is answered by the server's
+ * capability catalogue, not by this list. Offering a language here and
+ * having the server refuse the pair is the honest failure; silently not
+ * offering it at all is the one that hid a whole feature.
+ */
 export const CALL_LANGUAGES: readonly { value: CallLanguage; label: string }[] = [
-  { value: 'en', label: 'English' },
-  { value: 'fr', label: 'French' },
-  { value: 'es', label: 'Spanish' },
+  ...LANGUAGE_CATALOGUE
+    .slice()
+    .sort((a, b) => a.rank - b.rank)
+    .map((entry) => ({ value: entry.code as CallLanguage, label: entry.englishName })),
 ];
 
 export const CALL_VOICE_OPTIONS: readonly { value: CallVoiceGender; label: string }[] = [
