@@ -653,7 +653,28 @@ export class CallConnection {
       return ack;
     }
 
-    await this.enterCall(socket, ack.participantId, ice, local, null);
+    /*
+     * THE JOIN ACK'S OWN ROSTER, APPLIED AT ONCE.
+     *
+     * This passed `null`, on the assumption -- written into enterCall's own
+     * parameter doc -- that a call:state broadcast would follow and supply the
+     * roster. For the party who joins SECOND it does not: the broadcast that
+     * announces their arrival goes to the room they are only now entering, so
+     * the joiner is the one participant who misses it. The result is a mesh
+     * with no peers, which discards every incoming video offer as coming from
+     * an unknown sender while the other side -- already in the room, and so
+     * correctly told -- keeps offering.
+     *
+     * That is exactly what two handsets showed: the caller logged offer-sent
+     * repeatedly, the gateway refused nothing and delivered to an occupied
+     * room, and the callee logged offer-unknown-sender for every one of them.
+     *
+     * The ack already carries the roster at the moment of the join, and the
+     * admission path has always applied it. Applying it here too costs one
+     * argument and removes the dependence on a broadcast that cannot arrive.
+     * A later call:state still supersedes it, as before.
+     */
+    await this.enterCall(socket, ack.participantId, ice, local, ack.snapshot ?? null);
     return ack;
   }
 
