@@ -19,11 +19,13 @@
  * a response that carried it would be a response that could be replayed
  * against the filesystem.
  *
- * PUSH IS DISCREET FOR MESSAGES AND VISIBLE FOR RINGS, deliberately. A
- * translated message preview on a lock screen is readable by whoever holds
- * the phone; a ring is the one notification whose entire purpose is to be
- * seen immediately. The dispatcher's privacy redaction enforces the first;
- * urgency 'high' carries the second.
+ * A MESSAGE PUSH CARRIES NO PREVIEW, BUT IT DOES CARRY WORDS. A translated
+ * message on a lock screen is readable by whoever holds the phone, so nothing
+ * about the message or its sender appears -- only "New message". It was
+ * `discreet` once, which removed the words ENTIRELY and left a data-only push
+ * that Android never draws: delivered, never seen. Privacy is kept by what
+ * the words say, not by having none. A ring is different again: visible and
+ * urgency 'high', because its whole purpose is to be seen at once.
  *
  * ACTING ON A MESSAGE (founder rulings 2026-08-29). Reply, forward, edit,
  * retract, hide, react, pin, mute, archive, search. Two authorisation
@@ -331,12 +333,31 @@ export function registerMessageRoutes(
         deps.onEvent?.('message.push.disabled', { kind: message.kind });
         return;
       }
+      /*
+       * VISIBLE, WITH WORDS THAT DISCLOSE NOTHING.
+       *
+       * `discreet` was the original choice and it made this notification
+       * IMPOSSIBLE TO SEE. Redaction strips the title and body, the FCM
+       * provider then omits the `notification` block entirely (it has nothing
+       * to put in it), and a data-only push draws no notification on Android.
+       * Production proved it: four message pushes delivered, delivered=1,
+       * failed=0, and not one appeared on the phone. The design assumed the
+       * app would read the payload and raise a local notification itself;
+       * that half was never built.
+       *
+       * So the words are here, and they are deliberately empty of content:
+       * no sender, no preview, nothing a person standing over the phone can
+       * read. That is the concern `discreet` existed for -- a translated
+       * message legible on a locked screen -- and it is still honoured. The
+       * data payload is unchanged, so an app that later renders its own
+       * richer notification can stop using these.
+       */
       await deps.push.notify(recipientId, {
         kind: 'message',
-        privacy: 'discreet',
+        privacy: 'visible',
         urgency: 'normal',
         title: 'New message',
-        body: `${senderName(message.senderId)} sent you a message`,
+        body: 'Open C7 to read it',
         data: { kind: 'message', fromAccountId: message.senderId, messageId: message.messageId },
         collapseId: `msg-${pair}`,
       });

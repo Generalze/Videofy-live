@@ -157,7 +157,7 @@ export interface AccountRouteDependencies {
       accountId: string,
       notification: {
         kind: 'system';
-        privacy: 'discreet';
+        privacy: 'visible';
         urgency: 'normal';
         title: string;
         body: string;
@@ -1659,19 +1659,23 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
              * are blocked by watching whether the other phone lit up, and a
              * repeat request would become a way to ring somebody at will.
              *
-             * Discreet: the notification carries no name until the phone is
-             * unlocked, because "X wants to add you" on a lock screen
-             * discloses a relationship to whoever is holding it.
+             * VISIBLE, AND NAMELESS. `discreet` would be the instinct here --
+             * "X wants to add you" on a lock screen discloses a relationship
+             * to whoever is holding the phone -- but discreet notifications
+             * are redacted to nothing and then sent data-only, which on
+             * Android draws no notification at all. That is exactly why
+             * message pushes were delivered for months and never seen. So
+             * the words stay, and the name does not: the request itself is
+             * in the app, where it is read by the person it belongs to.
              */
             if (outcome.ok && deps.push && target.notificationsEnabled !== false) {
-              const asker = deps.store.get(caller.accountId);
               void deps.push
                 .notify(target.accountId, {
                   kind: 'system',
-                  privacy: 'discreet',
+                  privacy: 'visible',
                   urgency: 'normal',
                   title: 'Contact request',
-                  body: `${asker?.displayName ?? asker?.username ?? 'Someone'} wants to add you`,
+                  body: 'Someone wants to add you on C7',
                   data: { kind: 'contact-request', fromAccountId: caller.accountId },
                   collapseId: `contact-request-${caller.accountId}`,
                 })

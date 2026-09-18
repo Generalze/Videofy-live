@@ -361,12 +361,21 @@ describe('voice notes', () => {
 
 describe('push on new messages', () => {
   /*
-   * DISCREET MEANS NO WORDS. The dispatcher strips title and body for message
-   * notifications, so a translated preview can never sit on a lock screen that
-   * belongs to whoever is holding the phone. The data payload survives so the
-   * app knows what to fetch after unlock.
+   * TWO RULES, AND THEY PULL AGAINST EACH OTHER.
+   *
+   * No preview may reach a locked screen -- a translated message is legible to
+   * whoever is holding the phone. But the notification must also be POSSIBLE
+   * TO SEE, and the previous rule here ("title and body are both undefined")
+   * quietly guaranteed the opposite: redaction emptied the words, the FCM
+   * provider then omitted the notification block because it had nothing to put
+   * in it, and Android draws nothing for a data-only push. Production
+   * delivered four of these, failed=0, and not one appeared. The assertion
+   * agreed with the defect instead of catching it.
+   *
+   * So this now measures the outcome both rules are actually about: words
+   * exist, and they say nothing about the message or who sent it.
    */
-  it('notifies the recipient without putting the message on the wire', async () => {
+  it('notifies the recipient with words that reveal neither the message nor the sender', async () => {
     app = await harness();
     await befriend(app.contacts, 'acct_a', 'acct_b');
     await app.as('acct_a', '/messages/with/acct_b', {
@@ -377,10 +386,18 @@ describe('push on new messages', () => {
 
     expect(app.provider.sent).toHaveLength(1);
     const delivered = app.provider.sent[0]?.notification;
-    expect(delivered?.title).toBeUndefined();
-    expect(delivered?.body).toBeUndefined();
+
+    // Displayable: a notification with no words cannot be rendered at all.
+    expect(delivered?.title).toBeTruthy();
+    expect(delivered?.body).toBeTruthy();
+
+    // ...and the words disclose nothing. Only the title and body reach a
+    // locked screen; the data payload is read by the app after unlock.
+    const onScreen = `${delivered?.title ?? ''} ${delivered?.body ?? ''}`;
+    expect(onScreen).not.toContain('the private words');
+    expect(onScreen).not.toContain('acct_a');
+
     expect(delivered?.data['kind']).toBe('message');
-    expect(JSON.stringify(delivered)).not.toContain('the private words');
   });
 });
 
