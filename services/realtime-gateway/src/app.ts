@@ -31,6 +31,11 @@ export interface CreateAppOptions {
   deliveryAuthorityKnown?: () => boolean | null;
   trueLiveCapable?: () => boolean | null;
   protectedLiveCapable?: () => boolean | null;
+  /**
+   * Cumulative video-mesh relay refusals. A closure for the same reason the
+   * others are: this app is built before the Gateway that owns the counter.
+   */
+  videoRelayDrops?: () => number | null;
   internalToken?: string | null;
   /**
    * P6.5: lazy provider for the Connect /v1 router. A closure, not a router,
@@ -321,6 +326,25 @@ export function createApp(options: CreateAppOptions = {}): express.Application {
        * mid-broadcast.
        */
       protectedLiveCapable: options.protectedLiveCapable?.() ?? null,
+      /**
+       * Video-mesh signalling this gateway REFUSED to relay, cumulative.
+       *
+       * Exposed because its absence cost a night. Call video is peer to peer
+       * and its signalling is relayed fire-and-forget -- no ack, no log line,
+       * by design, because the payloads are somebody's SDP. The consequence
+       * is that a dropped offer and an offer that was never sent look
+       * identical from every surface an operator can reach, and "video does
+       * not work" cannot be told apart from "the gateway is discarding it".
+       * The counter already existed for tests; it just could not be read from
+       * outside the process.
+       *
+       * A number, never the payloads. Non-zero means senders are being
+       * refused -- an unbound socket, or a target the store does not list in
+       * that call -- and is the first thing to check before reading any
+       * client code. Zero means the gateway relayed everything it was handed,
+       * so a video fault is upstream of here.
+       */
+      videoRelayDrops: options.videoRelayDrops?.() ?? null,
       timestamp: new Date().toISOString(),
     });
   });

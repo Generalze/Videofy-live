@@ -221,3 +221,33 @@ describe('the restart storm cannot be silent again', () => {
     expect(widened).toBeGreaterThan(interval);
   });
 });
+
+/**
+ * Video-mesh relay refusals, readable from outside the process.
+ *
+ * Call video signalling is relayed fire-and-forget: no ack, no log line,
+ * deliberately, because the payloads are somebody's SDP. That left a dropped
+ * offer and an offer that was never sent looking identical from every surface
+ * an operator can reach -- so "video does not work" could not be told apart
+ * from "the gateway is discarding it". The counter existed for tests and
+ * could not be read from anywhere else.
+ */
+describe('what the gateway says about video relay', () => {
+  it('reports the drop count as a number an operator can read', async () => {
+    const body = await health(createApp({ videoRelayDrops: () => 7 }));
+    expect(body['videoRelayDrops']).toBe(7);
+  });
+
+  /*
+   * Zero is a real answer and must not read as "unknown": it says the gateway
+   * relayed everything it was handed, which sends the investigation upstream
+   * instead of leaving it here.
+   */
+  it('distinguishes zero drops from nobody having asked', async () => {
+    const none = await health(createApp({ videoRelayDrops: () => 0 }));
+    expect(none['videoRelayDrops']).toBe(0);
+
+    const unasked = await health(createApp({}));
+    expect(unasked['videoRelayDrops']).toBeNull();
+  });
+});

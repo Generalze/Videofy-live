@@ -92,6 +92,7 @@ const app = createApp({
   deliveryAuthorityKnown: () => gateway.deliveryAuthorityKnown,
   trueLiveCapable: () => gateway.trueLiveCapable,
   protectedLiveCapable: () => gateway.protectedLiveCapable,
+  videoRelayDrops: () => gateway.getWebRtcDiagnostics().callRuntime.videoRelayDropCount,
   ...(adapterSurface === null
     ? {}
     : {
