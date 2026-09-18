@@ -33,7 +33,13 @@
     "plugins": [
       "expo-dev-client",
       "expo-audio",
-      "expo-notifications",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#3ec9c0"
+        }
+      ],
       "@config-plugins/react-native-webrtc",
       [
         "expo-splash-screen",
