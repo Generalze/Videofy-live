@@ -294,7 +294,9 @@ describe('the state a console and /health read', () => {
     const state = absentSpecialistState();
     expect(state.specialistConfigured).toBe(false);
     expect(state.degraded).toBe(true);
-    expect(state.degradedReason).toMatch(/no naijalingo credential/u);
+    // The approved voice's own id: ElevenLabs since the 2026-09-18 ruling.
+    // Matched against the constant so this cannot drift again if it changes.
+    expect(state.degradedReason).toMatch(new RegExp(`no ${NIGERIAN_SPECIALIST_PROVIDER_ID} credential`, 'u'));
     expect(state.degradedReason).toMatch(/mispronounces/u);
   });
 

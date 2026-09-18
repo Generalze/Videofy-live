@@ -1,3 +1,17 @@
+> **SUPERSEDED IN PART, 2026-09-18.** The founder's ruling is that **9jaLingo
+> does not work and ElevenLabs does**, having heard Hausa, Igbo and Yoruba and
+> judged them better than the specialist. So the approved voice for
+> `ha/ig/yo/pcm` is now **ElevenLabs alone** — 9jaLingo is not routed, and
+> Azure is no longer a fallback for these four. Everything below about WHY the
+> rule exists still stands and is why the change was made this way rather than
+> by deleting the rule: these languages are decided by a listener, never by a
+> vendor returning HTTP 200. Only the answer to "which vendor" has changed.
+>
+> Silence is now the outcome when the approved voice cannot answer. That is
+> deliberate: audio that plays and is wrongly pronounced cannot be detected by
+> anyone who does not speak the language, and every server signal calls it
+> success.
+
 # Nigerian language routing: 9jaLingo, then Azure, then nothing
 
 Owner: masterzee001. Ruling date: 30 Aug 2026. Applies to `ha`, `ig`, `yo`, `pcm`.

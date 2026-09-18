@@ -146,7 +146,7 @@ export function applySourceLanguageAction(
  *
  * It exists because the resolver is pure and must stay pure, while the answer
  * the console needs is deployment-specific in exactly one place that matters:
- * without NAIJALINGO_API_KEY, Hausa, Igbo, Yoruba and Nigerian Pidgin are
+ * without ELEVENLABS_API_KEY, Hausa, Igbo, Yoruba and Nigerian Pidgin are
  * served by a general voice vendor that returns confident, wrong audio. The
  * resolver can only mark that as degraded if somebody tells it which providers
  * are really there, and the environment is the only thing that knows.
@@ -162,6 +162,12 @@ export function configuredCapabilityProviderIds(
   if (set('DEEPGRAM_API_KEY')) configured.push('deepgram');
   if (set('ELEVENLABS_API_KEY')) configured.push('elevenlabs');
   if (set('AZURE_SPEECH_KEY') && set('AZURE_SPEECH_REGION')) configured.push('azure');
+  /*
+   * 9jaLingo is NO LONGER ROUTED (founder ruling 2026-09-18: it does not
+   * work). The key is still read, and reporting it still matters: a
+   * deployment that has one configured should be able to see that it buys
+   * nothing, rather than assume it is what is speaking Yoruba.
+   */
   if (set('NAIJALINGO_API_KEY')) configured.push('naijalingo');
   if (set('GOOGLE_TRANSLATE_PROJECT_ID')) configured.push('google-cloud');
   return configured;
@@ -297,7 +303,7 @@ function programmeRouteFor(input: {
       return {
         available: false,
         reason:
-          'served by a general voice vendor rather than the 9jaLingo specialist: ' +
+          'served by a general voice vendor rather than the approved voice: ' +
           'the audio plays and the pronunciation is wrong',
       };
     }

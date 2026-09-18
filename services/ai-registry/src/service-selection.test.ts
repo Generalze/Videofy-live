@@ -638,7 +638,17 @@ describe('a recorded stage travels with the evidence for it', () => {
   it('PIN: ElevenLabs is certified on a distribution, and the smoke is kept', () => {
     const eleven = findCommercialProvider('elevenlabs')!;
     expect(eleven.integrationStage).toBe('certified');
-    expect(eleven.liveObservations).toHaveLength(2);
+    /*
+     * THREE since 2026-09-18. Observations accumulate and are never replaced:
+     * the smoke says it works at all, the benchmark says how fast, and the
+     * listening says it is fit for the Nigerian languages. Each answers a
+     * different question and dropping any one erases when that was learned.
+     */
+    expect(eleven.liveObservations).toHaveLength(3);
+
+    const listening = eleven.liveObservations.find((o) => o.observedAt === '2026-09-18')!;
+    expect(listening.languages).toEqual(['ha', 'ig', 'yo']);
+    expect(listening.summary).toMatch(/LISTENING JUDGEMENT/);
 
     // The 2026-08-22 existence proof is NOT deleted by the benchmark that
     // superseded it. The two answer different questions -- "does it work at

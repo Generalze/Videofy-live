@@ -70,17 +70,36 @@ describe('Azure being able to say it is not readiness', () => {
     for (const language of NIGERIAN) {
       const capability = built.get(language);
       expect(capability?.programmeRoute?.available, language).toBe(false);
-      expect(capability?.programmeRoute?.reason, language).toMatch(/9jaLingo specialist/u);
+      // Refused because nothing approved can speak it, and the reason says
+      // which condition failed rather than naming a vendor that has changed.
+      expect(capability?.programmeRoute?.reason, language).toMatch(
+        /approved voice|no speaker of this language has judged/u,
+      );
     }
   });
 
-  it('still reports the technical capability honestly', () => {
-    // Not hidden, and not renamed. The chain really can produce audio; what
-    // it may not do is carry a programme. Collapsing the two would leave an
-    // operator unable to see why a language they can hear is refused.
+  it('reports honestly that a general vendor gives these languages no voice', () => {
+    /*
+     * THIS ASSERTION INVERTED ON 2026-09-18, and the inversion is the ruling.
+     *
+     * It used to read `voiceAvailable: true, degraded: true` -- the chain
+     * really could produce audio, it just could not carry a programme, and
+     * collapsing those two would have hidden why a language an operator can
+     * HEAR is refused. That was true while Azure was the one named fallback.
+     *
+     * Azure is no longer in the chain, so with only general vendors there is
+     * no voice for these languages at all. The distinction the old test
+     * protected still exists; what changed is the fact underneath it.
+     */
     const built = catalogue(['azure', 'deepgram', 'opus-mt']);
-    expect(built.get('yo')?.voiceAvailable).toBe(true);
-    expect(built.get('yo')?.degraded).toBe(true);
+    /*
+     * `voiceAvailable` is NOT asserted here, and the reason is worth keeping:
+     * it reports the deployment's declared voice languages, not what the
+     * provider chain can actually reach. Asserting it would look like a claim
+     * about Azure and would in fact be a claim about an env CSV.
+     */
+    expect(built.get('yo')?.programmeRoute?.available).toBe(false);
+    expect(built.get('yo')?.providers?.tts).not.toBe('azure');
   });
 
   it('CLOSES IT EVEN WITH THE SPECIALIST CONFIGURED, UNTIL SOMEBODY HAS JUDGED IT', () => {

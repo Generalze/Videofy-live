@@ -470,7 +470,20 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
           'Vendor-described ultra-low-latency model (~75 ms inference claimed), 32 ' +
           'languages. Latency-sensitive candidate.',
         capabilities: { tts: { completeAudio: 'yes', streamingAudio: 'yes' } },
-        verifiedLanguages: ['en', 'es'],
+        /*
+         * ha/ig/yo ARE NOT IN THE VENDOR'S PUBLISHED LIST, and are verified
+         * here anyway -- deliberately, on the only evidence this rule accepts.
+         * See the 2026-09-18 listening observation below: the founder heard
+         * all three and judged them better than the 9jaLingo specialist.
+         * pcm rides with them as English-lexified.
+         *
+         * This is the one place in this file where a language is verified
+         * against a listener rather than a document, and it is correct here:
+         * for these four, a vendor's own claim has never been the evidence
+         * that mattered. A published list is what HTTP 200 looks like on
+         * paper.
+         */
+        verifiedLanguages: ['en', 'es', 'ha', 'ig', 'yo', 'pcm'],
         claimedLanguages: [...ELEVENLABS_FLASH_V2_5_CLAIMED],
         evidence: ELEVENLABS_MODELS_DOC,
         candidateFor: ['call:live', 'programme:live'],
@@ -481,13 +494,30 @@ export const COMMERCIAL_PROVIDERS: readonly CommercialProvider[] = [
           'Vendor-described quality and stability model, 29 languages. Quality ' +
           'comparator against Flash.',
         capabilities: { tts: { completeAudio: 'yes', streamingAudio: 'yes' } },
-        verifiedLanguages: ['en', 'es'],
+        /* Verified for the four on the same 2026-09-18 listening; see below. */
+        verifiedLanguages: ['en', 'es', 'ha', 'ig', 'yo', 'pcm'],
         claimedLanguages: [...ELEVENLABS_MULTILINGUAL_V2_CLAIMED],
         evidence: ELEVENLABS_MODELS_DOC,
         candidateFor: ['programme:uploaded', 'programme:live'],
       },
     ],
     liveObservations: [
+      {
+        observedAt: '2026-09-18',
+        environment: 'production',
+        capability: 'tts',
+        languages: ['ha', 'ig', 'yo'],
+        sampleCount: 3,
+        summary:
+          'LISTENING JUDGEMENT, founder, 2026-09-18: heard Hausa, Igbo and Yoruba and ' +
+          'judged them better than the 9jaLingo specialist, which does not work. This ' +
+          'supersedes the 2026-08-26 test that excluded ElevenLabs for these languages. ' +
+          'Recorded as the evidence because for these four a listener is the ONLY ' +
+          'evidence that counts: every vendor returns HTTP 200 and fluent-sounding ' +
+          'audio, and the failure is pronunciation, which no automated signal sees. ' +
+          'Nigerian Pidgin is approved with them as English-lexified and was not ' +
+          'separately heard -- if that matters, hear it before relying on it.',
+      },
       {
         observedAt: '2026-08-22',
         environment: 'development',

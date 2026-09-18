@@ -25,20 +25,25 @@
  *     transcription  Deepgram      primary
  *     translation    Google        primary
  *     tts            ElevenLabs    primary,  Azure fallback
- *     Nigerian tts   9jaLingo      specialist,  Azure fallback  (ONLY those two)
+ *     Nigerian tts   ElevenLabs    approved (2026-09-18); nothing else
  *     local models   degraded      only where the profile permits it
  *
  * A specialist is not a better provider; it is a provider for a case the
  * primary does not serve.
  *
  * THE NIGERIAN CHAIN REPLACES THE GENERAL ONE; it does not sit on top of it.
- * That is a founder ruling of 2026-08-30 and it is narrower than what this
- * module used to do, which was to put 9jaLingo in front of the ordinary
- * ElevenLabs-then-Azure list. The reason is the 2026-08-26 listening test:
- * BOTH general vendors return HTTP 200 with fluent-sounding, wrong Yoruba,
- * Hausa and Igbo, so "one more vendor behind the specialist" is not extra
- * safety, it is a third chance to serve confident nonsense. One named fallback
- * is enough to avoid silence, and every use of it is labelled degraded.
+ * A founder ruling of 2026-08-30, and still right for the reason it was made:
+ * a vendor returning HTTP 200 with fluent-sounding, wrong Yoruba is not extra
+ * safety behind an approved voice, it is another chance to serve confident
+ * nonsense to somebody who cannot tell.
+ *
+ * WHO IS APPROVED CHANGED ON 2026-09-18. The chain was 9jaLingo then Azure,
+ * with ElevenLabs deliberately excluded on the 2026-08-26 listening test. The
+ * founder's finding since is that 9jaLingo does not work and ElevenLabs does,
+ * so ElevenLabs is the approved voice and the chain is one entry long. Azure
+ * is still DEFINED and still recognised as degraded -- it is simply no longer
+ * reached, because a fallback nobody approved is the thing this rule exists to
+ * refuse.
  *
  * THIS FILE IS THE SINGLE SOURCE OF THAT RULE. `media-ingest`'s
  * `live-provider-wiring` imports the constants below rather than restating
@@ -81,29 +86,52 @@ export interface RouteResult {
  */
 export const NIGERIAN_SPECIALIST_LANGUAGES: readonly string[] = ['ha', 'ig', 'yo', 'pcm'];
 
-/** The specialist itself. Matches the registry's `providerId`. */
-export const NIGERIAN_SPECIALIST_PROVIDER_ID = 'naijalingo';
+/**
+ * The APPROVED voice for those four languages.
+ *
+ * ELEVENLABS, BY FOUNDER RULING OF 2026-09-18, which reverses the 2026-08-30
+ * arrangement where 9jaLingo was the specialist and ElevenLabs was
+ * deliberately excluded on the 2026-08-26 listening test. The founder's
+ * finding is plain: 9jaLingo does not work and ElevenLabs does. That is a
+ * statement about the product, and it outranks the earlier test.
+ *
+ * THE CONCEPT AROUND IT IS UNCHANGED AND STILL LOAD-BEARING. These four
+ * languages are decided by QUALIFICATION -- by somebody judging the output
+ * fit -- and never by whether a vendor returned HTTP 200, because both
+ * general vendors return 200 with fluent, wrongly-pronounced Yoruba that only
+ * a speaker can detect. What changed is WHICH vendor is qualified, not the
+ * rule that one has to be.
+ */
+export const NIGERIAN_SPECIALIST_PROVIDER_ID = 'elevenlabs';
 
 /**
- * The ONE named fallback for those four languages.
+ * The vendor that must always be RECOGNISED for these languages, and never
+ * routed to.
  *
- * AZURE, EXPLICITLY, by founder ruling of 2026-08-30 -- not ElevenLabs, and not
- * "whatever the general chain resolves to". Naming it here rather than
- * inheriting the general order is the difference between a decision and an
- * accident: a later change to the general chain must not silently change who
- * speaks Yoruba.
+ * Azure returns HTTP 200 and plausible audio for Hausa, Igbo and Yoruba, and
+ * pronounces them wrongly. It was the one named fallback under the 2026-08-30
+ * ruling; since 2026-09-18 the chain is ElevenLabs alone and this is reached
+ * by nothing.
  *
- * It is a DEGRADED rendering and every path that uses it says so. Azure returns
- * HTTP 200 and plausible audio for these languages and pronounces them wrongly;
- * the only reason it is here at all is that a listener hearing imperfect Yoruba
- * is better served than a listener hearing silence.
+ * IT IS KEPT, and keeping it is the point: `isDegradedNigerianSynthesis` has
+ * to be able to say that audio from this vendor is degraded if it ever appears
+ * by some other path. Deleting the constant would remove the ability to
+ * recognise the failure, not the possibility of it.
  */
 export const NIGERIAN_FALLBACK_PROVIDER_ID = 'azure';
 
-/** Best first. The whole chain for ha/ig/yo/pcm, and nothing after it. */
+/**
+ * Best first. The whole chain for ha/ig/yo/pcm, and nothing after it.
+ *
+ * ONE ENTRY SINCE 2026-09-18. Azure stays defined below and stays recognised
+ * as degraded, but it is no longer reached: the founder's ruling is that
+ * ElevenLabs is the only voice that passes for these languages. Silence is the
+ * honest outcome when it cannot answer, because the alternative is audio that
+ * plays perfectly, pronounces the language wrongly, and reports success to
+ * every signal a server has.
+ */
 export const NIGERIAN_TTS_ROUTE_ORDER: readonly string[] = [
   NIGERIAN_SPECIALIST_PROVIDER_ID,
-  NIGERIAN_FALLBACK_PROVIDER_ID,
 ];
 
 /**
@@ -173,18 +201,24 @@ export function resolveCommercialRoute(input: CommercialRouteInput): RouteResult
   /*
    * REPLACED, NOT PREPENDED, for the four Nigerian languages.
    *
-   * The old behaviour put 9jaLingo in front of the general list and left
-   * ElevenLabs in it. That reads as caution and is the opposite: ElevenLabs
-   * answers those languages with confident, wrong audio, so leaving it in the
-   * chain buys a second wrong rendering rather than a second chance. The
-   * founder ruling of 2026-08-30 is 9jaLingo, then Azure, then nothing.
+   * Leaving the general chain in place behind a specialist reads as caution
+   * and is the opposite: a general vendor answers those languages with
+   * confident, wrong audio, so a second entry buys a second wrong rendering
+   * rather than a second chance.
+   *
+   * BUILT FROM `NIGERIAN_TTS_ROUTE_ORDER`, not restated. This was a hardwired
+   * two-entry array beside the exported constant, so the constant described
+   * the rule and the code applied its own copy -- two sources for one
+   * decision, exactly the drift the constant exists to prevent. The first
+   * entry leads as `specialist`, meaning "judged fit for this language",
+   * which is the whole ruling in one word; anything after it is a fallback.
    */
   const plan: RoutePlanEntry[] =
     input.capability === 'tts' && isNigerianSpecialistLanguage(input.language)
-      ? [
-          { providerId: NIGERIAN_SPECIALIST_PROVIDER_ID, role: 'specialist' },
-          { providerId: NIGERIAN_FALLBACK_PROVIDER_ID, role: 'fallback' },
-        ]
+      ? NIGERIAN_TTS_ROUTE_ORDER.map((providerId, index) => ({
+          providerId,
+          role: index === 0 ? ('specialist' as const) : ('fallback' as const),
+        }))
       : [...ROUTE_PLAN[input.capability]];
 
   for (const entry of plan) {
