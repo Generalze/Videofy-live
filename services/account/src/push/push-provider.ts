@@ -72,6 +72,23 @@ export interface PushNotification {
    * weeks; a call sets ~30s. Messages leave it unset.
    */
   readonly ttlSeconds?: number | undefined;
+  /**
+   * Which Android channel draws this.
+   *
+   * ANDROID DECIDES SOUND, VIBRATION AND HEADS-UP PER CHANNEL, not per
+   * notification -- importance is a property of the channel and a person can
+   * change it per channel in system settings. A notification with no channel
+   * lands on the app's default one, which is a silent banner in practice, so
+   * "it arrived but made no noise" is a routing fact rather than a volume
+   * setting.
+   *
+   * The channel must already exist in the app; Android silently falls back to
+   * the default when it does not, so naming one an older build has never
+   * created degrades quietly instead of failing.
+   *
+   * iOS has no equivalent and ignores this.
+   */
+  readonly channelId?: string | undefined;
 }
 
 export interface PushTarget {

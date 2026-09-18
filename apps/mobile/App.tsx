@@ -152,6 +152,31 @@ void Notifications.setNotificationChannelAsync('calls', {
   bypassDnd: false,
 }).catch(() => undefined);
 
+/*
+ * THE MESSAGES CHANNEL. Separate from calls, and that separation is the point:
+ * importance is a property of the CHANNEL and a person can change it per
+ * channel, so somebody who wants messages silent overnight can do that in
+ * Android settings without also silencing the phone ringing.
+ *
+ * HIGH rather than MAX -- a message is worth a sound and a heads-up banner,
+ * but MAX is for something being waited on right now, and an app that marks
+ * everything MAX loses the privilege for the one thing that needed it.
+ *
+ * A channel is created ONCE per install: Android ignores later changes to an
+ * existing channel, on purpose, so that an app cannot quietly undo a person's
+ * own choice about it.
+ */
+void Notifications.setNotificationChannelAsync('messages', {
+  name: 'Messages',
+  importance: Notifications.AndroidImportance.HIGH,
+  // No `sound`: that field names a file bundled in the APK, and naming one
+  // that is not there logs an error at every launch. Unset means the
+  // system's own notification sound, which is what a person expects.
+  enableVibrate: true,
+  // The words carry no message and no sender, so there is nothing to hide.
+  lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+}).catch(() => undefined);
+
 const devices = new DeviceRegistrationService({
   authorizedFetch,
   identity: createDeviceIdentity(),

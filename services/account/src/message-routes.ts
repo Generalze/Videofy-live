@@ -360,6 +360,9 @@ export function registerMessageRoutes(
         body: 'Open C7 to read it',
         data: { kind: 'message', fromAccountId: message.senderId, messageId: message.messageId },
         collapseId: `msg-${pair}`,
+        // Its own channel, so a message alerts and a person can silence
+        // messages in Android settings without silencing calls.
+        channelId: 'messages',
       });
     })().catch(() => undefined);
   };

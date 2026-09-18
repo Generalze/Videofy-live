@@ -187,6 +187,16 @@ export class FcmPushProvider implements PushProvider {
         ...(notification.title === undefined ? {} : { title: notification.title }),
         ...(notification.body === undefined ? {} : { body: notification.body }),
       };
+      /*
+       * The channel rides WITH the notification block and only with it. It
+       * tells Android which channel draws this one -- which is what decides
+       * whether it makes a sound -- and it is meaningless on a data-only
+       * push, where the OS draws nothing at all.
+       */
+      if (notification.channelId !== undefined) {
+        const android = message['android'] as Record<string, unknown>;
+        android['notification'] = { channel_id: notification.channelId };
+      }
     }
 
     const url = `https://fcm.googleapis.com/v1/projects/${this.config.projectId}/messages:send`;

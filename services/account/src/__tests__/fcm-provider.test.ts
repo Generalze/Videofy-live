@@ -272,3 +272,58 @@ describe('saying why, not just that', () => {
     if (!result.ok) expect(result.reason).toBe('fcm 503 UNAVAILABLE');
   });
 });
+
+/**
+ * Which Android channel draws a notification, which is what decides whether
+ * it makes a sound. A notification that arrives silently and one that never
+ * arrived look identical to the person holding the phone.
+ */
+describe('the android channel', () => {
+  it('rides with the notification block so the OS knows what to sound', async () => {
+    const { provider, calls } = providerWith(() => new Response('{}', { status: 200 }));
+    await provider.send(TARGET, {
+      kind: 'message',
+      privacy: 'visible',
+      urgency: 'normal',
+      title: 'New message',
+      body: 'Open C7 to read it',
+      data: { kind: 'message' },
+      channelId: 'messages',
+    });
+
+    const message = (calls[0]?.body as { message: Record<string, unknown> }).message;
+    const android = message['android'] as Record<string, unknown>;
+    expect((android['notification'] as Record<string, unknown>)['channel_id']).toBe('messages');
+    expect(message['notification']).toMatchObject({ title: 'New message' });
+  });
+
+  /*
+   * A call draws no notification at all -- the native receiver presents it --
+   * so a channel would name something the OS is never asked to render.
+   */
+  it('is absent from a data-only call push', async () => {
+    const { provider, calls } = providerWith(() => new Response('{}', { status: 200 }));
+    await provider.send(TARGET, { ...RING, channelId: 'calls' });
+
+    const message = (calls[0]?.body as { message: Record<string, unknown> }).message;
+    const android = message['android'] as Record<string, unknown>;
+    expect(android['notification']).toBeUndefined();
+    expect(message['notification']).toBeUndefined();
+  });
+
+  it('is omitted when no channel is named, leaving Android its default', async () => {
+    const { provider, calls } = providerWith(() => new Response('{}', { status: 200 }));
+    await provider.send(TARGET, {
+      kind: 'system',
+      privacy: 'visible',
+      urgency: 'normal',
+      title: 'New sign-in',
+      body: 'Your account was signed in on a new device',
+      data: { kind: 'device-login' },
+    });
+
+    const message = (calls[0]?.body as { message: Record<string, unknown> }).message;
+    const android = message['android'] as Record<string, unknown>;
+    expect(android['notification']).toBeUndefined();
+  });
+});
