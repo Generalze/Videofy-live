@@ -38,6 +38,8 @@ export interface CreateAppOptions {
   videoRelayDrops?: () => number | null;
   /** Video relays delivered to a room with no sockets in it. Same lazy reason. */
   videoRelayNoListener?: () => number | null;
+  /** Video relays counted by kind (offer/answer/ice). Same lazy reason. */
+  videoRelayByKind?: () => Record<string, number> | null;
   internalToken?: string | null;
   /**
    * P6.5: lazy provider for the Connect /v1 router. A closure, not a router,
@@ -362,6 +364,14 @@ export function createApp(options: CreateAppOptions = {}): express.Application {
        * offer sent, accepted, relayed, and heard by no one.
        */
       videoRelayNoListener: options.videoRelayNoListener?.() ?? null,
+      /**
+       * Video signalling relayed, BY KIND. The question the two counters above
+       * cannot answer: they say nothing was refused and nothing went to an
+       * empty room, which leaves "the callee got it and never replied" looking
+       * exactly like "all is well". Offers relayed with no answers relayed back
+       * names that directly, and names which END of the call to look at.
+       */
+      videoRelayByKind: options.videoRelayByKind?.() ?? null,
       timestamp: new Date().toISOString(),
     });
   });

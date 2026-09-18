@@ -366,6 +366,16 @@ export class Gateway {
    */
   private videoRelayNoListenerCount = 0;
 
+  /**
+   * Video signalling relayed, BY KIND (offer / answer / ice).
+   *
+   * Offers relayed with zero answers relayed back is the signature of a
+   * callee that received the offer and never replied -- a state in which the
+   * caller's own log reads `offer-sent`, the refusal counter reads 0 and the
+   * empty-room counter reads 0, all truthfully, while no video ever flows.
+   */
+  private readonly videoRelayByKind: Record<string, number> = {};
+
   // ---- P6.5 Connect control plane (FE3) --------------------------------
   /** Null when connect-projects.json is absent or Connect is unconfigured: /v1 fails closed. */
   private readonly connectRegistry: ConnectProjectRegistry | null;
@@ -681,6 +691,16 @@ export class Gateway {
         if (event.startsWith('call:video:')) {
           const listeners = this.io.sockets.adapter.rooms.get(room)?.size ?? 0;
           if (listeners === 0) this.videoRelayNoListenerCount += 1;
+          /*
+           * COUNTED BY KIND, because offers and answers failing are different
+           * faults with different owners. An offer relayed to a live room and
+           * no answer ever relayed back means the CALLEE received it and did
+           * not reply -- which is invisible from the caller, whose own log
+           * shows a perfectly good `offer-sent`, and invisible from the drop
+           * and empty-room counters, which are both honestly zero.
+           */
+          const kind = event.slice('call:video:'.length);
+          this.videoRelayByKind[kind] = (this.videoRelayByKind[kind] ?? 0) + 1;
         }
         this.io.to(room).emit(event, payload);
       },
@@ -2614,6 +2634,7 @@ export class Gateway {
     callRuntime: ReturnType<CallRuntime['getDiagnostics']>;
     transcriptionBridgeSessions: unknown[];
     videoRelayNoListenerCount: number;
+    videoRelayByKind: Record<string, number>;
   } {
     const signalling = this.webrtcSessions.getDiagnostics();
     const transcriptionBridge = this.webRtcTranscriptionBridge.getDiagnostics();
@@ -2627,6 +2648,7 @@ export class Gateway {
       callRuntime: this.callRuntime.getDiagnostics(),
       transcriptionBridgeSessions: this.webRtcTranscriptionBridge.getSessionDiagnostics(),
       videoRelayNoListenerCount: this.videoRelayNoListenerCount,
+      videoRelayByKind: { ...this.videoRelayByKind },
     };
   }
 
