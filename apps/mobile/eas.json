@@ -37,6 +37,19 @@
         "EXPO_PUBLIC_WEB_URL": "https://consummate7.com"
       }
     },
+    "production-apk-diag": {
+      "environment": "production",
+      "distribution": "internal",
+      "android": { "buildType": "apk" },
+      "env": {
+        "EXPO_PUBLIC_GATEWAY_URL": "https://consummate7.com",
+        "EXPO_PUBLIC_ACCOUNT_URL": "https://consummate7.com/auth",
+        "EXPO_PUBLIC_INGEST_URL": "https://consummate7.com/media",
+        "EXPO_PUBLIC_LISTEN_URL": "https://consummate7.com/listen",
+        "EXPO_PUBLIC_WEB_URL": "https://consummate7.com",
+        "EXPO_PUBLIC_CALL_DIAGNOSTICS": "1"
+      }
+    },
     "production": {
       "android": { "buildType": "app-bundle" },
       "env": {
