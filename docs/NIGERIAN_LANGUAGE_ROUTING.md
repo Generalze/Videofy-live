@@ -1,38 +1,92 @@
-> **SUPERSEDED IN PART, 2026-09-18.** The founder's ruling is that **9jaLingo
-> does not work and ElevenLabs does**, having heard Hausa, Igbo and Yoruba and
-> judged them better than the specialist. So the approved voice for
-> `ha/ig/yo/pcm` is now **ElevenLabs alone** — 9jaLingo is not routed, and
-> Azure is no longer a fallback for these four. Everything below about WHY the
-> rule exists still stands and is why the change was made this way rather than
-> by deleting the rule: these languages are decided by a listener, never by a
-> vendor returning HTTP 200. Only the answer to "which vendor" has changed.
->
-> Silence is now the outcome when the approved voice cannot answer. That is
-> deliberate: audio that plays and is wrongly pronounced cannot be detected by
-> anyone who does not speak the language, and every server signal calls it
-> success.
+# Nigerian language routing: the approved voice, then nothing
 
-# Nigerian language routing: 9jaLingo, then Azure, then nothing
-
-Owner: masterzee001. Ruling date: 30 Aug 2026. Applies to `ha`, `ig`, `yo`, `pcm`.
+Owner: masterzee001. Current ruling: **18 Sep 2026**. Applies to `ha`, `ig`,
+`yo`, `pcm`.
 
 ## The rule
 
 For those four target languages the text-to-speech chain is:
 
-1. **9jaLingo** (`naijalingo`) -- the specialist.
-2. **Azure** (`azure`) -- the one named fallback, and a **degraded** rendering.
-3. Nothing.
+1. **ElevenLabs** (`elevenlabs`) -- the approved voice.
+2. Nothing.
 
-ElevenLabs is **deliberately absent**. Every other language keeps its existing
-chain (ElevenLabs, then Azure) untouched.
+**Azure is not a fallback for these four.** It returns HTTP 200 and plausible
+audio and pronounces them wrongly, so its presence bought a second wrong
+rendering rather than a second chance. **9jaLingo is not routed at all**: the
+founder's finding, stated more than once, is that it does not work and
+ElevenLabs does, having heard all three languages spoken by both.
 
-The rule lives in exactly one place: `services/ai-registry/src/commercial-routing.ts`,
-as `NIGERIAN_SPECIALIST_LANGUAGES`, `NIGERIAN_SPECIALIST_PROVIDER_ID`,
-`NIGERIAN_FALLBACK_PROVIDER_ID` and `NIGERIAN_TTS_ROUTE_ORDER`. `media-ingest`
-imports those constants; it does not restate them. It used to, with a comment
-telling the next reader to remember to edit both files -- a rule a human has to
-apply twice is a rule that drifts.
+Silence is therefore the outcome when the approved voice cannot answer. That is
+deliberate. Audio that plays and is wrongly pronounced cannot be detected by
+anyone who does not speak the language, and every server signal calls it
+success; a failure somebody can read beats a success nobody can check.
+
+Every other language keeps its existing chain (ElevenLabs, then Azure)
+untouched. This is a per-language route, not a whole-deployment choice.
+
+## Where the rule lives, and the seam that made this section necessary
+
+The rule lives in exactly one place:
+`services/ai-registry/src/commercial-routing.ts`, as
+`NIGERIAN_SPECIALIST_LANGUAGES`, `NIGERIAN_SPECIALIST_PROVIDER_ID`,
+`NIGERIAN_FALLBACK_PROVIDER_ID` and `NIGERIAN_TTS_ROUTE_ORDER`.
+
+**It did not, for three weeks, and that is worth recording.** On 18 Sep 2026 the
+ruling was implemented in `ai-registry`, thirteen pinned tests were rewritten to
+assert it, the change was reviewed and DEPLOYED -- and production went on
+speaking Yoruba with Azure. `media-ingest`'s `withNigerianSpecialist` imported
+the LANGUAGES from `ai-registry` and restated the VENDOR inline, under a comment
+claiming "nothing here restates them". Changing the constant moved nothing. The
+live boot log said:
+
+```
+"speaks":"routed(ha,ig,pcm,yo -> azure-speech:tts-northeurope; * -> elevenlabs-streaming:eleven_flash_v2_5)"
+```
+
+Selecting a vendor is now a **lookup** in `NIGERIAN_VOICE_VENDORS`, keyed by
+`NIGERIAN_SPECIALIST_PROVIDER_ID`, and an id with no builder throws at startup.
+The wiring suite derives its expectations from the constants rather than naming
+a vendor, so a future ruling that changes one and not the other fails a test
+instead of shipping.
+
+## Activation
+
+```
+ELEVENLABS_API_KEY=<the key>
+ELEVENLABS_DEFAULT_VOICE_ID=<a voice id in that account>
+ELEVENLABS_VOICE_IDS=yo:female=<id>,yo:male=<id>,...   # optional, per platform voice
+```
+
+Both of the first two are required, and their absence is reported at WARN
+naming them: without them these four languages FAIL rather than falling to
+Azure. A boot preflight calls `GET /v1/voices` once and reports whether the
+configured voice ids are actually in the account -- the quiet failure being a
+valid key whose account lacks the voice, which answers 200 to every check
+except the first sentence of a broadcast.
+
+**One product consequence, not yet decided.** 9jaLingo had a distinct chosen
+speaker per language; ElevenLabs voices are multilingual, so unless a
+deployment maps a separate voice per language in `ELEVENLABS_VOICE_IDS`, yo, ig
+and ha share one voice. Whether that is wanted is a decision for whoever chose
+the voices by ear.
+
+## 9jaLingo is kept, and unrouted
+
+The adapter, its warm keeper and its preflight remain in the tree and are
+covered by tests. This is deliberate rather than an oversight: it is the only
+working implementation this repository has of a vendor whose capacity **scales
+to zero**, a shape that cost a measured staging programme on 31 Aug 2026 when
+every routing decision was correct and the founder still heard the wrong voice
+for five minutes. `warm-keeper-join.test.ts` mocks the ruling to keep that join
+proved for whoever next selects such a vendor.
+
+Everything below this line is the 30 Aug 2026 ruling and the evidence behind
+it. **The reasoning still stands and is why the change was made this way rather
+than by deleting the rule: these languages are decided by a listener, never by
+a vendor returning HTTP 200. Only the answer to "which vendor" has changed.**
+Read the vendor names below as history.
+
+---
 
 ## Why a specialist, and why the fallback is labelled
 

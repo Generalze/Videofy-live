@@ -340,8 +340,8 @@ async function checkLanguages(mediaHealth) {
       'languages',
       'Nigerian-language specialist configured on this deployment',
       '/media/health carried no nigerianLanguageSynthesis (synthesis off, or an older build). ' +
-        'Read the boot log line "9jaLingo preflight:". Until it is read, present ha/ig/yo/pcm ' +
-        'as a DEGRADED rendering, never as native quality.',
+        'Read the boot log line that names the approved voice preflight. Until it is read, ' +
+        'present ha/ig/yo/pcm as UNPROVEN, never as native quality.',
     );
   } else {
     const configured = nigerian.specialistConfigured === true;
@@ -353,7 +353,12 @@ async function checkLanguages(mediaHealth) {
         ? `${nigerian.specialistProviderId ?? 'the specialist'} is configured for ${
             Array.isArray(nigerian.languages) ? nigerian.languages.join('/') : 'ha/ig/yo/pcm'
           }`
-        : String(nigerian.degradedReason ?? `no specialist credential; ${nigerian.fallbackProviderId ?? 'the fallback'} speaks these languages and mispronounces them`),
+        : String(
+            nigerian.degradedReason ??
+              `no credential for the approved voice, so ha/ig/yo/pcm CANNOT BE SPOKEN — they are ` +
+                `deliberately not routed to ${nigerian.fallbackProviderId ?? 'the rejected vendor'}, ` +
+                'which returns 200 and mispronounces them',
+          ),
     );
 
     /*
@@ -366,7 +371,7 @@ async function checkLanguages(mediaHealth) {
         undetermined(
           'languages',
           'the specialist credential reached the vendor',
-          'the boot preflight has not reported yet; re-run in a moment, or read the boot log line "9jaLingo preflight:".',
+          'the boot preflight has not reported yet; re-run in a moment, or read the boot log line that names the approved voice.',
         );
       } else {
         const speakers = preflight.speakerIdsByLanguage ?? {};
@@ -379,7 +384,7 @@ async function checkLanguages(mediaHealth) {
           preflight.reachable === true && preflight.problem == null,
           preflight.reachable === true
             ? `speakers ${counts}${preflight.problem == null ? '' : ` — ${preflight.problem}`}`
-            : `NOT reachable — ${preflight.problem ?? 'unknown'}; ha/ig/yo/pcm fall to ${nigerian.fallbackProviderId ?? 'the fallback'}`,
+            : `NOT reachable — ${preflight.problem ?? 'unknown'}; ha/ig/yo/pcm will FAIL rather than fall to ${nigerian.fallbackProviderId ?? 'the rejected vendor'}`,
         );
       }
     }

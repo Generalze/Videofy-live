@@ -36,9 +36,14 @@ import {
   absentSpecialistState,
   createNigerianSynthesisRoute,
   type NigerianSynthesisState,
+  type NigerianVoicePreflight,
 } from './nigerian-synthesis-route.js';
 import { createLanguageRoutedSynthesisProvider } from './language-routed-synthesis-provider.js';
-import { createWarmKeeper } from './providers/naijalingo/warm-keeper.js';
+import { createWarmKeeper, type WarmKeeper } from './providers/naijalingo/warm-keeper.js';
+import {
+  describeNigerianVoicePreflight,
+  preflightElevenLabsVoices,
+} from './providers/elevenlabs/preflight.js';
 /*
  * THE SINGLE SOURCE OF THE NIGERIAN RULE, imported rather than restated.
  *
@@ -53,6 +58,8 @@ import { createWarmKeeper } from './providers/naijalingo/warm-keeper.js';
 import {
   NIGERIAN_FALLBACK_PROVIDER_ID,
   NIGERIAN_SPECIALIST_LANGUAGES,
+  NIGERIAN_SPECIALIST_PROVIDER_ID,
+  NIGERIAN_TTS_ROUTE_ORDER,
 } from '@videofy-live/ai-registry';
 import {
   ElevenLabsStreamingSynthesisProvider,
@@ -65,6 +72,8 @@ import {
 import {
   MockStreamingSynthesisProvider,
   type StreamingSpeechSynthesisProvider,
+  type StreamingSynthesisOptions,
+  type StreamingSynthesisResult,
 } from './streaming-speech-synthesis-provider.js';
 import { WebSocket } from 'ws';
 import { createDeepgramWebSocketFactory } from './providers/deepgram/transport.js';
@@ -288,7 +297,7 @@ export interface LiveSynthesis {
    */
   readonly nigerian: {
     state(): NigerianSynthesisState;
-    recordPreflight(preflight: NaijaLingoPreflight): void;
+    recordPreflight(preflight: NigerianVoicePreflight): void;
     /**
      * Whether capacity is being kept awake continuously.
      *
@@ -345,21 +354,39 @@ export function buildLiveSynthesis(
  * the same values. Never throws, never names a value: an absent key is reported
  * as absent rather than as a rejected request, because those need opposite
  * actions and a log line that confuses them costs an afternoon.
+ *
+ * IT ASKS WHOEVER IS APPROVED, not a fixed vendor, and that is the fix. It used
+ * to ask 9jaLingo unconditionally, so after the 2026-09-18 ruling the boot log
+ * would have reported at length on the health of a vendor no sentence could
+ * reach -- a check that verifies nothing, stated confidently, which the memory
+ * already records as its own class of defect.
  */
 export async function preflightNigerianSpecialist(
   env: LiveProviderEnv = readLiveProviderEnv(),
   fetchImpl?: typeof fetch,
-): Promise<NaijaLingoPreflight> {
-  return preflightNaijaLingo({
-    baseUrl: env.naijaLingoBaseUrl,
-    apiKey: env.naijaLingoApiKey,
-    authHeaderName: env.naijaLingoAuthHeader,
-    authScheme: env.naijaLingoAuthScheme,
+): Promise<NigerianVoicePreflight> {
+  if (NIGERIAN_SPECIALIST_PROVIDER_ID === 'naijalingo') {
+    const preflight = await preflightNaijaLingo({
+      baseUrl: env.naijaLingoBaseUrl,
+      apiKey: env.naijaLingoApiKey,
+      authHeaderName: env.naijaLingoAuthHeader,
+      authScheme: env.naijaLingoAuthScheme,
+      ...(fetchImpl === undefined ? {} : { fetchImpl }),
+    });
+    return { providerId: NIGERIAN_SPECIALIST_PROVIDER_ID, ...preflight };
+  }
+
+  return preflightElevenLabsVoices({
+    apiKey: env.elevenLabsApiKey,
+    defaultVoiceId: env.elevenLabsVoiceId,
+    mappedVoiceIds: Object.values(parseVoiceIdMap(env.elevenLabsVoiceIds)),
+    languages: NIGERIAN_SPECIALIST_LANGUAGES,
+    providerId: NIGERIAN_SPECIALIST_PROVIDER_ID,
     ...(fetchImpl === undefined ? {} : { fetchImpl }),
   });
 }
 
-export { describeNaijaLingoPreflight };
+export { describeNaijaLingoPreflight, describeNigerianVoicePreflight };
 
 function parseResponseFormat(raw: string | undefined): NaijaLingoResponseFormat | undefined {
   if (raw === undefined) return undefined;
@@ -372,29 +399,30 @@ function parseResponseFormat(raw: string | undefined): NaijaLingoResponseFormat 
 }
 
 /**
- * Hausa, Igbo, Yoruba and Nigerian Pidgin go to the specialist; everything else
- * carries on exactly as before.
+ * Hausa, Igbo, Yoruba and Nigerian Pidgin go to the APPROVED voice; everything
+ * else carries on exactly as before.
  *
  * WHY THIS WRAPS RATHER THAN JOINS THE SWITCH. The general vendors are chosen
- * for coverage across ninety languages, and the specialist covers four. Adding
- * it as another `case` would make it a whole-deployment choice and force a
- * deployment to pick between good Yoruba and good everything-else. Routing is
- * per language, so both are true at once.
+ * for coverage across ninety languages, and the approved Nigerian voice is a
+ * per-language decision. Adding it as another `case` would make it a
+ * whole-deployment choice and force a deployment to pick between good Yoruba
+ * and good everything-else. Routing is per language, so both are true at once.
  *
- * THE CHAIN IS 9jaLINGO, THEN AZURE, THEN NOTHING. Founder ruling of
- * 2026-08-30, and it is narrower than what this file used to do -- it put the
- * whole general chain behind the specialist, leaving ElevenLabs in it.
- * ElevenLabs answers these languages with confident, wrong audio, so its
- * presence bought a second wrong rendering rather than a second chance. The
- * language list and the fallback id both come from `ai-registry`; nothing here
- * restates them.
+ * WHO THE APPROVED VOICE IS COMES FROM `ai-registry`, AND THAT IS THE FIX HERE.
+ * This function used to name 9jaLingo and Azure itself while its own comment
+ * claimed "nothing here restates them" -- the LANGUAGES were imported and the
+ * VENDOR was restated. So the founder ruling of 2026-09-18, which made
+ * ElevenLabs the approved voice, changed the constant, passed every test, was
+ * deployed, and moved nothing: production went on speaking Yoruba with the
+ * vendor the ruling had just rejected. That is the unwired-seam pattern in its
+ * purest form, and the whole point of reading `NIGERIAN_TTS_ROUTE_ORDER` below
+ * is that there is now exactly one place to change.
  *
- * ACTIVATION IS ONE VARIABLE, and that is a correction. This function used to
- * require NAIJALINGO_BASE_URL as well, which was right while the host was
- * unknown and became wrong the moment the vendor's own SDK published it: it
- * turned a solved problem into a second thing an operator could get wrong on
- * the night of a demo. Paste NAIJALINGO_API_KEY; everything else has a
- * published default and an override.
+ * SILENCE IS AN OUTCOME THIS IS ALLOWED TO PRODUCE. With the approved voice
+ * unconfigured, these four languages are NOT quietly handed to a general vendor
+ * -- they fail, loudly and by name. Audio that plays and mispronounces the
+ * language is worse than no audio, because only a speaker can hear it and
+ * every server signal says success.
  */
 /**
  * A positive millisecond count from an environment string, or the default.
@@ -407,85 +435,201 @@ function readPositiveMs(value: string | undefined, fallback: number): number {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
 
-function withNigerianSpecialist(
-  general: StreamingSpeechSynthesisProvider,
+/**
+ * A vendor this service knows how to build for the Nigerian languages.
+ *
+ * A MAP, not a branch, because the entry that matters is the one that is NOT
+ * currently selected. `NIGERIAN_SPECIALIST_PROVIDER_ID` has changed once
+ * already and the change did not reach this file; the only structure that
+ * makes the next change reach it is one where selecting a vendor is a lookup
+ * rather than an edit.
+ */
+interface NigerianVoiceBuild {
+  readonly provider: StreamingSpeechSynthesisProvider;
+  /**
+   * Non-null ONLY for a vendor whose capacity scales to zero.
+   *
+   * It is not a general nicety. A keeper against a vendor that is always up is
+   * an unread request every four minutes on somebody's bill, forever, and it
+   * would report warmth as something this deployment achieved rather than
+   * something the vendor never lacked.
+   */
+  readonly warmKeeper: WarmKeeper | null;
+}
+
+interface NigerianVoiceVendor {
+  /** Every variable that must be set. NAMED in warnings, never valued. */
+  readonly requires: readonly string[];
+  readonly configured: (env: LiveProviderEnv) => boolean;
+  readonly build: (env: LiveProviderEnv, fetchImpl?: typeof fetch) => NigerianVoiceBuild;
+}
+
+export const NIGERIAN_VOICE_VENDORS: Readonly<Record<string, NigerianVoiceVendor>> = {
+  /*
+   * THE APPROVED VOICE SINCE 2026-09-18. The founder listened to it speak
+   * Hausa, Igbo and Yoruba and judged it better than the previous specialist.
+   * That is a qualification decision made by a person, which is the only kind
+   * this repository accepts for these four languages -- no endpoint can make
+   * it, because every vendor returns 200 either way.
+   */
+  elevenlabs: {
+    requires: ['ELEVENLABS_API_KEY', 'ELEVENLABS_DEFAULT_VOICE_ID'],
+    configured: (env) => env.elevenLabsApiKey !== undefined && env.elevenLabsVoiceId !== undefined,
+    build: (env, fetchImpl) => ({
+      /*
+       * ITS OWN INSTANCE, deliberately not the general chain -- even though the
+       * general chain usually starts with this same vendor. The general chain
+       * falls through to Azure, and Azure speaking Yoruba is the exact outcome
+       * the ruling forbids. Sharing the object would make these four languages
+       * inherit a fall-through nobody chose for them.
+       */
+      provider: buildElevenLabsSynthesis(env, fetchImpl),
+      warmKeeper: null,
+    }),
+  },
+
+  /*
+   * NEVER SELECTED TODAY, and kept buildable on purpose. Azure is the vendor
+   * `isDegradedNigerianSynthesis` exists to RECOGNISE: it returns 200 and
+   * plausible audio and pronounces these languages wrongly. Keeping it here
+   * costs nothing and means a future ruling that puts a second entry in
+   * `NIGERIAN_TTS_ROUTE_ORDER` is a one-line change rather than a rewrite.
+   */
+  azure: {
+    requires: ['AZURE_SPEECH_KEY', 'AZURE_SPEECH_REGION', 'AZURE_DEFAULT_VOICE_ID'],
+    configured: (env) =>
+      env.azureSpeechKey !== undefined &&
+      env.azureSpeechRegion !== undefined &&
+      env.azureDefaultVoiceId !== undefined,
+    build: (env, fetchImpl) => ({
+      provider: buildAzureSynthesis(env, fetchImpl),
+      warmKeeper: null,
+    }),
+  },
+
+  /*
+   * THE PREVIOUS SPECIALIST, KEPT AND UNROUTED -- a deliberate decision, not
+   * an oversight.
+   *
+   * The founder ruling of 2026-09-18 is that it does not work, so nothing
+   * reaches it while `NIGERIAN_SPECIALIST_PROVIDER_ID` names another vendor.
+   * The adapter, its warm keeper and its preflight stay because they are the
+   * only working implementation this repository has of a vendor whose capacity
+   * SCALES TO ZERO, and that shape is not hypothetical: it cost a measured
+   * staging programme on 2026-08-31, when every routing decision was correct
+   * and the founder still heard the wrong voice for five minutes. Deleting it
+   * would delete the lesson along with the code.
+   */
+  naijalingo: {
+    requires: ['NAIJALINGO_API_KEY'],
+    configured: (env) => env.naijaLingoApiKey !== undefined,
+    build: buildNaijaLingoVoice,
+  },
+};
+
+type NigerianVoiceSelection =
+  | { readonly kind: 'built'; readonly build: NigerianVoiceBuild }
+  | { readonly kind: 'unconfigured'; readonly missing: readonly string[] };
+
+/**
+ * Build the vendor the ruling names, or say exactly what is missing.
+ *
+ * A NAMED VENDOR THIS SERVICE CANNOT BUILD THROWS, and that is the file's rule
+ * rather than an exception to it: an unknown id is a programming error --
+ * somebody changed the constant and did not add the builder -- and the failure
+ * mode of tolerating it is these four languages silently rejoining the general
+ * chain, which is the defect this whole seam exists to close.
+ */
+export function selectNigerianVoice(
+  providerId: string,
   env: LiveProviderEnv,
   fetchImpl?: typeof fetch,
-): LiveSynthesis {
-  /*
-   * AZURE OR NOTHING, decided before the specialist is even built.
-   *
-   * A deployment with no Azure credential gets a one-provider chain rather than
-   * the general chain, because the alternative is ElevenLabs quietly inheriting
-   * these four languages -- which is precisely the outcome the ruling forbids.
-   * Silence is a worse listener experience than mispronunciation, but a THIRD
-   * vendor nobody chose is worse than either, because nobody would know.
-   */
-  const azure = env.azureSpeechKey === undefined ? null : buildAzureSynthesis(env);
-  const apiKey = env.naijaLingoApiKey;
-
-  if (apiKey === undefined) {
-    /*
-     * ON THE RECORD AND AT WARN, and the level is the decision.
-     *
-     * The previous revision logged this at info, reasoning that running without
-     * a specialist was a settled commercial choice. The founder ruling of
-     * 2026-08-30 reverses that: 9jaLingo is to be ACTIVE, so its absence is now
-     * a deviation from the intended configuration rather than the intended
-     * configuration. It is also the single most likely reason an investor
-     * demo's Yoruba sounds wrong, and a line nobody sees is a line that does
-     * not exist.
-     */
-    // eslint-disable-next-line no-console
-    console.warn(
-      JSON.stringify({
-        service: 'media-ingest',
-        level: 'warn',
-        message:
-          'NAIJALINGO_API_KEY is not set: the Nigerian-language specialist is OFF and every ' +
-          'ha/ig/yo/pcm sentence is a DEGRADED rendering by the fallback, which returns 200 ' +
-          'and mispronounces them. Only a speaker of the language can hear it.',
-        languages: NIGERIAN_SPECIALIST_LANGUAGES,
-        servedBy: azure === null ? general.name : NIGERIAN_FALLBACK_PROVIDER_ID,
-      }),
+): NigerianVoiceSelection {
+  const vendor = NIGERIAN_VOICE_VENDORS[providerId];
+  if (vendor === undefined) {
+    throw new Error(
+      `ai-registry names '${providerId}' as the approved voice for ` +
+        `${NIGERIAN_SPECIALIST_LANGUAGES.join('/')}, but media-ingest has no builder for it. ` +
+        `Add one to NIGERIAN_VOICE_VENDORS; known: ${Object.keys(NIGERIAN_VOICE_VENDORS).join(', ')}.`,
     );
-
-    const nigerianState = absentSpecialistState();
-    let recorded: NaijaLingoPreflight | null = null;
-
-    /*
-     * STILL ROUTED, even with no specialist. These languages go to the named
-     * fallback rather than to the general chain, so that switching the key on
-     * later changes WHO answers and nothing else about the path.
-     */
-    const provider =
-      azure === null
-        ? general
-        : createLanguageRoutedSynthesisProvider({
-            routes: new Map(NIGERIAN_SPECIALIST_LANGUAGES.map((language) => [language, azure])),
-            fallback: general,
-          });
-
-    return {
-      provider,
-      nigerian: {
-        state: () => ({
-          ...nigerianState,
-          preflight: recorded,
-        }),
-        recordPreflight: (preflight) => {
-          recorded = preflight;
-        },
-        // Nothing is kept awake because there is nothing to keep awake.
-        warm: false,
-      },
-    };
   }
+  if (!vendor.configured(env)) {
+    return { kind: 'unconfigured', missing: vendor.requires };
+  }
+  return { kind: 'built', build: vendor.build(env, fetchImpl) };
+}
 
+/**
+ * What stands behind the approved voice, read from the ruling's own order.
+ *
+ * NULL IS THE CORRECT ANSWER TODAY. `NIGERIAN_TTS_ROUTE_ORDER` has one entry,
+ * so there is nothing behind it and silence is the intended outcome when it
+ * cannot answer. An entry that IS named but not configured is different and is
+ * warned about: that one is a deployment mistake.
+ */
+function buildNigerianChainBehind(
+  env: LiveProviderEnv,
+  fetchImpl?: typeof fetch,
+): StreamingSpeechSynthesisProvider | null {
+  const behind: StreamingSpeechSynthesisProvider[] = [];
+  for (const providerId of NIGERIAN_TTS_ROUTE_ORDER.slice(1)) {
+    const selection = selectNigerianVoice(providerId, env, fetchImpl);
+    if (selection.kind === 'unconfigured') {
+      // eslint-disable-next-line no-console
+      console.warn(
+        JSON.stringify({
+          service: 'media-ingest',
+          level: 'warn',
+          message:
+            'a vendor named in NIGERIAN_TTS_ROUTE_ORDER is not configured, so it is missing from ' +
+            'the chain behind the approved voice',
+          providerId,
+          requires: selection.missing,
+        }),
+      );
+      continue;
+    }
+    behind.push(selection.build.provider);
+  }
+  if (behind.length === 0) return null;
+  if (behind.length === 1) return behind[0] ?? null;
+  return createFallbackSpeechSynthesisProvider({ providers: behind });
+}
+
+/**
+ * The provider these four languages get when the approved voice is unavailable:
+ * one that refuses, by name, and produces no audio.
+ *
+ * IT IS NOT A BUG THAT THIS MAKES A SENTENCE FAIL. The alternative that was
+ * here until 2026-09-18 handed the sentence to Azure, which spoke it fluently
+ * and wrongly and reported success to every signal a server has. A failure
+ * somebody can read beats a success nobody can check.
+ */
+function refusingNigerianVoice(
+  providerId: string,
+  missing: readonly string[],
+): StreamingSpeechSynthesisProvider {
+  const reason =
+    `${providerId} is the approved voice for ${NIGERIAN_SPECIALIST_LANGUAGES.join('/')} but ` +
+    `${missing.join(' and ')} ${missing.length === 1 ? 'is' : 'are'} not set, and ` +
+    `${NIGERIAN_FALLBACK_PROVIDER_ID} is not permitted to speak these languages`;
+  return {
+    name: `nigerian(NO APPROVED VOICE: ${providerId} unconfigured)`,
+    async synthesize(request: StreamingSynthesisOptions): Promise<StreamingSynthesisResult> {
+      request.onError(new Error(`${reason}. This sentence was NOT spoken.`));
+      // Zero samples is a failure by this contract's own definition, which is
+      // what makes it visible upstream rather than a quiet gap in the audio.
+      return { samples: 0, timeToFirstChunkMs: null, totalMs: 0, aborted: false };
+    },
+  };
+}
+
+/** The previous specialist, with the warm keeper its scale-to-zero capacity needs. */
+function buildNaijaLingoVoice(env: LiveProviderEnv, fetchImpl?: typeof fetch): NigerianVoiceBuild {
+  const apiKey = env.naijaLingoApiKey ?? '';
   const responseFormat = parseResponseFormat(env.naijaLingoResponseFormat);
-  const sampleRate = env.naijaLingoSampleRate === undefined
-    ? undefined
-    : Number(env.naijaLingoSampleRate);
+  const sampleRate =
+    env.naijaLingoSampleRate === undefined ? undefined : Number(env.naijaLingoSampleRate);
 
   const specialist = new NaijaLingoStreamingSynthesisProvider({
     apiKey,
@@ -498,18 +642,8 @@ function withNigerianSpecialist(
     baseUrl: env.naijaLingoBaseUrl,
     ...(responseFormat === undefined ? {} : { responseFormat }),
     ...(sampleRate === undefined ? {} : { sampleRate }),
-    /*
-     * A PUBLISHED SPEAKER ID, not a required variable. The SDK's README lists
-     * an example speaker per language, so a default is evidence rather than a
-     * guess -- and the preflight lists what this key can actually use, which is
-     * the honest check that a default cannot provide. Overridable per language
-     * and per platform voice.
-     */
     defaultVoice: env.naijaLingoDefaultVoice ?? NAIJALINGO_PUBLISHED_SPEAKER_BY_LANGUAGE['yo'] ?? '',
     defaultVoiceByLanguage: {
-      // Published example, then the founder's chosen voice, then the
-      // deployment's own word: each layer only speaks where the next has
-      // nothing to say.
       ...NAIJALINGO_PUBLISHED_SPEAKER_BY_LANGUAGE,
       ...NAIJALINGO_SELECTED_VOICE_BY_LANGUAGE,
       ...parseVoiceIdMap(env.naijaLingoVoiceByLanguage),
@@ -517,36 +651,14 @@ function withNigerianSpecialist(
     authHeaderName: env.naijaLingoAuthHeader,
     authScheme: env.naijaLingoAuthScheme,
     model: env.naijaLingoModel,
-    // `<language>:<gender>` reaches either voice of a chosen pair; the
-    // account already records a person's voiceGender, and wiring that
-    // preference through to synthesis is the remaining seam.
     voiceIds: { ...NAIJALINGO_SELECTED_VOICE_IDS, ...parseVoiceIdMap(env.naijaLingoVoiceIds) },
     ...(fetchImpl === undefined ? {} : { fetchImpl }),
   });
 
-  /*
-   * Warmed at wiring time, not at first use. The capacity behind this vendor
-   * scales to zero and takes minutes to come back, so the first Nigerian-
-   * language sentence after an idle period would otherwise be served by the
-   * fallback that mispronounces it. Nothing waits on this.
-   */
+  // Warmed at wiring time, not at first use: the capacity behind this vendor
+  // scales to zero and takes minutes to come back.
   specialist.warmUp();
 
-  /*
-   * AND KEEP IT AWAKE. One warm-up at boot is not enough on its own: the
-   * capacity behind this vendor scales back to zero after an idle period, so a
-   * service that started this morning is cold again by the afternoon.
-   *
-   * MEASURED, 31 Aug 2026. A programme was uploaded to staging and all twelve
-   * segments -- ha, ig and yo -- were spoken by the fallback. `GET /v1/health`
-   * said `engine_ready: false, status: starting` and synthesis answered 503
-   * "capacity is starting after an idle period, retry in about 5 minutes". The
-   * routing, the labelling and the audio were all correct; the specialist was
-   * simply asleep, and the founder heard Azure's Yoruba.
-   *
-   * `createWarmKeeper` was written for exactly this and nothing had ever
-   * imported it. It is wired here, at the one place that holds the specialist.
-   */
   const warmKeeper = createWarmKeeper({
     warm: () => specialist.warmUp(),
     intervalMs: readPositiveMs(env.naijaLingoWarmIntervalMs, 4 * 60_000),
@@ -556,10 +668,6 @@ function withNigerianSpecialist(
     alwaysOn: (env.naijaLingoWarmAlwaysOn ?? '').trim().toLowerCase() === 'true',
   });
 
-  /*
-   * Said at boot, because "always-on" is the difference between a demo that
-   * sounds right and one that does not, and it is invisible otherwise.
-   */
   // eslint-disable-next-line no-console
   console.log(
     JSON.stringify({
@@ -573,31 +681,97 @@ function withNigerianSpecialist(
     }),
   );
 
-  if (azure === null) {
+  return { provider: specialist, warmKeeper };
+}
+
+function withNigerianSpecialist(
+  general: StreamingSpeechSynthesisProvider,
+  env: LiveProviderEnv,
+  fetchImpl?: typeof fetch,
+): LiveSynthesis {
+  const providerId = NIGERIAN_SPECIALIST_PROVIDER_ID;
+  const approved = selectNigerianVoice(providerId, env, fetchImpl);
+
+  if (approved.kind === 'unconfigured') {
+    /*
+     * ON THE RECORD AND AT WARN, and the level is the decision. The approved
+     * voice is the INTENDED configuration, so its absence is a deviation from
+     * it rather than a settled commercial choice -- and it is the single most
+     * likely reason a demo's Yoruba is missing. A line nobody sees is a line
+     * that does not exist.
+     */
     // eslint-disable-next-line no-console
     console.warn(
       JSON.stringify({
         service: 'media-ingest',
         level: 'warn',
         message:
-          'AZURE_SPEECH_KEY is not set: the Nigerian-language chain has no fallback, so a cold ' +
-          'or failing specialist means SILENCE in ha/ig/yo/pcm rather than a degraded voice.',
+          `the approved Nigerian voice (${providerId}) is NOT configured, so every ` +
+          'ha/ig/yo/pcm sentence FAILS rather than being spoken. They are deliberately not ' +
+          `routed to ${NIGERIAN_FALLBACK_PROVIDER_ID}, which returns 200 and mispronounces ` +
+          'them in a way only a speaker of the language can hear.',
         languages: NIGERIAN_SPECIALIST_LANGUAGES,
+        requires: approved.missing,
       }),
     );
+
+    const nigerianState = absentSpecialistState();
+    let recorded: NigerianVoicePreflight | null = null;
+    const refusing = refusingNigerianVoice(providerId, approved.missing);
+
+    return {
+      /*
+       * STILL ROUTED, even with no approved voice. These languages reach a
+       * provider that refuses by name rather than the general chain, so that
+       * configuring the credential later changes WHO answers and nothing else
+       * about the path -- and so no general vendor inherits them by accident.
+       */
+      provider: createLanguageRoutedSynthesisProvider({
+        routes: new Map(NIGERIAN_SPECIALIST_LANGUAGES.map((language) => [language, refusing])),
+        fallback: general,
+      }),
+      nigerian: {
+        state: () => ({ ...nigerianState, preflight: recorded }),
+        recordPreflight: (preflight) => {
+          recorded = preflight;
+        },
+        // Nothing is kept awake because there is nothing to keep awake.
+        warm: false,
+      },
+    };
   }
 
+  const { provider: approvedProvider, warmKeeper } = approved.build;
+  const behind = buildNigerianChainBehind(env, fetchImpl);
+
+  /*
+   * Said at boot, because the whole chain for these four languages is otherwise
+   * invisible until somebody speaks one of them -- which on most days is never,
+   * and on the day it matters is in front of an audience.
+   */
+  // eslint-disable-next-line no-console
+  console.log(
+    JSON.stringify({
+      service: 'media-ingest',
+      message: 'Nigerian-language chain ready',
+      languages: NIGERIAN_SPECIALIST_LANGUAGES,
+      approvedVoice: providerId,
+      behind: behind?.name ?? null,
+      note:
+        behind === null
+          ? `nothing stands behind ${providerId}: a failure is SILENCE, which the founder ruling ` +
+            'of 2026-09-18 prefers to audio that mispronounces the language'
+          : `a failure falls through to ${behind.name}, which is marked DEGRADED on every sentence`,
+    }),
+  );
+
   const route = createNigerianSynthesisRoute({
-    specialist,
-    // Azure by name. NULL when it is absent, so the chain is the specialist
-    // alone -- honest about there being nothing behind it, and never calling a
-    // cold vendor twice for one sentence.
-    fallback: azure,
+    specialist: approvedProvider,
+    fallback: behind,
     onOutcome: (outcome) => {
       // Demand, observed rather than guessed: this fires once per sentence the
-      // specialist was asked for, whether or not it answered. A cold vendor is
-      // exactly when keeping the pings going matters most.
-      warmKeeper.noteUsed();
+      // approved voice was asked for, whether or not it answered.
+      warmKeeper?.noteUsed();
       if (outcome.degradation !== null) {
         /*
          * WARN, NAMING THE LANGUAGE AND THE REASON. This is the line the whole
@@ -610,7 +784,7 @@ function withNigerianSpecialist(
           JSON.stringify({
             service: 'media-ingest',
             level: 'warn',
-            message: 'DEGRADED Nigerian-language synthesis: the specialist did not answer',
+            message: 'DEGRADED Nigerian-language synthesis: the approved voice did not answer',
             language: outcome.degradation.language,
             expectedProvider: outcome.degradation.expectedProvider,
             servedBy: outcome.degradation.servedBy,
@@ -658,17 +832,20 @@ function withNigerianSpecialist(
       state: () => route.state(),
       recordPreflight: (preflight) => route.recordPreflight(preflight),
       /*
-       * The keeper's own answer, not a guess from configuration. Warmth is
-       * what decides whether this provider may be called APPROVED for live
-       * programmes, so it has to come from the thing actually doing the
-       * keeping.
+       * TRUE WHEN THERE IS NOTHING TO BE COLD, and that is a claim rather than
+       * a default. `liveRouteEligibility` blocks a live Nigerian route unless
+       * warmth is guaranteed, so reporting false for a vendor that does not
+       * scale to zero would block every Nigerian programme forever for a risk
+       * that cannot occur. Where a keeper exists it answers instead -- warmth
+       * has to come from the thing actually doing the keeping.
        */
       get warm() {
-        return warmKeeper.active;
+        return warmKeeper === null ? true : warmKeeper.active;
       },
     },
   };
 }
+
 
 function buildGeneralSynthesis(
   config: Pick<IngestConfig, 'streamingSynthesisProvider'>,

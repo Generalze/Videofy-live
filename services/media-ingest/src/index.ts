@@ -109,7 +109,7 @@ import {
   buildLiveSynthesis,
   buildStreamingTranscriptionProvider,
   describeLiveEngine,
-  describeNaijaLingoPreflight,
+  describeNigerianVoicePreflight,
   preflightNigerianSpecialist,
 } from './live-provider-wiring.js';
 
@@ -1368,18 +1368,25 @@ programmeTimelines.onRunOpened((runId) => {
 const streamingTranscription = buildStreamingTranscriptionProvider(config);
 
 /**
- * Ask 9jaLingo two questions before anybody needs an answer, and say the result
- * in ONE line.
+ * Ask the APPROVED Nigerian voice whether it can speak, before anybody needs an
+ * answer, and say the result in ONE line.
  *
- * WHY AT BOOT AND NOT ON FIRST USE. The way "paste the key" goes wrong is
- * quiet: a key that is valid but has no plan, a key whose speaker catalogue
- * does not cover Yoruba, a header the vendor changed. All three produce a
- * fallback that sounds like a working product to anyone who does not speak the
- * language -- so the moment to find out is before the demo, not during it.
+ * WHOEVER IS APPROVED, not a fixed vendor. This used to ask 9jaLingo by name,
+ * so when the founder ruling of 2026-09-18 made ElevenLabs the approved voice
+ * the boot log would have gone on reporting in detail on the health of a vendor
+ * no sentence could reach -- a check that verifies nothing while reading as
+ * reassurance, which this repository has shipped twice and does not intend to
+ * ship again.
  *
- * IT CANNOT FAIL THE BOOT. A vendor outage must not become an outage here;
- * that coupling is exactly what the fallback exists to avoid. It reports, and
- * the report goes on /health so somebody who missed the log can still find it.
+ * WHY AT BOOT AND NOT ON FIRST USE. The way a pasted key goes wrong is quiet: a
+ * key that is valid but whose account does not contain the configured voice.
+ * That returns 200 to every check except the one that matters and 400 to the
+ * first sentence of a broadcast -- so the moment to find out is before the
+ * demo, not during it.
+ *
+ * IT CANNOT FAIL THE BOOT. A vendor outage must not become an outage here.
+ * It reports, and the report goes on /health so somebody who missed the log can
+ * still find it.
  *
  * NAMES ONLY. Nothing in this line is or contains a credential.
  */
@@ -1387,7 +1394,7 @@ if (liveSynthesis.nigerian !== null) {
   void preflightNigerianSpecialist()
     .then((preflight) => {
       liveSynthesis.nigerian?.recordPreflight(preflight);
-      const line = describeNaijaLingoPreflight(preflight);
+      const line = describeNigerianVoicePreflight(preflight);
       if (preflight.keyConfigured && preflight.reachable && preflight.problem === null) {
         logger.info(line);
       } else {
@@ -1395,7 +1402,7 @@ if (liveSynthesis.nigerian !== null) {
       }
     })
     .catch((error: unknown) => {
-      logger.warn('9jaLingo preflight could not run', {
+      logger.warn('the approved Nigerian voice preflight could not run', {
         message: error instanceof Error ? error.message : 'unknown failure',
       });
     });

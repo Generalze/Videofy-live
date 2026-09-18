@@ -1,7 +1,15 @@
 /** @author masterzee001 */
 /**
- * Hausa, Igbo, Yoruba and Nigerian Pidgin: the specialist, then Azure, then
- * NOTHING -- and every fall-through says so out loud.
+ * Hausa, Igbo, Yoruba and Nigerian Pidgin: the APPROVED voice, then whatever
+ * `NIGERIAN_TTS_ROUTE_ORDER` puts behind it -- and every fall-through says so
+ * out loud.
+ *
+ * SINCE 2026-09-18 THAT ORDER HAS ONE ENTRY. ElevenLabs is the approved voice
+ * by founder ruling, and nothing is behind it: silence is the honest outcome
+ * when it cannot answer. This module keeps the fall-through machinery anyway,
+ * because the thing it makes visible is a property of the SITUATION, not of a
+ * vendor -- if a second entry ever appears, the mark it leaves has to already
+ * work.
  *
  * WHY THIS IS A MODULE AND NOT THREE LINES OF WIRING. The chain itself is
  * trivial: two providers in order. What is not trivial is the part everybody
@@ -14,13 +22,14 @@
  * audio. A reviewer who does not speak the language cannot hear the difference;
  * neither can a health check. Only a mark on the result can.
  *
- * THE CHAIN IS AZURE, NAMED, AND NOT "THE GENERAL CHAIN". Founder ruling of
- * 2026-08-30. The previous wiring put the whole ElevenLabs-then-Azure chain
- * behind the specialist, which reads as caution and is the opposite: it buys a
- * SECOND wrong rendering rather than a second chance, and it means a later
- * change to the general chain silently changes who speaks Yoruba. One named
- * fallback is enough to avoid silence, and the order comes from
- * `ai-registry`'s `NIGERIAN_TTS_ROUTE_ORDER` rather than from a copy here.
+ * THE CHAIN IS NAMED, AND NOT "THE GENERAL CHAIN". Putting the whole general
+ * chain behind the approved voice reads as caution and is the opposite: it buys
+ * a SECOND wrong rendering rather than a second chance, and it means a later
+ * change to the general chain silently changes who speaks Yoruba. The order
+ * comes from `ai-registry`'s `NIGERIAN_TTS_ROUTE_ORDER` rather than from a copy
+ * here -- which is exactly the seam that stayed unwired for three weeks after
+ * the 2026-09-18 ruling: the LANGUAGES were imported and the VENDOR was
+ * restated, so changing the constant moved nothing.
  *
  * IT DOES NOT RE-IMPLEMENT THE FALL-THROUGH. `createFallbackSpeechSynthesisProvider`
  * already owns the rule that matters -- a provider that has emitted audio is
@@ -28,10 +37,10 @@
  * sentence in another is worse than either. This wraps that; it does not
  * restate it.
  *
- * WHAT IT WILL NOT CLAIM. `rendering: 'specialist'` says 9jaLingo answered. It
- * does NOT say the Yoruba was good. Nothing in this repository is entitled to
- * infer language quality from a status code, and this module is the one most
- * tempted to, so it says so here.
+ * WHAT IT WILL NOT CLAIM. `rendering: 'specialist'` says the approved vendor
+ * answered. It does NOT say the Yoruba was good. Nothing in this repository is
+ * entitled to infer language quality from a status code, and this module is the
+ * one most tempted to, so it says so here.
  */
 import {
   NIGERIAN_FALLBACK_PROVIDER_ID,
@@ -41,7 +50,6 @@ import {
 import { createFallbackSpeechSynthesisProvider } from './fallback-speech-synthesis-provider.js';
 import type { FallbackSynthesisObservation } from './fallback-speech-synthesis-provider.js';
 import { baseLanguage } from './language-routed-synthesis-provider.js';
-import type { NaijaLingoPreflight } from './providers/naijalingo/streaming-tts.js';
 import type {
   StreamingSpeechSynthesisProvider,
   StreamingSynthesisOptions,
@@ -63,8 +71,44 @@ export type NigerianRendering =
   | 'degraded-fallback'
   | 'failed';
 
+/**
+ * What a boot check found out about the APPROVED voice, whoever it currently is.
+ *
+ * VENDOR-NEUTRAL ON PURPOSE, and that is a correction. This used to be
+ * `NaijaLingoPreflight`, so the type of the report named the vendor -- which
+ * meant that changing which vendor is approved left every surface reporting on
+ * one that is no longer routed. The report has to survive the ruling it
+ * describes.
+ *
+ * `engineReady` stays because a vendor whose capacity scales to zero has a
+ * readiness that is NOT its reachability, and that distinction cost a measured
+ * demo on 2026-08-31. A vendor without one answers null rather than true:
+ * "there is nothing to be asleep" and "it is awake" are different claims.
+ */
+export interface NigerianVoicePreflight {
+  /** Who was asked. Never inferred by a reader from the shape of the answer. */
+  readonly providerId: string;
+  /** False when no credential is configured. No request is attempted then. */
+  readonly keyConfigured: boolean;
+  readonly reachable: boolean;
+  /** Null when the vendor has no readiness concept, or did not answer. */
+  readonly engineReady: boolean | null;
+  readonly totalSpeakers: number | null;
+  readonly speakerIdsByLanguage: Readonly<Record<string, readonly string[]>>;
+  /** Routed languages this credential can produce NO voice for. */
+  readonly languagesWithoutSpeakers: readonly string[];
+  /** Null when everything answered. Never contains a key or any value of one. */
+  readonly problem: string | null;
+}
+
 export interface NigerianSynthesisState {
-  /** False when NAIJALINGO_API_KEY is absent: every sentence is degraded. */
+  /**
+   * False when the APPROVED vendor has no credential configured.
+   *
+   * Since 2026-09-18 that also means these four languages are not spoken AT
+   * ALL, rather than spoken badly: the ruling forbids routing them to the
+   * vendor that mispronounces them, so the honest outcome is silence.
+   */
   readonly specialistConfigured: boolean;
   readonly specialistProviderId: string;
   readonly fallbackProviderId: string;
@@ -73,7 +117,7 @@ export interface NigerianSynthesisState {
   readonly specialistSentences: number;
   readonly degradedSentences: number;
   /** Null until the preflight has run. Never contains a key or a value of one. */
-  readonly preflight: NaijaLingoPreflight | null;
+  readonly preflight: NigerianVoicePreflight | null;
   /**
    * The one-word answer a console can colour.
    *
@@ -99,14 +143,14 @@ export interface NigerianSynthesisOutcome {
 export interface NigerianRouteOptions {
   readonly specialist: StreamingSpeechSynthesisProvider;
   /**
-   * AZURE, by name and by ruling. Not "whatever the general chain resolves to".
+   * WHATEVER `NIGERIAN_TTS_ROUTE_ORDER` NAMES AFTER THE FIRST ENTRY -- and
+   * since 2026-09-18 that is nothing, so this is null in production.
    *
-   * NULL IS A REAL AND HONEST STATE: a deployment with no Azure credential has
-   * nothing behind the specialist, and the chain is the specialist alone. It
-   * must NOT be filled in with the specialist itself -- that would call a cold
-   * vendor twice for one sentence, doubling the wait at the exact moment the
-   * listener is already waiting, and it would report a fall-through onto the
-   * provider that had just failed.
+   * NULL IS A REAL AND HONEST STATE, not an omission: the chain is the approved
+   * voice alone. It must NOT be filled in with the approved voice itself --
+   * that would call the same vendor twice for one sentence, doubling the wait
+   * at the exact moment the listener is already waiting, and it would report a
+   * fall-through onto the provider that had just failed.
    */
   readonly fallback: StreamingSpeechSynthesisProvider | null;
   /**
@@ -125,7 +169,7 @@ export interface NigerianSynthesisRoute {
   /** A snapshot for /health and the operator console. Safe to serialise. */
   state(): NigerianSynthesisState;
   /** Record the boot preflight so the same state answers both questions. */
-  recordPreflight(preflight: NaijaLingoPreflight): void;
+  recordPreflight(preflight: NigerianVoicePreflight): void;
 }
 
 function blankRenderings(): Record<string, NigerianRendering> {
@@ -137,13 +181,19 @@ function blankRenderings(): Record<string, NigerianRendering> {
 /**
  * The state to report when there is no specialist to route to.
  *
- * NOT AN OMISSION -- a deployment without a key still has to say what happens
- * to these four languages, and the answer is that every sentence in them is a
- * degraded rendering. Reporting nothing here would make "no key" look like
- * "nothing to report", which is the exact confusion this wave exists to end.
+ * NOT AN OMISSION -- a deployment without a credential still has to say what
+ * happens to these four languages. Reporting nothing here would make "no key"
+ * look like "nothing to report", which is the exact confusion this wave exists
+ * to end.
+ *
+ * AND THE ANSWER CHANGED ON 2026-09-18. It used to be "every sentence is spoken
+ * badly by Azure"; it is now "no sentence is spoken at all", because the ruling
+ * refuses the vendor that mispronounces them. Both are bad states. They need
+ * completely different actions -- one is a quality complaint, the other is
+ * silence in a live broadcast -- so the text says which.
  */
 export function absentSpecialistState(
-  preflight: NaijaLingoPreflight | null = null,
+  preflight: NigerianVoicePreflight | null = null,
 ): NigerianSynthesisState {
   return {
     specialistConfigured: false,
@@ -156,9 +206,10 @@ export function absentSpecialistState(
     preflight,
     degraded: true,
     degradedReason:
-      `no ${NIGERIAN_SPECIALIST_PROVIDER_ID} credential is configured, so every ` +
-      `${NIGERIAN_SPECIALIST_LANGUAGES.join('/')} sentence is spoken by ` +
-      `${NIGERIAN_FALLBACK_PROVIDER_ID}, which mispronounces them while returning 200.`,
+      `no ${NIGERIAN_SPECIALIST_PROVIDER_ID} credential is configured, so ` +
+      `${NIGERIAN_SPECIALIST_LANGUAGES.join('/')} CANNOT BE SPOKEN. They are not routed to ` +
+      `${NIGERIAN_FALLBACK_PROVIDER_ID}, which returns 200 and mispronounces them; the founder ` +
+      'ruling of 2026-09-18 is that silence is the honest outcome and wrong pronunciation is not.',
   };
 }
 
@@ -174,7 +225,7 @@ export function createNigerianSynthesisRoute(
   let specialistSentences = 0;
   let degradedSentences = 0;
   let degradedReason: string | null = null;
-  let preflight: NaijaLingoPreflight | null = null;
+  let preflight: NigerianVoicePreflight | null = null;
 
   /*
    * Built PER CALL, and that is the only reason this is not two lines.
@@ -287,7 +338,7 @@ export function createNigerianSynthesisRoute(
         degradedReason,
       };
     },
-    recordPreflight(next: NaijaLingoPreflight): void {
+    recordPreflight(next: NigerianVoicePreflight): void {
       preflight = next;
     },
   };

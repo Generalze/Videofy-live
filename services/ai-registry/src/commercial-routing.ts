@@ -102,7 +102,12 @@ export const NIGERIAN_SPECIALIST_LANGUAGES: readonly string[] = ['ha', 'ig', 'yo
  * a speaker can detect. What changed is WHICH vendor is qualified, not the
  * rule that one has to be.
  */
-export const NIGERIAN_SPECIALIST_PROVIDER_ID = 'elevenlabs';
+// Typed as `string`, not as its own literal, and that is deliberate: this is a
+// RULING, and callers have to be able to branch on which vendor it currently
+// names without TypeScript declaring the comparison unintentional. A literal
+// type here would mean the compiler enforcing today's founder decision as
+// though it were a fact about the world.
+export const NIGERIAN_SPECIALIST_PROVIDER_ID: string = 'elevenlabs';
 
 /**
  * The vendor that must always be RECOGNISED for these languages, and never

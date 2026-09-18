@@ -307,6 +307,9 @@ describe('the state a console and /health read', () => {
     });
     expect(route.state().preflight).toBeNull();
     route.recordPreflight({
+      // The report names WHO was asked. Without it, a surface reading this
+      // cannot tell a healthy approved vendor from a healthy rejected one.
+      providerId: 'naijalingo',
       keyConfigured: true,
       reachable: true,
       engineReady: true,
