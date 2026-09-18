@@ -153,6 +153,7 @@ function createHarness(selfId: string) {
   const ice: CallVideoIcePayload[] = [];
   const remoteStreams: { participantId: string; stream: unknown }[] = [];
   const peerStates: { participantId: string; state: string }[] = [];
+  const signalling: { kind: string; participantId: string }[] = [];
   const mesh = new CallVideoMesh({
     callId: 'call-1',
     selfParticipantId: selfId,
@@ -161,6 +162,7 @@ function createHarness(selfId: string) {
     sendIce: (payload) => ice.push(payload),
     onRemoteStream: (participantId, stream) => remoteStreams.push({ participantId, stream }),
     onPeerState: (participantId, state) => peerStates.push({ participantId, state }),
+    onSignalling: (event) => signalling.push(event),
     createPeerConnection: (remoteParticipantId) => {
       const pc = new FakePeerConnection(remoteParticipantId);
       created.push(remoteParticipantId);
@@ -168,7 +170,7 @@ function createHarness(selfId: string) {
       return pc as unknown as RTCPeerConnection;
     },
   });
-  return { mesh, peers, created, offers, answers, ice, remoteStreams, peerStates };
+  return { mesh, peers, created, offers, answers, ice, remoteStreams, peerStates, signalling };
 }
 
 function mustPeer(peers: Map<string, FakePeerConnection>, id: string): FakePeerConnection {
@@ -1045,5 +1047,86 @@ describe('instant camera: simultaneous activation on both peers', () => {
 
     meshA.dispose();
     meshB.dispose();
+  });
+});
+
+/**
+ * Whether an offer was ever SENT.
+ *
+ * A camera that attaches and transmits nothing has two very different causes
+ * -- the gateway refused the relay, or this phone never made an offer -- and
+ * from outside they are identical: outbound counters at zero either way, and
+ * the gateway's own drop counter reads zero for BOTH, honestly, because it
+ * cannot drop what it was never handed. These stages are what tell them apart.
+ */
+describe('video signalling, reported rather than swallowed', () => {
+  it('reports an offer that was actually sent', async () => {
+    const h = createHarness('a');
+    h.mesh.syncParticipants(['b']);
+    const { stream } = localCamera();
+
+    await h.mesh.setLocalStream(stream);
+    await flushAsync();
+
+    expect(h.offers.length).toBeGreaterThan(0);
+    expect(h.signalling.map((e) => e.kind)).toContain('offer-sent');
+  });
+
+  /*
+   * THE SILENT PATH, which is the one that cost a night of diagnosis.
+   * react-native-webrtc sets localDescription to null when the native layer
+   * returns no SDP, so setLocalDescription RESOLVES and leaves nothing to
+   * send. The old code returned here without a word: no offer, no fault, no
+   * evidence -- a camera reporting success and transmitting nothing.
+   */
+  it('reports a negotiation that resolved with no local description, and sends no offer', async () => {
+    const h = createHarness('a');
+    h.mesh.syncParticipants(['b']);
+    const pc = mustPeer(h.peers, 'b');
+    // The platform behaviour: resolve, but leave localDescription null.
+    pc.setLocalDescription = async (): Promise<void> => {
+      pc.localDescription = null;
+    };
+    const before = h.offers.length;
+    const { stream } = localCamera();
+
+    await h.mesh.setLocalStream(stream);
+    await flushAsync();
+
+    expect(h.signalling.map((e) => e.kind)).toContain('no-local-description');
+    expect(h.offers.length).toBe(before);
+  });
+
+  it('reports a negotiation that threw, with its reason', async () => {
+    const h = createHarness('a');
+    h.mesh.syncParticipants(['b']);
+    const pc = mustPeer(h.peers, 'b');
+    pc.setLocalDescription = async (): Promise<void> => {
+      throw new Error('native refused');
+    };
+    const { stream } = localCamera();
+
+    await h.mesh.setLocalStream(stream);
+    await flushAsync();
+
+    expect(h.signalling.map((e) => e.kind)).toContain('negotiate-failed');
+  });
+
+  /*
+   * An answer ARRIVING and an answer APPLYING are different facts, and only
+   * the second gives the sender a described m-line to encode onto.
+   */
+  it('separates an answer arriving from an answer applying', async () => {
+    const h = createHarness('a');
+    h.mesh.syncParticipants(['b']);
+    const { stream } = localCamera();
+    await h.mesh.setLocalStream(stream);
+    await flushAsync();
+
+    await h.mesh.handleAnswer('b', sdpFrom('b', 'a', 'answer-1'));
+
+    const kinds = h.signalling.map((e) => e.kind);
+    expect(kinds).toContain('answer-received');
+    expect(kinds).toContain('answer-applied');
   });
 });

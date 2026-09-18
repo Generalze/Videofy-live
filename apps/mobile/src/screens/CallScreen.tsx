@@ -360,6 +360,16 @@ export function CallScreen({
         if (event.kind === 'outbound-silent' || event.kind === 'attach-failed' || event.kind === 'acquisition-failed') {
           setTransportLog((current) => [...current.slice(-4), `${new Date().toLocaleTimeString()} video ${event.kind}`]);
         }
+        /*
+         * The negotiation stages, on screen. Offer-sent is the one that
+         * matters: with it, a silent camera is a media fault; without it,
+         * nothing was ever asked of the far side and the gateway's own drop
+         * counter will read zero for the honest reason that it was handed
+         * nothing to drop.
+         */
+        if (event.kind === 'signalling') {
+          setTransportLog((current) => [...current.slice(-4), `${new Date().toLocaleTimeString()} sig ${event.stage}`]);
+        }
       },
       onError: (message) => {
         if (live) setError(message);

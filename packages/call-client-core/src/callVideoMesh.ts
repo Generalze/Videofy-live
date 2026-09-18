@@ -56,7 +56,35 @@ export interface CallVideoMeshOptions {
    * the phone received every remote video track and rendered none of them.
    */
   createMediaStream?: (tracks: MediaStreamTrack[]) => MediaStream;
+  /**
+   * What the SIGNALLING did, stage by stage. Metadata only -- never SDP.
+   *
+   * Every failure in this path used to be swallowed: a negotiation that threw
+   * incremented a private counter, and one that produced no local description
+   * returned without a word. Both left the camera attached, the outbound
+   * counters at zero and no evidence anywhere, which is indistinguishable
+   * from the gateway refusing the relay -- and that ambiguity is what made
+   * "video does not work" unfixable rather than merely broken.
+   */
+  onSignalling?: (event: CallVideoSignallingEvent) => void;
 }
+
+/**
+ * A stage of video negotiation, for diagnosis. Carries participant ids and
+ * reasons, never session descriptions.
+ *
+ * `no-local-description` is the quiet one worth naming: react-native-webrtc
+ * sets `localDescription` to null when the native layer returns no SDP, so an
+ * implicit `setLocalDescription()` can RESOLVE and still leave nothing to
+ * send.
+ */
+export type CallVideoSignallingEvent =
+  | { kind: 'negotiating'; participantId: string }
+  | { kind: 'offer-sent'; participantId: string }
+  | { kind: 'no-local-description'; participantId: string }
+  | { kind: 'negotiate-failed'; participantId: string; error: string }
+  | { kind: 'answer-received'; participantId: string }
+  | { kind: 'answer-applied'; participantId: string };
 
 /** What happened when the local video track was handed to one peer. */
 export interface CallVideoAttachResult {
@@ -278,11 +306,19 @@ export class CallVideoMesh {
     const entry = this.knownSender(fromParticipantId);
     if (!entry) return;
     entry.settingRemoteAnswer = true;
+    this.options.onSignalling?.({ kind: 'answer-received', participantId: fromParticipantId });
     try {
       await entry.pc.setRemoteDescription({ type: 'answer', sdp: payload.sdp });
       if (!this.live(entry)) return;
       entry.remoteDescriptionApplied = true;
       await this.flushRemoteCandidates(entry);
+      /*
+       * Reported separately from 'answer-received' on purpose: an answer that
+       * arrives and an answer that APPLIES are different facts, and only the
+       * second one gives the sender a described m-line. A camera that is sending
+       * nothing needs to know which of the two it got.
+       */
+      this.options.onSignalling?.({ kind: 'answer-applied', participantId: fromParticipantId });
     } catch {
       // A stale or duplicate answer (e.g. one for a rolled-back offer).
       this.signallingFaultCount += 1;
@@ -502,19 +538,40 @@ export class CallVideoMesh {
   private async negotiate(entry: MeshPeer): Promise<void> {
     if (!this.live(entry)) return;
     entry.makingOffer = true;
+    this.options.onSignalling?.({ kind: 'negotiating', participantId: entry.participantId });
     try {
       await entry.pc.setLocalDescription();
       if (!this.live(entry)) return;
       const sdp = entry.pc.localDescription?.sdp;
-      if (!sdp) return;
+      if (!sdp) {
+        /*
+         * RESOLVED, AND STILL NOTHING TO SEND.
+         *
+         * react-native-webrtc sets localDescription to null when the native
+         * layer returns no SDP, so the implicit setLocalDescription() above
+         * can succeed and leave this empty. The old code returned here in
+         * silence -- no offer, and not even the fault counter -- which is a
+         * camera that attaches, reports success and transmits nothing, with
+         * no evidence that the offer was never made.
+         */
+        this.signallingFaultCount += 1;
+        this.options.onSignalling?.({ kind: 'no-local-description', participantId: entry.participantId });
+        return;
+      }
       this.options.sendOffer({
         callId: this.options.callId,
         participantId: this.options.selfParticipantId,
         targetParticipantId: entry.participantId,
         sdp,
       });
-    } catch {
+      this.options.onSignalling?.({ kind: 'offer-sent', participantId: entry.participantId });
+    } catch (error) {
       this.signallingFaultCount += 1;
+      this.options.onSignalling?.({
+        kind: 'negotiate-failed',
+        participantId: entry.participantId,
+        error: error instanceof Error ? error.message : 'setLocalDescription rejected',
+      });
     } finally {
       entry.makingOffer = false;
     }

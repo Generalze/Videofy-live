@@ -229,7 +229,15 @@ export type CallVideoDiagnostic =
       readonly frames: number;
       readonly connectionState: string;
     }
-  | { readonly kind: 'inbound'; readonly participantId: string; readonly frames: number; readonly bytes: number };
+  | { readonly kind: 'inbound'; readonly participantId: string; readonly frames: number; readonly bytes: number }
+  /**
+   * A stage of video NEGOTIATION, which is upstream of every stage above: a
+   * camera cannot send on an m-line that was never described with a track on
+   * it. `stage` distinguishes an offer that was sent from one that was never
+   * made, which is the difference between a gateway fault and a phone fault
+   * and was previously invisible from either end.
+   */
+  | { readonly kind: 'signalling'; readonly stage: string; readonly participantId: string };
 
 export type CallTransportEvent =
   | { readonly kind: 'socket-lost'; readonly reason: string }
@@ -685,6 +693,15 @@ export class CallConnection {
         this.options.onRemoteStream(participantId, stream as unknown as RemoteStream),
       onPeerState: (participantId: string, state: RTCPeerConnectionState) =>
         this.options.onPeerState(participantId, String(state)),
+      /*
+       * The signalling stages, surfaced. Whether an offer was ever SENT is
+       * the fact that separates "the gateway refused it" from "the phone
+       * never made one", and until now neither side of that could be seen
+       * from the handset: a negotiation that produced no local description
+       * returned in silence and the camera simply transmitted nothing.
+       */
+      onSignalling: (event) =>
+        this.options.onVideoDiagnostic?.({ kind: 'signalling', stage: event.kind, participantId: event.participantId }),
     });
     this.mesh = mesh;
     // Camera is OFF at start: the mesh has no local video until the person
