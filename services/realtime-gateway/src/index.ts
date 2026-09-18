@@ -93,6 +93,7 @@ const app = createApp({
   trueLiveCapable: () => gateway.trueLiveCapable,
   protectedLiveCapable: () => gateway.protectedLiveCapable,
   videoRelayDrops: () => gateway.getWebRtcDiagnostics().callRuntime.videoRelayDropCount,
+  videoRelayNoListener: () => gateway.getWebRtcDiagnostics().videoRelayNoListenerCount,
   ...(adapterSurface === null
     ? {}
     : {

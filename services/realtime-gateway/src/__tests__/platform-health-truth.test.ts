@@ -250,4 +250,24 @@ describe('what the gateway says about video relay', () => {
     const unasked = await health(createApp({}));
     expect(unasked['videoRelayDrops']).toBeNull();
   });
+
+  /*
+   * The other half of the relay question. A target can hold a seat -- so the
+   * membership check passes and nothing is refused -- while having no socket
+   * in the private room the relay is addressed to. The emit succeeds and
+   * reaches nobody, and the sender waits for an answer that cannot come.
+   */
+  it('reports relays that reached an empty room, separately from refusals', async () => {
+    const body = await health(createApp({ videoRelayDrops: () => 0, videoRelayNoListener: () => 4 }));
+    expect(body['videoRelayDrops']).toBe(0);
+    expect(body['videoRelayNoListener']).toBe(4);
+  });
+
+  it('distinguishes zero unheard relays from nobody having asked', async () => {
+    const none = await health(createApp({ videoRelayNoListener: () => 0 }));
+    expect(none['videoRelayNoListener']).toBe(0);
+
+    const unasked = await health(createApp({}));
+    expect(unasked['videoRelayNoListener']).toBeNull();
+  });
 });

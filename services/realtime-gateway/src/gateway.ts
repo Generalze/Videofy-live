@@ -356,6 +356,16 @@ export class Gateway {
   }
   private listenerCount = 0;
 
+  /**
+   * Video signalling relayed into a room with NOBODY IN IT, cumulative.
+   *
+   * Distinct from a refusal: the gateway accepted the payload, checked the
+   * sender's binding and the target's membership, and delivered it to an
+   * empty room. From the sender that is indistinguishable from success, and
+   * from `videoRelayDrops` it is indistinguishable from nothing happening.
+   */
+  private videoRelayNoListenerCount = 0;
+
   // ---- P6.5 Connect control plane (FE3) --------------------------------
   /** Null when connect-projects.json is absent or Connect is unconfigured: /v1 fails closed. */
   private readonly connectRegistry: ConnectProjectRegistry | null;
@@ -653,6 +663,25 @@ export class Gateway {
     this.callRuntime = new CallRuntime({
       store: this.callSessionStore,
       emitToRoom: (room, event, payload) => {
+        /*
+         * AN EMIT INTO AN EMPTY ROOM SUCCEEDS, SILENTLY, AND THAT IS THE
+         * BLIND SPOT THIS COUNTS.
+         *
+         * Video signalling is relayed into the TARGET's private room. If that
+         * target holds a seat but has no socket in the room -- reconnecting,
+         * reaped, or never joined it -- the relay passes every check the
+         * gateway makes, is not a refusal, and reaches nobody. Measured on two
+         * handsets: the caller logged `offer-sent` twice and no answer ever
+         * came back, while `videoRelayDrops` stayed at 0. Both facts are true
+         * at once only if the offer was relayed into a room with nobody in it.
+         *
+         * Video only: the programme and caption rooms are legitimately empty
+         * all the time, and counting those would bury the signal.
+         */
+        if (event.startsWith('call:video:')) {
+          const listeners = this.io.sockets.adapter.rooms.get(room)?.size ?? 0;
+          if (listeners === 0) this.videoRelayNoListenerCount += 1;
+        }
         this.io.to(room).emit(event, payload);
       },
       ingestControl: new HttpMediaTranscriptionSubmissionClient({
@@ -2584,6 +2613,7 @@ export class Gateway {
     transcriptionBridgeSessionCount: number;
     callRuntime: ReturnType<CallRuntime['getDiagnostics']>;
     transcriptionBridgeSessions: unknown[];
+    videoRelayNoListenerCount: number;
   } {
     const signalling = this.webrtcSessions.getDiagnostics();
     const transcriptionBridge = this.webRtcTranscriptionBridge.getDiagnostics();
@@ -2596,6 +2626,7 @@ export class Gateway {
       transcriptionBridgeSessionCount: transcriptionBridge.sessionCount,
       callRuntime: this.callRuntime.getDiagnostics(),
       transcriptionBridgeSessions: this.webRtcTranscriptionBridge.getSessionDiagnostics(),
+      videoRelayNoListenerCount: this.videoRelayNoListenerCount,
     };
   }
 

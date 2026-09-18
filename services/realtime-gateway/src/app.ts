@@ -36,6 +36,8 @@ export interface CreateAppOptions {
    * others are: this app is built before the Gateway that owns the counter.
    */
   videoRelayDrops?: () => number | null;
+  /** Video relays delivered to a room with no sockets in it. Same lazy reason. */
+  videoRelayNoListener?: () => number | null;
   internalToken?: string | null;
   /**
    * P6.5: lazy provider for the Connect /v1 router. A closure, not a router,
@@ -345,6 +347,21 @@ export function createApp(options: CreateAppOptions = {}): express.Application {
        * so a video fault is upstream of here.
        */
       videoRelayDrops: options.videoRelayDrops?.() ?? null,
+      /**
+       * Video signalling delivered to a room WITH NOBODY IN IT, cumulative.
+       *
+       * The other half of the relay question, and the half that hid the fault.
+       * `videoRelayDrops` answers "did the gateway refuse it"; this answers
+       * "did anyone actually receive it". A target can hold a seat -- so the
+       * membership check passes and nothing is refused -- while having no
+       * socket in the private room the relay is addressed to. The emit
+       * succeeds, reaches nobody, and the sender waits for an answer that
+       * cannot come.
+       *
+       * Non-zero alongside drops of zero is the signature of exactly that: an
+       * offer sent, accepted, relayed, and heard by no one.
+       */
+      videoRelayNoListener: options.videoRelayNoListener?.() ?? null,
       timestamp: new Date().toISOString(),
     });
   });
