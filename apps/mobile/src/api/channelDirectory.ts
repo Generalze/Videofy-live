@@ -109,6 +109,20 @@ export function subscribeChannelDirectory(
   onState?.('connecting');
   socket.on('connect', () => onState?.('connected'));
   socket.on('disconnect', () => onState?.('disconnected'));
+  /*
+   * A FAILED FIRST CONNECT IS NOT A SLOW ONE.
+   *
+   * socket.io emits `disconnect` only for a connection it once had; an initial
+   * connect that never succeeds emits `connect_error` and nothing else. Without
+   * this the state stayed `connecting` for ever and the Programmes screen sat
+   * on "Finding channels…" -- an unreachable gateway presented as a slow one,
+   * with no end and nothing to retry. The web listener has always handled it.
+   *
+   * Reported as `disconnected` rather than a new state: from the person's side
+   * "we cannot reach C7 Streams" is one situation, and the screen already has
+   * words for it.
+   */
+  socket.on('connect_error', () => onState?.('disconnected'));
   socket.on(SOCKET_EVENTS.CHANNEL_DIRECTORY, (payload: unknown) => {
     if (!Array.isArray(payload)) return;
     onDirectory(parseChannelDirectory(payload));
