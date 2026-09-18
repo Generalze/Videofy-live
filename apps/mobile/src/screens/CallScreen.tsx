@@ -119,8 +119,8 @@ export type ActiveCallDescriptor =
 export interface CallScreenProps {
   readonly call: ActiveCallDescriptor;
   readonly displayName: string;
-  readonly speakLanguage?: 'en' | 'es' | 'fr';
-  readonly hearLanguage?: 'en' | 'es' | 'fr';
+  readonly speakLanguage?: string;
+  readonly hearLanguage?: string;
   /** Null is valid: it means this client can JOIN but not CREATE a call. */
   readonly sessionToken: string | null;
   /**

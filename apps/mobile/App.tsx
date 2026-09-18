@@ -240,12 +240,25 @@ type ActiveCall =
   | { readonly kind: 'conference'; readonly callId: string; readonly setup?: ConferenceSetup };
 
 /**
- * The three languages the LIVE CALL chain carries today. A profile language
- * outside them is not an error and not a call language either: the call keeps
- * its own default rather than sending a code the far end will refuse.
+ * The profile language a call should enter with, or undefined when there
+ * isn't one.
+ *
+ * THIS USED TO KEEP ONLY en/es/fr, and that was the last link in the chain
+ * that made Nigerian-language translation unreachable. A Hausa profile
+ * arrived here and left as `undefined`, so the join carried no language, so
+ * the session opened with `targetLanguages:[]` and translation was never
+ * requested -- while the en<->ha route sat approved and live on the server.
+ * The comment justifying it said the far end would refuse the code; the far
+ * end's own schema takes any string and lets the store decide.
+ *
+ * Now it only declines to speak when the profile has nothing to say. Whether
+ * a language can actually be TRANSLATED is a server question, answered by the
+ * route registry, and whether it can be SPOKEN is answered by the voice
+ * chain -- neither is a decision this function is entitled to make.
  */
-function callLanguageOrUndefined(code: string | null | undefined): 'en' | 'es' | 'fr' | undefined {
-  return code === 'en' || code === 'es' || code === 'fr' ? code : undefined;
+function callLanguageOrUndefined(code: string | null | undefined): string | undefined {
+  const trimmed = code?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
 }
 
 export default function App(): JSX.Element {
@@ -309,8 +322,8 @@ function AppInner(): JSX.Element {
    * belongs to the call-language wave; it is narrowed here rather than hidden.
    */
   const [callLanguages, setCallLanguages] = useState<{
-    speak?: 'en' | 'es' | 'fr';
-    hear?: 'en' | 'es' | 'fr';
+    speak?: string;
+    hear?: string;
   }>({});
   const handledColdStart = useRef(false);
   /*

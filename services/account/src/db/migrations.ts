@@ -1895,6 +1895,38 @@ const PROGRAMME_REPLAY_DELETIONS: Migration = {
   `,
 };
 
+/**
+ * Let an account state a language the product actually sells.
+ *
+ * Migrations 011 and 013 wrote `CHECK (... IN ('en','es','fr'))` when three
+ * languages were the whole surface. Everything else has since widened to the
+ * shared catalogue -- the account store, the account routes, the mobile API
+ * client, media ingest's ninety-eight published targets -- and these three
+ * constraints were the only thing left holding the old world. The effect in
+ * production was that `spoken_language = 'ha'` was REJECTED BY THE DATABASE,
+ * so Hausa, Igbo, Yoruba and Nigerian Pidgin could not be chosen at all, while
+ * the approved routes for exactly those languages sat live and unreachable.
+ *
+ * DROPPED RATHER THAN WIDENED, deliberately. A list of codes in DDL is a
+ * fourth place for the catalogue to drift from, and it is the place nobody
+ * remembers to edit -- which is precisely how this happened. The application
+ * validates against the shared catalogue on the way in; that is the authority,
+ * and it already refuses a code the catalogue does not carry.
+ *
+ * IF NOT EXISTS is not available for DROP CONSTRAINT in the form we need
+ * across versions, so IF EXISTS is used: a database that never had them (a
+ * fresh one built after this migration) drops nothing and succeeds.
+ */
+const LANGUAGE_CATALOGUE_CODES: Migration = {
+  name: '031_language_catalogue_codes',
+  sql: `
+    ALTER TABLE accounts
+      DROP CONSTRAINT IF EXISTS accounts_default_language_check,
+      DROP CONSTRAINT IF EXISTS accounts_spoken_language_check,
+      DROP CONSTRAINT IF EXISTS accounts_listening_language_check;
+  `,
+};
+
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
   ORGANIZATIONS,
@@ -1926,4 +1958,5 @@ export const MIGRATIONS: readonly Migration[] = [
   CHANNEL_REPLAY_SETTINGS,
   PROGRAMME_REPLAY_OVERRIDES,
   PROGRAMME_REPLAY_DELETIONS,
+  LANGUAGE_CATALOGUE_CODES,
 ];

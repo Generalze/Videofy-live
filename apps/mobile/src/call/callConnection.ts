@@ -109,9 +109,9 @@ export interface CallConnectionOptions {
    */
   readonly setup?: ConferenceSetup;
   /** The language this account SPEAKS; preloads the join form. */
-  readonly speakLanguage?: 'en' | 'es' | 'fr';
+  readonly speakLanguage?: string;
   /** The language this account PREFERS TO HEAR; preloads the join form. */
-  readonly hearLanguage?: 'en' | 'es' | 'fr';
+  readonly hearLanguage?: string;
   /**
    * The signed session token, or null.
    *

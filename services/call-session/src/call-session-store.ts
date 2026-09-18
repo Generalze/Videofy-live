@@ -30,12 +30,16 @@ import {
  */
 
 /**
- * Call languages with registered development voices; primary subtags only.
- * English–French is the constant development pair (owner decision, 2026-08-14:
- * French verifiers are easier to source); Spanish stays supported with its
- * P6.1A validation evidence.
+ * A LANGUAGE CATALOGUE CODE; primary subtags only. Byte-compatible with
+ * call-wire's CallLanguage, which carries the full account of why.
+ *
+ * This was `'en' | 'es' | 'fr'` -- the development pair plus Spanish -- and
+ * that union outlived the deployment it described. Which languages a call may
+ * actually carry is a question about approved ROUTES and configured voices,
+ * both of which are deployment facts; a compile-time union answered it with a
+ * decision made in August and could only ever be wrong later.
  */
-export type CallLanguage = 'en' | 'es' | 'fr';
+export type CallLanguage = string;
 
 /**
  * W5 product model. Personal Call and Conference are distinct PRODUCTS
@@ -530,8 +534,16 @@ export interface CallSessionStoreOptions {
  * Registered Piper standard voices for P6.1B calls, selected by the
  * RECIPIENT's Male/Female choice per target language (design note point 6).
  */
+/*
+ * PARTIAL, AND THE PARTIALITY IS THE POINT. This was keyed by CallLanguage
+ * when that meant exactly these three, so every lookup was total. Now a call
+ * may carry any catalogue code, and most of them have no standard voice --
+ * which is a real state, not an oversight: a language can be translatable and
+ * unspeakable. Callers must handle the absence; see the text-only branch in
+ * the work-order builder.
+ */
 export const STANDARD_CALL_VOICES: Readonly<
-  Record<CallLanguage, Readonly<Record<'male' | 'female', string>>>
+  Record<string, Readonly<Record<'male' | 'female', string>> | undefined>
 > = {
   en: { male: 'en_US-hfc_male-medium', female: 'en_US-hfc_female-medium' },
   es: { male: 'es_ES-sharvard-male', female: 'es_ES-sharvard-female' },
@@ -2054,7 +2066,23 @@ function buildIngestPlan(call: CallState, speaker: CallParticipantState): CallIn
     // them, which is neither what the control says nor what anybody wants: a
     // translated voice stands in for the person speaking, so it belongs to
     // them.
-    voiceIdsByLanguage[language] = STANDARD_CALL_VOICES[language][speaker.voiceGender];
+    /*
+     * NO STANDARD VOICE MEANS TEXT-ONLY, not a default voice.
+     *
+     * Reachable since a call may carry any catalogue code: a listener can want
+     * generated audio in a language nothing here can speak. Falling back to
+     * some other language's voice would speak Hausa words with an English
+     * mouth, which is the "plays fine, pronunciation wrong" failure the
+     * Nigerian routing rules exist to refuse -- and the listener cannot tell
+     * it is wrong. Translated captions still arrive; only the audio is
+     * withheld, and it is withheld visibly rather than faked.
+     */
+    const voices = STANDARD_CALL_VOICES[language];
+    if (voices === undefined) {
+      textOnlyLanguages.push(language);
+      continue;
+    }
+    voiceIdsByLanguage[language] = voices[speaker.voiceGender];
   }
   // Revision-scoped identity: events and deferred stops addressed to an old
   // revision's session can never touch the replacement session.
