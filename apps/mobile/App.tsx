@@ -398,6 +398,24 @@ function AppInner(): JSX.Element {
           hasSession: hasSessionRef.current,
           check: (id) => directCalls.check(id),
         }).then((routing) => {
+          /*
+           * WHY A PUSH DID NOT BECOME A RINGING PHONE.
+           *
+           * `routeCallPush` works out a precise reason -- no session yet, the
+           * gateway could not be reached, the call is already declined -- and
+           * both branches below used to discard it. A phone that stays silent
+           * on an incoming call is the single worst failure this app has, and
+           * it left no evidence at all: no log, no counter, nothing to ask.
+           * That is the same shape as the production deployment that could not
+           * ring anybody for weeks while every service reported healthy.
+           *
+           * Metadata only -- the call id and the reason, never the push
+           * payload -- and it reaches logcat, which is somewhere a person
+           * holding the phone can actually be asked to read from.
+           */
+          if (routing.kind !== 'show') {
+            console.log(`[c7] call push not shown: ${routing.kind} -- ${routing.reason} (${callId})`);
+          }
           if (routing.kind === 'defer') {
             // NOT marked routed: the question was never answered.
             if (!deferredPushes.current.some((held) => held['callId'] === callId)) {

@@ -318,8 +318,41 @@ if (accountStoreKind === 'postgres') {
 
 const store = new AccountStore(records);
 
+/**
+ * WHAT THIS SERVICE CAN ACTUALLY DO, not merely that it is answering.
+ *
+ * This returned a bare `{status:'ok'}`. On 2026-09-17 production could not ring
+ * a single phone for weeks -- `FCM_PROJECT_ID` was empty and the credential
+ * file absent, so no push provider was built -- and this endpoint said `ok`
+ * throughout. The one place that knew was a boot log line, long gone by the
+ * time anyone asked. Hours went into diagnosing a fault the service could have
+ * reported in a field.
+ *
+ * So it reports the capabilities whose absence is invisible from outside:
+ *
+ *   push  a deployment with no provider CANNOT RING ANY PHONE, and every
+ *         other signal looks identical to one nobody happened to call. The
+ *         provider NAMES are safe to publish; no credential is.
+ *   store `ephemeral` means accounts, messages and devices do not survive a
+ *         restart -- which reads as data loss, not as a health problem, until
+ *         somebody asks this.
+ *
+ * `status` stays `ok` while the service answers: these are capability facts,
+ * not liveness, and conflating them would make a checker restart a service
+ * that is working perfectly and merely unconfigured. The point is that the
+ * facts are READABLE, not that they trip an alarm.
+ */
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'account', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    service: 'account',
+    push: {
+      configured: push.configured,
+      providers: pushProviders.map((provider) => provider.name),
+    },
+    store: databasePool ? 'postgres' : 'ephemeral',
+    timestamp: new Date().toISOString(),
+  });
 });
 
 /*
