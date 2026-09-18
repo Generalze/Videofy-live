@@ -25,9 +25,9 @@ export interface Profile {
   readonly username: string | null;
   readonly displayName: string | null;
   readonly discoverable: boolean;
-  readonly defaultLanguage?: 'en' | 'es' | 'fr' | null;
-  readonly spokenLanguage?: 'en' | 'es' | 'fr' | null;
-  readonly listeningLanguage?: 'en' | 'es' | 'fr' | null;
+  readonly defaultLanguage?: string | null;
+  readonly spokenLanguage?: string | null;
+  readonly listeningLanguage?: string | null;
 }
 
 interface Props {

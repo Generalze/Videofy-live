@@ -179,10 +179,10 @@ export function createAccountApi(accountUrl: string, token: string) {
         (body) => body as { mode: 'normal' | 'translated' },
       ),
     setLanguages: (languages: {
-      spokenLanguage?: 'en' | 'es' | 'fr';
-      listeningLanguage?: 'en' | 'es' | 'fr';
+      spokenLanguage?: string;
+      listeningLanguage?: string;
     }) => request(accountUrl, token, '/accounts/languages', json(languages), () => undefined),
-    setDefaultLanguage: (defaultLanguage: 'en' | 'es' | 'fr') =>
+    setDefaultLanguage: (defaultLanguage: string) =>
       request(accountUrl, token, '/accounts/default-language', json({ defaultLanguage }), () => undefined),
     markRead: (accountId: string) =>
       request(accountUrl, token, `/messages/with/${accountId}/read`, json({}), () => undefined),
