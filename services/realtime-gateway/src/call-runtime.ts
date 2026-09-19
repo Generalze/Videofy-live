@@ -576,6 +576,8 @@ export class CallRuntime {
   private readonly participants = new Map<string, CallParticipantRuntimeState>();
   /** Keyed by REVISION-SCOPED ingestSessionId; superseded entries are retired. */
   private readonly ingestRegistry = new Map<string, CallIngestRegistryEntry>();
+  /** `${sessionId}:${reason}` already reported, so a drop is said once. */
+  private readonly translatedAudioDropsReported = new Set<string>();
   /**
    * Observed by the SIP egress router and the acceptance harness.
    *
@@ -1949,6 +1951,36 @@ export class CallRuntime {
    * server knowledge into the client and make the next rename of an ingest
    * session id a frontend breaking change.
    */
+  /**
+   * Translated speech that was MADE and then thrown away, said once.
+   *
+   * MEASURED 19 Sep 2026. A sixty-second call sent 55 seconds of audio to the
+   * engine and got 277 frames of translated French back into the gateway --
+   * and the participants heard the original English. Every one of the three
+   * ways this method discards a frame `return true`, which tells the caller
+   * "handled", and none of them left a trace, so the last hop of the pipeline
+   * was the only one with no evidence at all.
+   *
+   * ONCE PER SESSION PER REASON. These fire per frame -- 277 identical lines
+   * would be the noise that hides the next defect -- and the first occurrence
+   * carries everything needed: which reason, which language, and the revisions
+   * that decide eligibility.
+   */
+  private noteTranslatedAudioDropped(
+    sessionId: string,
+    reason: 'no-ingest-entry' | 'language-not-in-plan' | 'no-eligible-recipient',
+    detail: Record<string, unknown>,
+  ): void {
+    const key = `${sessionId}:${reason}`;
+    if (this.translatedAudioDropsReported.has(key)) return;
+    this.translatedAudioDropsReported.add(key);
+    logger.warn('translated audio DISCARDED before reaching anyone', {
+      sessionId,
+      reason,
+      ...detail,
+    });
+  }
+
   interceptTranslatedAudioFrame(frame: {
     sessionId: string;
     targetLanguage: string;
@@ -1964,7 +1996,12 @@ export class CallRuntime {
     // A frame for a retired or superseded ingest session. It belonged to a
     // call; it belongs to no call NOW, which is a different thing from an
     // unknown session and is why this still returns true.
-    if (!entry) return true;
+    if (!entry) {
+      this.noteTranslatedAudioDropped(frame.sessionId, 'no-ingest-entry', {
+        targetLanguage: frame.targetLanguage,
+      });
+      return true;
+    }
 
     // Not an active audio target for this plan. A frame in a language nobody
     // on this call asked to hear is refused rather than broadcast on the
@@ -1974,7 +2011,13 @@ export class CallRuntime {
     // precisely the check that earns it any status; casting the input would
     // assert the conclusion instead of testing it.
     const activeTargets: readonly string[] = entry.plan.targetLanguages;
-    if (!activeTargets.includes(frame.targetLanguage)) return true;
+    if (!activeTargets.includes(frame.targetLanguage)) {
+      this.noteTranslatedAudioDropped(frame.sessionId, 'language-not-in-plan', {
+        targetLanguage: frame.targetLanguage,
+        planTargets: [...activeTargets],
+      });
+      return true;
+    }
 
     // THE ONE ELIGIBILITY AUTHORITY, shared with finished-file delivery. A
     // second copy here would eventually forget that `normal` mode delivers
@@ -1985,7 +2028,16 @@ export class CallRuntime {
       frame.targetLanguage,
       { mediaRevision: entry.plan.mediaRevision, languageRevision: entry.languageRevision },
     );
-    if (recipients.length === 0) return true;
+    if (recipients.length === 0) {
+      this.noteTranslatedAudioDropped(frame.sessionId, 'no-eligible-recipient', {
+        targetLanguage: frame.targetLanguage,
+        callId: entry.callId,
+        speakerParticipantId: entry.participantId,
+        planMediaRevision: entry.plan.mediaRevision,
+        languageRevision: entry.languageRevision,
+      });
+      return true;
+    }
 
     const payload: CallTranslatedAudioFramePayload = {
       callId: entry.callId,
