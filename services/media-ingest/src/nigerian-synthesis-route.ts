@@ -91,6 +91,19 @@ export interface NigerianVoicePreflight {
   /** False when no credential is configured. No request is attempted then. */
   readonly keyConfigured: boolean;
   readonly reachable: boolean;
+  /**
+   * Whether the voice catalogue was actually READ, as opposed to assumed good.
+   *
+   * FALSE IS A THIRD STATE, not a failure, and conflating it with either
+   * neighbour is a mistake this file made on its first day. Production's
+   * ElevenLabs key is scoped to synthesis alone: `GET /v1/voices` answers 401
+   * `missing_permissions`, the key is perfectly valid, and synthesis works.
+   * Reported as unreachable it marked a healthy vendor unhealthy and blocked
+   * the live Nigerian routes; reported as verified it would claim a check that
+   * never happened. So it says which, and the surfaces that read it say
+   * "not checked" in those words.
+   */
+  readonly voiceCatalogueChecked: boolean;
   /** Null when the vendor has no readiness concept, or did not answer. */
   readonly engineReady: boolean | null;
   readonly totalSpeakers: number | null;

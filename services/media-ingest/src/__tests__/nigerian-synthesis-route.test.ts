@@ -310,6 +310,7 @@ describe('the state a console and /health read', () => {
       // The report names WHO was asked. Without it, a surface reading this
       // cannot tell a healthy approved vendor from a healthy rejected one.
       providerId: 'naijalingo',
+      voiceCatalogueChecked: true,
       keyConfigured: true,
       reachable: true,
       engineReady: true,

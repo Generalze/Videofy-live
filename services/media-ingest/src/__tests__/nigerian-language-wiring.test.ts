@@ -344,6 +344,46 @@ describe('the boot preflight asks the vendor that is actually routed', () => {
     );
   });
 
+  it('a SCOPED key is reported as working, with the catalogue marked unchecked', async () => {
+    /*
+     * MEASURED IN PRODUCTION, 18 Sep 2026, and this preflight's own first
+     * defect. The key there is scoped to synthesis alone, so `/v1/voices`
+     * answers 401 `missing_permissions` while a real Yoruba sentence answers
+     * 200 with a second of audio. Reported as unreachable it marked a working
+     * vendor unhealthy on /health and blocked the live Nigerian routes -- a
+     * check that invented its own outage. A narrow key is good practice.
+     */
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          detail: { status: 'missing_permissions', message: 'missing the permission voices_read' },
+        }),
+        { status: 401, headers: { 'content-type': 'application/json' } },
+      )) as unknown as typeof fetch;
+
+    const preflight = await preflightNigerianSpecialist(envFrom(), fetchImpl);
+    expect(preflight.keyConfigured).toBe(true);
+    expect(preflight.reachable).toBe(true);
+    expect(preflight.problem).toBeNull();
+    // Nothing was learned, so nothing is claimed in either direction.
+    expect(preflight.voiceCatalogueChecked).toBe(false);
+    expect(preflight.languagesWithoutSpeakers).toEqual([]);
+  });
+
+  it('a genuinely rejected credential is still a failure, not a scope note', async () => {
+    // The distinction is the point: one is a narrow key, the other is nothing
+    // being spoken at all, and they must not read the same.
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ detail: { status: 'invalid_api_key' } }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' },
+      })) as unknown as typeof fetch;
+
+    const preflight = await preflightNigerianSpecialist(envFrom(), fetchImpl);
+    expect(preflight.reachable).toBe(false);
+    expect(preflight.problem).toMatch(/REJECTED/u);
+  });
+
   it('never carries a credential into its report', async () => {
     const seen: { url: string; headers: Record<string, string> }[] = [];
     const fetchImpl = (async (url: unknown, init: unknown) => {

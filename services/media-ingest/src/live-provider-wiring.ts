@@ -373,7 +373,9 @@ export async function preflightNigerianSpecialist(
       authScheme: env.naijaLingoAuthScheme,
       ...(fetchImpl === undefined ? {} : { fetchImpl }),
     });
-    return { providerId: NIGERIAN_SPECIALIST_PROVIDER_ID, ...preflight };
+    // 9jaLingo's preflight DOES read the speaker catalogue, so that check
+    // genuinely happened when this vendor is the one selected.
+    return { providerId: NIGERIAN_SPECIALIST_PROVIDER_ID, voiceCatalogueChecked: true, ...preflight };
   }
 
   return preflightElevenLabsVoices({

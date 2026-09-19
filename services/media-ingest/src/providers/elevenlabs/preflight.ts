@@ -62,6 +62,7 @@ export async function preflightElevenLabsVoices(
       providerId: config.providerId,
       keyConfigured: false,
       reachable: false,
+      voiceCatalogueChecked: false,
       engineReady: null,
       totalSpeakers: null,
       speakerIdsByLanguage: {},
@@ -84,6 +85,7 @@ export async function preflightElevenLabsVoices(
       providerId: config.providerId,
       keyConfigured: true,
       reachable: false,
+      voiceCatalogueChecked: false,
       engineReady: null,
       totalSpeakers: null,
       speakerIdsByLanguage: {},
@@ -92,11 +94,70 @@ export async function preflightElevenLabsVoices(
     };
   }
 
+  /*
+   * A SCOPED KEY IS NOT A BROKEN KEY, and telling them apart is the whole value
+   * of this branch.
+   *
+   * MEASURED IN PRODUCTION, 18 Sep 2026. The key there is scoped to synthesis
+   * alone: `/v1/voices`, `/v1/user/subscription` and `/v1/models` all answer
+   * 401 `missing_permissions`, while a real Yoruba sentence through
+   * `/v1/text-to-speech` answers 200 with a second of audio. Treating that 401
+   * as unreachable marked a working vendor unhealthy on /health and blocked the
+   * very live Nigerian routes this wave exists to open -- a check that invented
+   * its own outage.
+   *
+   * A narrow key is good practice, so this reports the truth: the vendor
+   * answered, the credential works, and the catalogue COULD NOT BE READ. Any
+   * other 401 is a genuinely rejected credential and stays a failure.
+   */
+  if (response.status === 401) {
+    const scoped = await response
+      .json()
+      .then((body: unknown) => {
+        const detail = (body as { detail?: { status?: unknown } } | null)?.detail;
+        return detail?.status === 'missing_permissions';
+      })
+      .catch(() => false);
+
+    if (scoped) {
+      return {
+        providerId: config.providerId,
+        keyConfigured: true,
+        // It answered. What it declined was a question about itself.
+        reachable: true,
+        voiceCatalogueChecked: false,
+        engineReady: null,
+        totalSpeakers: null,
+        speakerIdsByLanguage: {},
+        /*
+         * EMPTY, not every language. Nothing was learned, and "no voice for
+         * Yoruba" is a claim -- the opposite one to the truth, which is that
+         * this credential may not say.
+         */
+        languagesWithoutSpeakers: [],
+        problem: null,
+      };
+    }
+
+    return {
+      providerId: config.providerId,
+      keyConfigured: true,
+      reachable: false,
+      voiceCatalogueChecked: false,
+      engineReady: null,
+      totalSpeakers: null,
+      speakerIdsByLanguage: {},
+      languagesWithoutSpeakers: languages,
+      problem: 'the credential was REJECTED (401), so nothing can be spoken',
+    };
+  }
+
   if (!response.ok) {
     return {
       providerId: config.providerId,
       keyConfigured: true,
       reachable: false,
+      voiceCatalogueChecked: false,
       engineReady: null,
       totalSpeakers: null,
       speakerIdsByLanguage: {},
@@ -114,6 +175,7 @@ export async function preflightElevenLabsVoices(
       providerId: config.providerId,
       keyConfigured: true,
       reachable: true,
+      voiceCatalogueChecked: false,
       engineReady: null,
       totalSpeakers: null,
       speakerIdsByLanguage: {},
@@ -153,6 +215,7 @@ export async function preflightElevenLabsVoices(
     providerId: config.providerId,
     keyConfigured: true,
     reachable: true,
+    voiceCatalogueChecked: true,
     // ElevenLabs has no readiness flag: it does not scale to zero, which is the
     // whole reason this replaced a vendor that did.
     engineReady: null,
@@ -175,6 +238,18 @@ export function describeNigerianVoicePreflight(preflight: NigerianVoicePreflight
   }
   if (!preflight.reachable) {
     return `${who} preflight: NOT reachable — ${preflight.problem ?? 'unknown'}`;
+  }
+  if (!preflight.voiceCatalogueChecked) {
+    /*
+     * SAID PLAINLY, because this is the line somebody reads at 2 a.m. and it
+     * must not be mistaken for a pass. Nothing was verified; the credential is
+     * simply not permitted to verify itself.
+     */
+    return (
+      `${who} preflight: reachable and the credential works, but the voice catalogue was ` +
+      'NOT CHECKED (this key is scoped to synthesis). A voice id missing from the account ' +
+      'would not be caught here — grant voices_read to restore the check.'
+    );
   }
   const counts = Object.entries(preflight.speakerIdsByLanguage)
     .map(([language, ids]) => `${language}=${ids.length}`)
