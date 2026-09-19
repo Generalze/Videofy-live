@@ -106,6 +106,21 @@ function isLiveConversation(context: { mediaSessionMode: MediaSessionMode }): bo
 const LIVE_INGRESS_PREOPEN_FRAMES = 50;
 
 /**
+ * How long an unopened stream may keep eating speech before it is an incident.
+ *
+ * NOT "the buffer filled", WHICH WAS THE FIRST VERSION OF THIS AND WAS WRONG.
+ * A burst of frames can overrun a fifty-frame buffer in a second while a
+ * perfectly healthy handshake is still in flight, so reporting on overflow
+ * would have cried outage on every fast call -- an alarm that fires when
+ * nothing is wrong teaches people to ignore it, which is how the original
+ * signal became invisible in the first place.
+ *
+ * Five seconds is far beyond a local handshake (measured at 494 ms against the
+ * real service) and far below a call anybody would sit through in silence.
+ */
+export const LIVE_INGRESS_STALL_MS = 5_000;
+
+/**
  * Where live audio goes, and what comes back.
  *
  * Optional on the bridge: when it is absent the chunker path runs exactly as
@@ -281,6 +296,31 @@ interface MediaTranscriptionSessionState {
    */
   liveIngressPending: MediaAudioDataLike[];
   liveIngressFailure: string | null;
+  /**
+   * WHERE THE LIVE AUDIO PATH ACTUALLY GOT TO, in one word.
+   *
+   * MEASURED, 19 Sep 2026, and this field is the answer to a night of it. Every
+   * frame of a real call was captured and dropped, and the logs said only that
+   * a buffer was full -- because the three ways this path can fail to open all
+   * `return` silently, and two of them leave no trace at all. The server was
+   * proved healthy (a probe reached READY in 494 ms with the same context), so
+   * the fault was somewhere in these few lines, and nothing recorded which.
+   *
+   * `not-started` is the loudest value here: it means `startLiveIngress` either
+   * was never called or returned at its first line, which no other signal in
+   * this service can distinguish.
+   */
+  liveIngressState:
+    | 'not-started'
+    | 'creating-session'
+    | 'opening'
+    | 'ready'
+    | 'refused-no-run-identity'
+    | 'failed';
+  /** When the open began, so a hang can be reported as a duration. */
+  liveIngressStartedAtMs: number | null;
+  /** So the watchdog complains once per session rather than once per frame. */
+  liveIngressStallReported: boolean;
   queue: MediaTranscriptionChunk[];
   /** Recent chunk wall-clock anchors, newest last, bounded to CHUNK_TIMING_HISTORY. */
   chunkTimings: MediaChunkTiming[];
@@ -630,6 +670,9 @@ export class MediaTranscriptionBridge {
       liveIngressOpening: null,
       liveIngressPending: [],
       liveIngressFailure: null,
+      liveIngressState: 'not-started',
+      liveIngressStartedAtMs: null,
+      liveIngressStallReported: false,
     };
     this.sessions.set(key, state);
     if (this.realtimeIngress !== null) this.startLiveIngress(state);
@@ -663,8 +706,30 @@ export class MediaTranscriptionBridge {
 
   private startLiveIngress(session: MediaTranscriptionSessionState): void {
     const ingress = this.realtimeIngress;
-    if (ingress === null || session.liveIngressOpening !== null) return;
+    /*
+     * THE TWO SILENT RETURNS, NOW AUDIBLE. Both of these are ordinary in
+     * isolation -- no ingress is the batch deployment, and an in-flight open is
+     * the second frame arriving -- and together they were indistinguishable
+     * from a call whose audio was being captured and thrown away. On 19 Sep a
+     * real call dropped every frame and the only record was a full buffer.
+     * Logged at debug: routine when expected, and present when it is not.
+     */
+    if (ingress === null) {
+      logger.debug('live ingress not started: no realtime ingress configured', {
+        sessionId: session.context.sessionId,
+      });
+      return;
+    }
+    if (session.liveIngressOpening !== null) {
+      logger.debug('live ingress already opening', {
+        sessionId: session.context.sessionId,
+        state: session.liveIngressState,
+      });
+      return;
+    }
     const context = session.context;
+    session.liveIngressState = 'creating-session';
+    session.liveIngressStartedAtMs = Date.now();
     const openSender = ingress.createSender ?? ((o) => LiveIngressSender.open(o));
     /*
      * THE SESSION RECORD TRAVELS FIRST. The ingress `open` carries no target
@@ -686,12 +751,20 @@ export class MediaTranscriptionBridge {
       .then(() => {
       const serviceContext = serviceContextForMode(context.mediaSessionMode, context.programme);
       if (serviceContext === null) {
+        session.liveIngressState = 'refused-no-run-identity';
         logger.warn('live ingress refused: a programme stream has no run identity', {
           sessionId: context.sessionId,
           broadcastId: context.broadcastId,
         });
         return;
       }
+      session.liveIngressState = 'opening';
+      logger.info('live ingress opening', {
+        sessionId: context.sessionId,
+        broadcastId: context.broadcastId,
+        mediaSessionMode: context.mediaSessionMode,
+        serviceCategory: serviceContext.serviceCategory,
+      });
       return openSender({
       url: ingress.url,
       token: ingress.token,
@@ -706,13 +779,29 @@ export class MediaTranscriptionBridge {
     })
       .then((sender: LiveIngressSender | undefined) => {
         // Undefined means the open was refused above -- a programme with no
-        // run identity -- and there is no sender to adopt.
+        // run identity -- and there is no sender to adopt. The state set at the
+        // refusal says which, so this return is no longer the end of the trail.
         if (sender === undefined) return;
         if (session.closed) {
           void sender.abort('session closed before the stream opened');
           return;
         }
         session.liveIngress = sender;
+        session.liveIngressState = 'ready';
+        /*
+         * SAID OUT LOUD, because its absence is the whole defect. A call whose
+         * translation never happens looks identical to one nobody spoke on
+         * unless this line is in the log with a frame count beside it.
+         */
+        logger.info('live ingress ready', {
+          sessionId: context.sessionId,
+          broadcastId: context.broadcastId,
+          openedInMs:
+            session.liveIngressStartedAtMs === null
+              ? null
+              : Date.now() - session.liveIngressStartedAtMs,
+          flushedPendingFrames: session.liveIngressPending.length,
+        });
         // Whatever was captured while we were connecting is real audio that
         // was really spoken. It goes first, in order, before anything new.
         for (const pending of session.liveIngressPending) sender.pushFrame(pending);
@@ -721,6 +810,7 @@ export class MediaTranscriptionBridge {
       .catch((error: unknown) => {
         session.liveIngressFailure =
           error instanceof Error ? error.message : 'live ingress failed to open';
+        session.liveIngressState = 'failed';
         session.liveIngressPending = [];
         logger.error('live ingress failed to open', {
           sessionId: context.sessionId,
@@ -728,6 +818,38 @@ export class MediaTranscriptionBridge {
           message: session.liveIngressFailure,
         });
       });
+  }
+
+  /**
+   * A stream that is still not open while real speech is being discarded.
+   *
+   * ONCE PER SESSION, AND AT ERROR. The buffer warning repeats per frame and
+   * reads as noise; this is the line that says a CALL IS LOSING ITS AUDIO, with
+   * the one word that names where it stopped. Without it, an open that never
+   * settles produces a wall of warnings about a buffer and nothing about the
+   * thing that is actually broken.
+   */
+  private reportLiveIngressStall(session: MediaTranscriptionSessionState): void {
+    if (session.liveIngressStallReported) return;
+    const startedAt = session.liveIngressStartedAtMs;
+    /*
+     * A null start means `startLiveIngress` never ran at all, which is not a
+     * slow handshake and is never ordinary on a live call: report at once.
+     * Otherwise wait out the grace period rather than racing a healthy open.
+     */
+    if (startedAt !== null && Date.now() - startedAt < LIVE_INGRESS_STALL_MS) return;
+    session.liveIngressStallReported = true;
+    logger.error('live audio is being DISCARDED: the ingress never opened', {
+      sessionId: session.context.sessionId,
+      broadcastId: session.context.broadcastId,
+      mediaSessionMode: session.context.mediaSessionMode,
+      liveIngressState: session.liveIngressState,
+      liveIngressFailure: session.liveIngressFailure,
+      waitingMs:
+        session.liveIngressStartedAtMs === null
+          ? null
+          : Date.now() - session.liveIngressStartedAtMs,
+    });
   }
 
   private pushLive(session: MediaTranscriptionSessionState, data: MediaAudioDataLike): void {
@@ -740,10 +862,25 @@ export class MediaTranscriptionBridge {
         // Say so once. A silently truncated start reads as "we captured
         // everything" to whoever debugs the missing first word later.
         session.liveIngressPending.push(data);
+        /*
+         * THE STATE IS THE POINT, not the frame count.
+         *
+         * This warning existed on 19 Sep and said only that a buffer was full.
+         * Every frame of a real call was being discarded and it could not
+         * distinguish "the handshake is a moment behind" from "nothing ever
+         * tried to open" -- which are a shrug and an outage. `liveIngressState`
+         * is carried here so the same line answers both.
+         */
         logger.warn('live ingress pre-open buffer full; dropping the oldest captured audio', {
           sessionId: session.context.sessionId,
           frames: session.liveIngressPending.length,
+          liveIngressState: session.liveIngressState,
+          waitingMs:
+            session.liveIngressStartedAtMs === null
+              ? null
+              : Date.now() - session.liveIngressStartedAtMs,
         });
+        this.reportLiveIngressStall(session);
         session.liveIngressPending.shift();
       } else {
         session.liveIngressPending.shift();
