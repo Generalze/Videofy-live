@@ -16,6 +16,7 @@ import { useRef, useState } from 'react';
 import { createAccountApi } from './accountApi';
 import { Avatar } from './Avatar';
 import { downscaleToDataUrl } from './imageDownscale';
+import { LANGUAGE_CATALOGUE, isCatalogueLanguage } from '@videofy-live/language-catalogue';
 
 const ACCOUNT_URL = (
   (import.meta.env['VITE_ACCOUNT_URL'] as string | undefined) ?? 'http://localhost:3006'
@@ -152,6 +153,46 @@ export function ProfilePanel({ token, accountId, profile, onChanged }: Props) {
     }
   }
 
+
+/**
+ * EVERY CATALOGUE LANGUAGE, ordered by the catalogue's own rank.
+ *
+ * These three controls offered English, Spanish and French, hand-written six
+ * times over -- once in each `<option>` list and once in each guard. That is
+ * the profile where a person states the language they speak, so a Yoruba
+ * speaker could not say so, and every downstream surface that reads the
+ * profile inherited the gap. The account API has always accepted a string;
+ * only the UI was caged.
+ *
+ * Offering a language the deployment cannot yet route is the HONEST failure:
+ * the server refuses the pair and says why. Not offering it at all is the one
+ * that hid a whole market.
+ */
+const LANGUAGE_OPTIONS: readonly { value: string; label: string }[] = LANGUAGE_CATALOGUE
+  .slice()
+  .sort((a, b) => a.rank - b.rank)
+  .map((entry) => ({ value: entry.code, label: entry.englishName }));
+
+/** Null for anything that names no language, so a tampered value is ignored. */
+function chosenLanguage(value: string): string | null {
+  return isCatalogueLanguage(value) ? value : null;
+}
+
+function LanguageOptions(): JSX.Element {
+  return (
+    <>
+      <option value="" disabled>
+        Choose
+      </option>
+      {LANGUAGE_OPTIONS.map((option) => (
+        <option key={option.value} value={option.value}>
+          {option.label}
+        </option>
+      ))}
+    </>
+  );
+}
+
   return (
     <section className="app-card">
       <h2 className="app-card-title">Your C7 identity</h2>
@@ -169,18 +210,13 @@ export function ProfilePanel({ token, accountId, profile, onChanged }: Props) {
               className="contact-input"
               value={profile.defaultLanguage ?? ''}
               onChange={(event) => {
-                const value = event.target.value;
-                if (value === 'en' || value === 'es' || value === 'fr') {
+                const value = chosenLanguage(event.target.value);
+                if (value !== null) {
                   void api.setDefaultLanguage(value).then(() => onChanged());
                 }
               }}
             >
-              <option value="" disabled>
-                Choose
-              </option>
-              <option value="en">English</option>
-              <option value="es">Spanish</option>
-              <option value="fr">French</option>
+              <LanguageOptions />
             </select>
           </label>
           <label>
@@ -189,18 +225,13 @@ export function ProfilePanel({ token, accountId, profile, onChanged }: Props) {
               className="contact-input"
               value={profile.spokenLanguage ?? profile.defaultLanguage ?? ''}
               onChange={(event) => {
-                const value = event.target.value;
-                if (value === 'en' || value === 'es' || value === 'fr') {
+                const value = chosenLanguage(event.target.value);
+                if (value !== null) {
                   void api.setLanguages({ spokenLanguage: value }).then(() => onChanged());
                 }
               }}
             >
-              <option value="" disabled>
-                Choose
-              </option>
-              <option value="en">English</option>
-              <option value="es">Spanish</option>
-              <option value="fr">French</option>
+              <LanguageOptions />
             </select>
           </label>
           <label>
@@ -209,18 +240,13 @@ export function ProfilePanel({ token, accountId, profile, onChanged }: Props) {
               className="contact-input"
               value={profile.listeningLanguage ?? profile.defaultLanguage ?? ''}
               onChange={(event) => {
-                const value = event.target.value;
-                if (value === 'en' || value === 'es' || value === 'fr') {
+                const value = chosenLanguage(event.target.value);
+                if (value !== null) {
                   void api.setLanguages({ listeningLanguage: value }).then(() => onChanged());
                 }
               }}
             >
-              <option value="" disabled>
-                Choose
-              </option>
-              <option value="en">English</option>
-              <option value="es">Spanish</option>
-              <option value="fr">French</option>
+              <LanguageOptions />
             </select>
           </label>
         </div>
