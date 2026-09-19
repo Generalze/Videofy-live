@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 
 import { CallSessionLifecycleStateSchema } from '@videofy-live/call-contracts';
+import { isCatalogueLanguage } from '@videofy-live/language-catalogue';
 import {
   AudioModeSchema,
   CallSessionIdSchema,
@@ -549,6 +550,37 @@ export const STANDARD_CALL_VOICES: Readonly<
   es: { male: 'es_ES-sharvard-male', female: 'es_ES-sharvard-female' },
   fr: { male: 'fr_FR-upmc-pierre', female: 'fr_FR-siwis-medium' },
 };
+
+/**
+ * One male and one female voice for EVERY language, when the deployment has a
+ * multilingual synthesiser.
+ *
+ * WHAT THIS FIXES, measured in production on 2026-09-19. The table above is a
+ * PIPER table -- those are Piper model names -- and it was deciding whether ANY
+ * provider could speak a language. Production runs ElevenLabs, whose voices are
+ * multilingual, so Hausa, Igbo, Yoruba and Nigerian Pidgin were being reported
+ * as text-only on calls purely because Piper has no voice for them. Captions
+ * arrived; nobody spoke. The Nigerian routing work of 2026-09-18 reached
+ * programmes and uploads and stopped at the call boundary.
+ *
+ * IT IS OPT-IN, AND UNSET MEANS TODAY'S BEHAVIOUR. A Piper-only deployment must
+ * keep falling through to text-only for the languages Piper cannot speak:
+ * inventing a voice there would read Yoruba with an English mouth, which is the
+ * "plays fine, pronunciation wrong" failure this file already refuses. So the
+ * deployment states that it has a multilingual voice; nothing infers it.
+ *
+ * BOTH OR NEITHER. A half-configured pair would speak men and silence women,
+ * which is a stranger product than uniform text-only and much harder to notice
+ * -- the person it fails is never the person testing it.
+ */
+export function standardCallVoicePair(
+  env: NodeJS.ProcessEnv = process.env,
+): Readonly<Record<'male' | 'female', string>> | undefined {
+  const male = (env['CALL_STANDARD_VOICE_MALE'] ?? '').trim();
+  const female = (env['CALL_STANDARD_VOICE_FEMALE'] ?? '').trim();
+  if (male.length === 0 || female.length === 0) return undefined;
+  return { male, female };
+}
 
 /**
  * Development-demo conference cap; disconnected identities keep their seat for
@@ -1836,10 +1868,10 @@ function validateJoinInput(input: CallJoinInput): string | null {
     return `Display names are limited to ${MAX_DISPLAY_NAME_LENGTH} characters.`;
   }
   if (!isCallLanguage(input.speakLanguage)) {
-    return 'The language you speak must be English (en), Spanish (es), or French (fr).';
+    return 'That is not a language we recognise. Choose one from the language list.';
   }
   if (!isCallLanguage(input.hearLanguage)) {
-    return 'The language you hear must be English (en), Spanish (es), or French (fr).';
+    return 'That is not a language we recognise. Choose one from the language list.';
   }
   if (typeof input.captionsEnabled !== 'boolean') {
     return 'The caption preference must be on or off.';
@@ -2077,7 +2109,15 @@ function buildIngestPlan(call: CallState, speaker: CallParticipantState): CallIn
      * it is wrong. Translated captions still arrive; only the audio is
      * withheld, and it is withheld visibly rather than faked.
      */
-    const voices = STANDARD_CALL_VOICES[language];
+    /*
+     * THE CONFIGURED PAIR WINS over the built-in table, and the order is the
+     * fix rather than a preference. Those entries are Piper model names; under
+     * a multilingual synthesiser they are unmapped ids that fall through to a
+     * single default voice, so en/es/fr were ALSO losing the speaker's
+     * male/female choice -- every participant in every language spoken by one
+     * voice. A deployment that has stated its pair means it.
+     */
+    const voices = standardCallVoicePair() ?? STANDARD_CALL_VOICES[language];
     if (voices === undefined) {
       textOnlyLanguages.push(language);
       continue;
@@ -2148,8 +2188,29 @@ function connectedOtherParticipants(
   return [...call.participants.values()].filter((state) => state !== speaker && isSeated(state));
 }
 
+/**
+ * ANY LANGUAGE IN THE CATALOGUE, which is the whole point of the product.
+ *
+ * THIS WAS `'en' || 'es' || 'fr'` UNTIL 2026-09-19, and it is the seam that
+ * made the rest of the widening a lie. `CallLanguage` was widened from that
+ * union to `string` earlier in the same session, with a comment explaining
+ * that a compile-time union could not answer a deployment question -- and this
+ * runtime guard, forty lines from the type it guards, was left behind. So the
+ * types said ninety-eight languages, the catalogue offered ninety-eight, the
+ * mobile app listed ninety-eight, and `createOrJoin` answered "The language you
+ * speak must be English (en), Spanish (es), or French (fr)."
+ *
+ * Nobody could join a call in Yoruba. The Nigerian voice work of 2026-09-18
+ * routed, deployed and proved a vendor for four languages that could not reach
+ * a call at all. Same species as the vendor seam it was fixing: the declaration
+ * moved, the enforcement did not.
+ *
+ * The catalogue is the single source. `lookupLanguage` tolerates a regional
+ * suffix and legacy aliases, so `yo`, `yo-NG` and an alias all resolve to the
+ * same entry, and anything outside it is still refused rather than admitted.
+ */
 function isCallLanguage(value: unknown): value is CallLanguage {
-  return value === 'en' || value === 'es' || value === 'fr';
+  return typeof value === 'string' && isCatalogueLanguage(value);
 }
 
 /** All stored languages are admitted as supported CallLanguages at join; anything else is a bug. */
