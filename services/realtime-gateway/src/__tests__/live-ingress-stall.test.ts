@@ -28,6 +28,7 @@ import {
   type MediaTranscriptionSubmissionClient,
 } from '../media-transcription-bridge.js';
 import { logger } from '../logger.js';
+import type { LiveIngressSender } from '../live-ingress-sender.js';
 import { LIVE_INGRESS_STALL_MS } from '../media-transcription-bridge.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -47,6 +48,16 @@ function callContext(): MediaTranscriptionBridgeContext {
     mediaSessionMode: 'live-conversation',
     targetLanguage: 'fr',
   };
+}
+
+/** The smallest thing the bridge will accept as an opened stream. */
+function fakeSender(): LiveIngressSender {
+  return {
+    pushFrame: () => true,
+    markDiscontinuity: () => {},
+    finish: async () => {},
+    abort: async () => {},
+  } as unknown as LiveIngressSender;
 }
 
 const client: MediaTranscriptionSubmissionClient = {
@@ -146,25 +157,25 @@ describe('a live ingress that never opens is reported, not merely buffered', () 
      */
     const error = vi.spyOn(logger, 'error').mockImplementation(() => {});
     try {
-      let settle: ((value: never) => void) | null = null;
+      // Held on an object so the assignment inside the executor is visible to
+      // the compiler; a bare `let` narrows to null and cannot be called.
+      const pending: { settle: ((sender: LiveIngressSender) => void) | null } = { settle: null };
       const bridge = new MediaTranscriptionBridge({
         stagingDir: resolve(here, '__staging__'),
         client,
         realtimeIngress: {
           url: 'ws://127.0.0.1:1/internal/media/ingress/v1',
           token: 'unused',
-          createSender: () => new Promise((done) => { settle = done as never; }),
+          createSender: () =>
+            new Promise<LiveIngressSender>((done) => {
+              pending.settle = done;
+            }),
         },
       });
       // A burst arrives BEFORE the open settles, and the clock has not moved.
       await speakInto(bridge, 300);
       expect(error.mock.calls.filter((c) => JSON.stringify(c).includes('DISCARDED'))).toHaveLength(0);
-      settle?.({
-        pushFrame: () => true,
-        markDiscontinuity: () => {},
-        finish: async () => {},
-        abort: async () => {},
-      } as never);
+      pending.settle?.(fakeSender());
     } finally {
       error.mockRestore();
     }
@@ -175,19 +186,13 @@ describe('a live ingress that never opens is reported, not merely buffered', () 
     // the broken one.
     const error = vi.spyOn(logger, 'error').mockImplementation(() => {});
     try {
-      const sender = {
-        pushFrame: () => true,
-        markDiscontinuity: () => {},
-        finish: async () => {},
-        abort: async () => {},
-      };
       const bridge = new MediaTranscriptionBridge({
         stagingDir: resolve(here, '__staging__'),
         client,
         realtimeIngress: {
           url: 'ws://127.0.0.1:1/internal/media/ingress/v1',
           token: 'unused',
-          createSender: async () => sender as never,
+          createSender: async () => fakeSender(),
         },
       });
       await speakInto(bridge, 200);
