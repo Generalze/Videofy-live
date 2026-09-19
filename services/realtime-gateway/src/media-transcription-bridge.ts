@@ -467,9 +467,36 @@ export class MediaTranscriptionBridge {
     if (this.realtimeIngress !== null) {
       // FINISH, not abort: the speaker really said this and never withdrew it.
       // Aborting would silently lose the last sentence of every call.
-      void (session.liveIngressOpening ?? Promise.resolve()).then(() =>
-        session.liveIngress?.finish(reason),
-      );
+      void (session.liveIngressOpening ?? Promise.resolve()).then(() => {
+        /*
+         * HOW MUCH AUDIO THIS CALL ACTUALLY SENT, counted at the one place
+         * that knows.
+         *
+         * MEASURED 19 Sep: a call opened its ingress in 500 ms, resolved a
+         * speech plan, ran for thirty seconds and produced no translation --
+         * and nothing anywhere recorded whether a single frame of speech had
+         * been forwarded after the handshake. A probe pushing 260 frames of
+         * real speech through the same path got 35 translated frames back, so
+         * the pipeline works; what was missing was any way to tell a silent
+         * caller from a gateway that stopped forwarding. This line is that
+         * difference, and it costs one log per session.
+         */
+        const stats = session.liveIngress?.stats ?? null;
+        logger.info('live ingress finished', {
+          sessionId: session.context.sessionId,
+          broadcastId: session.context.broadcastId,
+          reason,
+          liveIngressState: session.liveIngressState,
+          framesSent: stats?.framesSent ?? 0,
+          audioSecondsSent: stats === null ? 0 : Math.round(stats.samplesSent / 16000),
+          translatedFramesIn: stats?.translatedFramesIn ?? 0,
+          droppedForBackpressure: stats?.droppedForBackpressure ?? 0,
+          malformedFrames: stats?.malformedFrames ?? 0,
+          skippedFrames: session.skippedFrameCount,
+          lastSkippedReason: session.lastSkippedFrameReason,
+        });
+        return session.liveIngress?.finish(reason);
+      });
       this.maybeStopSession(session);
       return;
     }
