@@ -43,10 +43,19 @@ function harness() {
   const verdicts: RemoteVideoVerdict[] = [];
   /** Decoded frames per participant; absent means the peer is gone. */
   const frames = new Map<string, number>([[THEM, 0]]);
+  /** Inbound bytes per participant; absent reads as zero. */
+  const bytes = new Map<string, number>();
+  /** Participants whose getStats does not answer: counters zero, unmeasured. */
+  const unmeasurable = new Set<string>();
   const waiting: (() => void)[] = [];
 
   const gate = createRemoteVideoGate({
-    framesDecoded: async (participantId: string) => frames.get(participantId) ?? null,
+    inbound: async (participantId: string) => {
+      if (unmeasurable.has(participantId)) return { frames: 0, bytes: 0, measured: false };
+      const decoded = frames.get(participantId);
+      if (decoded === undefined) return null;
+      return { frames: decoded, bytes: bytes.get(participantId) ?? 0, measured: true };
+    },
     show: (participantId: string, shown: GatedRemoteStream | null) => {
       painted.push({ participantId, url: shown === null ? null : shown.toURL() });
     },
@@ -70,7 +79,7 @@ function harness() {
     }
   };
 
-  return { gate, painted, verdicts, frames, tick, settle };
+  return { gate, painted, verdicts, frames, bytes, unmeasurable, tick, settle };
 }
 
 describe('a remote tile is shown only for video that is arriving', () => {
@@ -138,6 +147,50 @@ describe('a remote tile is shown only for video that is arriving', () => {
     frames.set(THEM, 3);
     await tick(1);
     expect(painted).toEqual([{ participantId: THEM, url: 'rtc://them' }]);
+    gate.dispose();
+  });
+
+  it('accepts inbound bytes as proof when the platform counts no frames', async () => {
+    const { gate, painted, bytes, settle } = harness();
+
+    // frames stays 0: a stats row whose inbound-rtp carries bytesReceived
+    // but neither framesReceived nor framesDecoded.
+    bytes.set(THEM, 5120);
+    gate.offer(THEM, stream('rtc://them'));
+    await settle();
+
+    expect(painted).toEqual([{ participantId: THEM, url: 'rtc://them' }]);
+    gate.dispose();
+  });
+});
+
+describe('a phone that cannot measure is not a phone that receives nothing', () => {
+  it('shows the stream on the platform word when getStats does not answer', async () => {
+    const { gate, painted, verdicts, unmeasurable, settle } = harness();
+
+    unmeasurable.add(THEM);
+    gate.offer(THEM, stream('rtc://them'));
+    await settle();
+
+    // Failing closed here would be worse than the flash: no picture, ever.
+    expect(painted).toEqual([{ participantId: THEM, url: 'rtc://them' }]);
+    // And the timeline must not dress that up as a proven picture.
+    expect(verdicts.some((verdict) => verdict.kind === 'live')).toBe(false);
+    expect(verdicts.filter((verdict) => verdict.kind === 'unmeasured')).toEqual([
+      { kind: 'unmeasured', participantId: THEM },
+    ]);
+    gate.dispose();
+  });
+
+  it('still clears an unmeasured tile when the mesh withdraws the stream', async () => {
+    const { gate, painted, unmeasurable, settle } = harness();
+
+    unmeasurable.add(THEM);
+    gate.offer(THEM, stream('rtc://them'));
+    await settle();
+    gate.offer(THEM, null);
+
+    expect(painted[painted.length - 1]).toEqual({ participantId: THEM, url: null });
     gate.dispose();
   });
 });
@@ -244,15 +297,36 @@ describe('the timeline can tell a held tile from one that never existed', () => 
     gate.dispose();
   });
 
-  it('records the frame count that earned a tile', async () => {
-    const { gate, verdicts, frames, settle } = harness();
+  it('records idle BEFORE the platform mute at 3 s withdraws the stream and ends the watch', async () => {
+    const { gate, painted, verdicts, tick } = harness();
+
+    // t=0: announced. Each tick is one 500 ms sample interval.
+    gate.offer(THEM, stream('rtc://them'));
+    // t=3000: Android's INITIAL_MUTE_DELAY elapses with no frames rendered,
+    // the track mutes, and the mesh withdraws the stream.
+    await tick(6);
+    const idleBeforeWithdrawal = verdicts.filter((verdict) => verdict.kind === 'idle');
+    gate.offer(THEM, null);
+    await tick(4);
+
+    // This is the device proof of the fix, and it has to be reachable on the
+    // exact call it was built for: offered, then idle, and never a picture.
+    expect(idleBeforeWithdrawal).toEqual([{ kind: 'idle', participantId: THEM, heldMs: 2000 }]);
+    expect(verdicts.map((verdict) => verdict.kind)).toEqual(['offered', 'idle']);
+    expect(painted.filter((entry) => entry.url !== null)).toEqual([]);
+    gate.dispose();
+  });
+
+  it('records the frame and byte counts that earned a tile', async () => {
+    const { gate, verdicts, frames, bytes, settle } = harness();
 
     frames.set(THEM, 18);
+    bytes.set(THEM, 9000);
     gate.offer(THEM, stream('rtc://them'));
     await settle();
 
     expect(verdicts.filter((verdict) => verdict.kind === 'live')).toEqual([
-      { kind: 'live', participantId: THEM, frames: 18 },
+      { kind: 'live', participantId: THEM, frames: 18, bytes: 9000 },
     ]);
     gate.dispose();
   });

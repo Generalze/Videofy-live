@@ -37,11 +37,33 @@
  * nothing to do with the diagnostics build, which only renders text.
  *
  * THE RULE HERE. A stream offered by the mesh is HELD, not shown, until this
- * phone has actually decoded a video frame from that participant; a
- * withdrawal is applied at once, because hiding a tile is never the wrong
- * thing to do. Frame counts come from `getStats`, which is measurement rather
- * than a flag the platform sets optimistically -- the same source that
+ * phone has actually received video from that participant -- a decoded frame,
+ * or failing that inbound bytes, since a platform may count one and not the
+ * other; a withdrawal is applied at once, because hiding a tile is never the
+ * wrong thing to do. The counters come from `getStats`, which is measurement
+ * rather than a flag the platform sets optimistically -- the same source that
  * already proves the outbound direction.
+ *
+ * WHAT A WITHDRAWAL ENDS. It ends the watch; it does not keep the stream. So
+ * on Android the sequence is: offered at t=0, held, idle recorded at 2 s,
+ * withdrawn at ~3 s when the platform mutes the frameless track, and nothing
+ * watched from then on. A camera switched on later reaches the screen because
+ * frames make the platform UNMUTE the track and the mesh offers the stream
+ * again, which starts a fresh watch that proves it at once. That is a
+ * dependency on the platform's unmute, and it is deliberate: the frame
+ * counter is cumulative, so a watch kept alive across a withdrawal would put
+ * the tile straight back after a camera-OFF mute -- a frozen still of someone
+ * who believes they are hidden, the defect the mesh's mute handling exists to
+ * prevent. Withdraw-then-re-offer is the contract the mesh has always had.
+ * The 2 s heartbeat below is for the OTHER case, a platform that never
+ * delivers a mute verdict for a frameless track: without it such a track
+ * would be held with nobody looking. iOS has not been measured either way.
+ *
+ * WHEN MEASUREMENT FAILS, THE GATE FAILS OPEN. `getStats` rejecting is not
+ * "zero frames"; treating it as such would turn a one-second ghost into video
+ * that can never be shown at all. An unmeasurable stream is shown on the
+ * platform's word, as every stream was before this gate existed, and the
+ * timeline says so (`remote-unmeasured`) rather than claiming it was proven.
  *
  * THIS DOES NOT MAKE VIDEO ARRIVE. A call where the far side genuinely sends
  * nothing still shows no picture; it now shows the avatar for the whole call
@@ -53,22 +75,35 @@
 export type GatedRemoteStream = { toURL(): string };
 
 /**
- * What became of an offered remote stream. Three different questions, which
+ * What became of an offered remote stream. Four different questions, which
  * a bare "the tile is empty" cannot tell apart: was a track ever announced,
- * did it ever produce a picture, and was it held without producing one.
+ * did it ever produce a picture, was it held without producing one, and was
+ * it shown unproven because the phone could not measure it.
  */
 export type RemoteVideoVerdict =
   | { readonly kind: 'offered'; readonly participantId: string }
-  | { readonly kind: 'live'; readonly participantId: string; readonly frames: number }
-  | { readonly kind: 'idle'; readonly participantId: string; readonly heldMs: number };
+  | { readonly kind: 'live'; readonly participantId: string; readonly frames: number; readonly bytes: number }
+  | { readonly kind: 'idle'; readonly participantId: string; readonly heldMs: number }
+  | { readonly kind: 'unmeasured'; readonly participantId: string };
+
+/**
+ * What this phone has received from one participant so far. Cumulative, so
+ * the counters never fall. `measured` is false when the platform could not
+ * answer at all -- then both counters are zero because nothing was counted,
+ * not because nothing arrived, and the two must never be confused.
+ */
+export interface RemoteVideoInbound {
+  readonly frames: number;
+  readonly bytes: number;
+  readonly measured: boolean;
+}
 
 export interface RemoteVideoGateDeps {
   /**
-   * Video frames this phone has DECODED from that participant so far, or
-   * null when the peer is no longer in the mesh (nothing left to wait for).
-   * Cumulative, so it never falls.
+   * Inbound video counters for that participant, or null when the peer is
+   * no longer in the mesh (nothing left to wait for).
    */
-  readonly framesDecoded: (participantId: string) => Promise<number | null>;
+  readonly inbound: (participantId: string) => Promise<RemoteVideoInbound | null>;
   /** Put a proven stream on screen, or clear the tile with null. */
   readonly show: (participantId: string, stream: GatedRemoteStream | null) => void;
   readonly delay: (ms: number) => Promise<void>;
@@ -86,13 +121,22 @@ export interface RemoteVideoGate {
  * the window in which real video starts (the far side's camera-on is a
  * replaceTrack on an m-line that already exists) and outlasts the platform's
  * own 3 s mute verdict. After that the answer is almost certainly "no video
- * on this call", so the watch drops to a cheap heartbeat rather than
- * stopping: a camera switched on ten minutes in must still get a tile, on
- * any platform, without depending on an unmute event to wake this up.
+ * on this call", so the watch drops to a cheap heartbeat for as long as the
+ * offer stands -- which, as the header says, is only until the platform
+ * withdraws it; the heartbeat is for a platform that never does.
+ *
+ * The idle verdict is recorded at TWO seconds, before the platform's own
+ * verdict at three. On Android the mesh answers that verdict by withdrawing
+ * the stream, which ends this watch, so an idle recorded any later would
+ * never reach the timeline on the exact call this gate was built for: the
+ * device proof of the fix is `video_remote_offered` then `video_remote_idle`
+ * with no `video_remote_stream`, and it has to be achievable.
  */
 const FAST_SAMPLE_MS = 500;
 const FAST_SAMPLES = 8;
 const IDLE_SAMPLE_MS = 2000;
+/** Samples of nothing before the hold is recorded as idle: 4 x 500 ms = 2 s. */
+const IDLE_AFTER_SAMPLES = 4;
 
 export function createRemoteVideoGate(deps: RemoteVideoGateDeps): RemoteVideoGate {
   /** participantId -> the token of the hold currently entitled to show it. */
@@ -113,19 +157,28 @@ export function createRemoteVideoGate(deps: RemoteVideoGateDeps): RemoteVideoGat
     let saidIdle = false;
     for (let sample = 0; ; sample += 1) {
       if (!mine(participantId, token)) return;
-      const frames = await deps.framesDecoded(participantId);
+      const inbound = await deps.inbound(participantId);
       // Re-checked after every await: a withdrawal, a newer stream or a
       // teardown may have landed while getStats was in flight, and showing
       // then would put a tile back that something else had just taken down.
       if (!mine(participantId, token)) return;
-      if (frames === null) return;
-      if (frames > 0) {
+      if (inbound === null) return;
+      if (!inbound.measured) {
+        // Unprovable is not disproved. Fail open, on the platform's word, and
+        // say so: a gate that held this forever would hide every picture on
+        // a phone whose getStats does not answer.
         holds.delete(participantId);
         deps.show(participantId, stream);
-        deps.report?.({ kind: 'live', participantId, frames });
+        deps.report?.({ kind: 'unmeasured', participantId });
         return;
       }
-      if (sample >= FAST_SAMPLES && !saidIdle) {
+      if (inbound.frames > 0 || inbound.bytes > 0) {
+        holds.delete(participantId);
+        deps.show(participantId, stream);
+        deps.report?.({ kind: 'live', participantId, frames: inbound.frames, bytes: inbound.bytes });
+        return;
+      }
+      if (sample >= IDLE_AFTER_SAMPLES && !saidIdle) {
         saidIdle = true;
         deps.report?.({ kind: 'idle', participantId, heldMs });
       }

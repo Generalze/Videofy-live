@@ -954,6 +954,31 @@ describe('instant camera: the negotiation is bounded and correct', () => {
     expect(warm[0]?.outboundBytes).toBeGreaterThan(0);
   });
 
+  /**
+   * Stats that cannot be read are not stats that read zero. A consumer that
+   * gates a remote picture on inbound counters must be able to tell "nothing
+   * arrived" from "nothing was counted", or a phone whose getStats rejects
+   * would never show video at all.
+   */
+  it('says when a peer could not be measured, instead of reporting zeros as fact', async () => {
+    const h = h2('a');
+    h.mesh.syncParticipants(['b']);
+    await flushAsync();
+
+    const answered = await h.mesh.videoStats();
+    expect(answered[0]?.measured).toBe(true);
+
+    const pc = mustTransceiverPeer(h.peers, 'b');
+    pc.getStats = async () => {
+      throw new Error('stats unavailable on this platform');
+    };
+    const unanswered = await h.mesh.videoStats();
+    expect(unanswered).toHaveLength(1);
+    expect(unanswered[0]?.measured).toBe(false);
+    expect(unanswered[0]?.inboundFrames).toBe(0);
+    expect(unanswered[0]?.inboundBytes).toBe(0);
+  });
+
   /** Requirement 10 */
   it('re-establishes video when the peer is rebuilt after the camera is on', async () => {
     const h = h2('a');

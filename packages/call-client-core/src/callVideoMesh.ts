@@ -108,6 +108,12 @@ export interface CallVideoPeerStats {
   outboundBytes: number;
   inboundFrames: number;
   inboundBytes: number;
+  /**
+   * True when getStats answered. False means every counter above is zero
+   * because NOTHING WAS COUNTED, not because nothing moved -- a caller that
+   * gates a picture on these numbers must not read the two the same way.
+   */
+  measured: boolean;
 }
 
 export interface CallVideoMeshDiagnostics {
@@ -197,9 +203,11 @@ export class CallVideoMesh {
         outboundBytes: 0,
         inboundFrames: 0,
         inboundBytes: 0,
+        measured: false,
       };
       try {
         const report = await entry.pc.getStats();
+        row.measured = true;
         report.forEach((stat: { type?: string; kind?: string; mediaType?: string; framesSent?: number; framesEncoded?: number; bytesSent?: number; framesReceived?: number; framesDecoded?: number; bytesReceived?: number }) => {
           const kind = stat.kind ?? stat.mediaType;
           if (kind !== 'video') return;
@@ -212,7 +220,8 @@ export class CallVideoMesh {
           }
         });
       } catch {
-        // A peer that cannot report stats is reported with zeros; the caller decides.
+        // A peer that cannot report stats is reported with zeros and
+        // measured: false; the caller decides, and can tell the two apart.
       }
       out.push(row);
     }

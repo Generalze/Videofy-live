@@ -283,11 +283,20 @@ export type CallVideoDiagnostic =
    * things happened: a track was announced (`remote-offered`), it produced a
    * picture (`remote-live`), or it was held and never produced one
    * (`remote-idle`) -- the last being the honest record of a far side that
-   * sends nothing, which the flash used to disguise.
+   * sends nothing, which the flash used to disguise. A fourth,
+   * `remote-unmeasured`, records a tile shown UNPROVEN because getStats
+   * would not answer on this phone: the gate fails open there rather than
+   * hide every picture, and the timeline must not call that "live".
+   *
+   * The device proof of the fix is `video_remote_offered` then
+   * `video_remote_idle` with NO `video_remote_stream` on an audio-only call.
+   * The idle is recorded at 2 s so it lands before the platform's 3 s mute
+   * withdraws the stream and ends the watch.
    */
   | { readonly kind: 'remote-offered'; readonly participantId: string }
-  | { readonly kind: 'remote-live'; readonly participantId: string; readonly frames: number }
+  | { readonly kind: 'remote-live'; readonly participantId: string; readonly frames: number; readonly bytes: number }
   | { readonly kind: 'remote-idle'; readonly participantId: string; readonly heldMs: number }
+  | { readonly kind: 'remote-unmeasured'; readonly participantId: string }
   /**
    * A stage of video NEGOTIATION, which is upstream of every stage above: a
    * camera cannot send on an m-line that was never described with a track on
@@ -789,10 +798,12 @@ export class CallConnection {
     this.remoteVideo?.dispose();
     let meshRef: CallVideoMesh | null = null;
     const gate = createRemoteVideoGate({
-      framesDecoded: async (id: string) => {
+      inbound: async (id: string) => {
         if (meshRef === null || this.mesh !== meshRef) return null;
         const row = (await meshRef.videoStats()).find((entry) => entry.participantId === id);
-        return row === undefined ? null : row.inboundFrames;
+        return row === undefined
+          ? null
+          : { frames: row.inboundFrames, bytes: row.inboundBytes, measured: row.measured };
       },
       show: (id: string, stream: GatedRemoteStream | null) =>
         this.options.onRemoteStream(id, stream as unknown as RemoteStream),
@@ -801,9 +812,11 @@ export class CallConnection {
         if (verdict.kind === 'offered') {
           this.options.onVideoDiagnostic?.({ kind: 'remote-offered', participantId: verdict.participantId });
         } else if (verdict.kind === 'live') {
-          this.options.onVideoDiagnostic?.({ kind: 'remote-live', participantId: verdict.participantId, frames: verdict.frames });
-        } else {
+          this.options.onVideoDiagnostic?.({ kind: 'remote-live', participantId: verdict.participantId, frames: verdict.frames, bytes: verdict.bytes });
+        } else if (verdict.kind === 'idle') {
           this.options.onVideoDiagnostic?.({ kind: 'remote-idle', participantId: verdict.participantId, heldMs: verdict.heldMs });
+        } else {
+          this.options.onVideoDiagnostic?.({ kind: 'remote-unmeasured', participantId: verdict.participantId });
         }
       },
     });
