@@ -37,7 +37,8 @@
     "c-ai1:production-acceptance": "npm run build && node scripts/c-ai1-1e-production-acceptance.mjs",
     "c-ai1:multilingual": "npm run build && node scripts/c-ai1-1f-multilingual-acceptance.mjs",
     "test:migrations": "node scripts/migration-proof.mjs",
-    "test:object-store": "node scripts/object-archive-proof.mjs"
+    "test:object-store": "node scripts/object-archive-proof.mjs",
+    "routes:approve": "npm run build -w packages/translation-routes && node packages/translation-routes/dist/route-approval-cli.js"
   },
   "devDependencies": {
     "concurrently": "^8.2.2",

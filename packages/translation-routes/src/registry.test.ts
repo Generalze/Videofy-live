@@ -384,3 +384,51 @@ describe('an unusable document yields no registry at all', () => {
     expect(created.ok === false && created.problems.length).toBeGreaterThan(0);
   });
 });
+
+describe('the gate refuses "not-required" on a review-required language too', () => {
+  it('refuses it, even though every other cell is green', () => {
+    const registry = registryOf(
+      documentOf(
+        route({
+          sourceLanguage: 'en',
+          targetLanguage: 'yo',
+          productionApproved: true,
+          technicalEvidence: { ...MEASURED },
+          humanReviewStatus: 'not-required',
+          licenceStatus: { ...PERMISSIVE_LICENCE },
+          // Left unapproved so the DOCUMENT loads: validate.ts refuses this
+          // combination once a scope is approved. The gate is asked anyway,
+          // because a registry can be built from records that never went
+          // through the document path.
+          serviceScopes: scopes(),
+        }),
+      ),
+    );
+
+    const decision = registry.mayTranslate('en', 'yo', 'messaging');
+    expect(decision.allowed).toBe(false);
+    expect(decision.allowed === false && decision.reason).toBe('human-review-outstanding');
+    expect(decision.allowed === false && decision.explanation).toContain('not-required');
+  });
+
+  it('is reported before the scope, so the reader is sent to the real problem', () => {
+    const registry = registryOf(
+      documentOf(
+        route({
+          sourceLanguage: 'ha',
+          targetLanguage: 'en',
+          productionApproved: true,
+          technicalEvidence: { ...MEASURED },
+          humanReviewStatus: 'not-required',
+          licenceStatus: { ...PERMISSIVE_LICENCE },
+          serviceScopes: scopes(),
+        }),
+      ),
+    );
+    expect(registry.mayTranslate('ha', 'en', 'call-live').allowed === false).toBe(true);
+    expect(
+      registry.mayTranslate('ha', 'en', 'call-live').allowed === false &&
+        registry.mayTranslate('ha', 'en', 'call-live').reason,
+    ).toBe('human-review-outstanding');
+  });
+});

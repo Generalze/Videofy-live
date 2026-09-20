@@ -89,10 +89,42 @@ export type MessagingRouteDecision =
  *  - `productionApproved` must be true;
  *  - there must be technical evidence AT ALL, and it must record at least one
  *    sample with a non-zero success rate: an empty record is not evidence;
- *  - human review must not be outstanding or failed;
+ *  - human review must not be outstanding or failed, FOR EVERY LANGUAGE AND
+ *    NOT ONLY THE REVIEW-REQUIRED ONES (see below);
  *  - the licence must permit commercial use -- CC-BY-NC weights are exactly
  *    the trap this clause exists for;
  *  - the execution class must be local (rule 4).
+ *
+ * WHY THIS IS STRICTER THAN THE REGISTRY'S OWN GATE, DELIBERATELY.
+ *
+ * `mayTranslate` in `@videofy-live/translation-routes` refuses
+ * `required-not-done` only when the source or the target is on the document's
+ * `reviewRequiredLanguages` list -- yo, ha, ig, pcm. The clause below refuses
+ * it for every language, so `en->fr` with an outstanding review is approved by
+ * the registry and refused here. That gap was examined on 2026-09-20 and is
+ * KEPT. It is not drift, and it must not be closed by loosening this file.
+ *
+ * The two gates answer two questions. The registry answers "may production
+ * invoke this route at all", for three services at once, with a list a
+ * deployment can tighten. This file answers "may MESSAGING spend a local model
+ * call on it", and that is the founder's ruling to make, not the deployment's.
+ * Her position is on the record in the certification wave: the benchmark lane
+ * proposed `not-required` for the six Romance directions and
+ * `scripts/certify/build-route-document.mjs` declined, because its own reading
+ * of fr->en returned "On se voit demain matin." as "I'll see you in the
+ * morning." -- the day is gone. A dropped "tomorrow" in a chat message is the
+ * wrong day, not a matter of style. `required-not-done` is the record saying a
+ * human is needed and has not looked; honouring that for four languages and
+ * ignoring it for the rest would mean the field means different things
+ * depending on which language it sits next to.
+ *
+ * The trap in a two-gate split is a route that reads as approved and
+ * translates nothing, with no field to point at. That is closed at the point
+ * of approval rather than by relaxing a gate: `promoteRoute` in the routes
+ * package holds every promotion to the STRICTER of the two, so a route this
+ * file will refuse can never be recorded as approved in the first place. If
+ * that ever stops being true, this clause is what catches it -- not the other
+ * way round.
  */
 export function isApprovedForMessaging(
   record: TranslationRouteRecord,

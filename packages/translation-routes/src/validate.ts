@@ -47,6 +47,7 @@ import {
   type ExecutionClass,
   type HumanReviewStatus,
   type LicenceStatus,
+  type RouteReviewEvidence,
   type ScopeApproval,
   type ServiceScope,
   type TechnicalEvidence,
@@ -90,6 +91,7 @@ const RECORD_FIELDS = [
   'productionApproved',
   'technicalEvidence',
   'humanReviewStatus',
+  'reviewEvidence',
   'licenceStatus',
   'serviceScopes',
 ] as const;
@@ -103,6 +105,28 @@ const DOCUMENT_FIELDS = [
 ] as const;
 
 const EVIDENCE_FIELDS = ['sampleCount', 'successRate', 'latencyMs', 'recordedAt', 'notes'];
+/**
+ * Every field of a review record is mandatory once the block is present at all.
+ * A half-filled review is the dangerous case: it reads as a qualification from
+ * three feet away and names nobody accountable up close. Absent is honest;
+ * partial is not, so partial is refused.
+ */
+const REVIEW_EVIDENCE_FIELDS = [
+  'engine',
+  'model',
+  'modelVersion',
+  'corpusHash',
+  'corpusVersion',
+  'evaluator',
+  'assessedAt',
+  'method',
+  'score',
+  'scale',
+  'evidenceReference',
+];
+const REVIEW_EVIDENCE_TEXT_FIELDS = REVIEW_EVIDENCE_FIELDS.filter(
+  (field) => field !== 'score' && field !== 'assessedAt',
+);
 const LATENCY_FIELDS = ['min', 'median', 'mean', 'max'];
 const LICENCE_FIELDS = ['licence', 'commercialUse', 'evidence'];
 
@@ -245,6 +269,71 @@ function parseEvidence(log: ProblemLog, path: string, value: unknown): Technical
   return typeof notes === 'string' ? { ...evidence, notes } : evidence;
 }
 
+/**
+ * WHAT A HUMAN REVIEW ESTABLISHED -- parsed only when the block is there.
+ *
+ * `undefined` back means the field was absent, which is the state most routes
+ * are in and the only honest one for a route nobody has read. `null` back means
+ * the field was PRESENT AND WRONG, and the caller has already logged why; the
+ * two are kept apart so an absent review never reads as a broken one, and a
+ * broken one never reads as no review at all.
+ */
+function parseReviewEvidence(
+  log: ProblemLog,
+  path: string,
+  value: unknown,
+): RouteReviewEvidence | null | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecordObject(value)) {
+    log.add(
+      path,
+      'when present must be an object; omit the field entirely for a route nobody has reviewed',
+    );
+    return null;
+  }
+  log.rejectBillingFields(path, value);
+  let sound = true;
+  for (const key of Object.keys(value)) {
+    if (!REVIEW_EVIDENCE_FIELDS.includes(key)) {
+      log.add(`${path}.${key}`, 'unknown field');
+      sound = false;
+    }
+  }
+  for (const field of REVIEW_EVIDENCE_TEXT_FIELDS) {
+    if (!isNonEmptyString(value[field])) {
+      log.add(
+        `${path}.${field}`,
+        'must be a non-empty string; a review that cannot say this is not checkable later',
+      );
+      sound = false;
+    }
+  }
+  const assessedAt = value['assessedAt'];
+  if (!isNonEmptyString(assessedAt) || Number.isNaN(Date.parse(assessedAt))) {
+    log.add(`${path}.assessedAt`, 'must be an ISO-8601 timestamp');
+    sound = false;
+  }
+  const score = value['score'];
+  if (!isFiniteNumber(score)) {
+    log.add(`${path}.score`, 'must be a finite number, on the scale `scale` names');
+    sound = false;
+  }
+  if (!sound) return null;
+  return {
+    engine: value['engine'] as string,
+    model: value['model'] as string,
+    modelVersion: value['modelVersion'] as string,
+    corpusHash: value['corpusHash'] as string,
+    corpusVersion: value['corpusVersion'] as string,
+    evaluator: value['evaluator'] as string,
+    assessedAt: assessedAt as string,
+    method: value['method'] as string,
+    score: score as number,
+    scale: value['scale'] as string,
+    evidenceReference: value['evidenceReference'] as string,
+  };
+}
+
 function parseLicence(log: ProblemLog, path: string, value: unknown): LicenceStatus | null {
   if (!isRecordObject(value)) {
     log.add(path, 'must be an object');
@@ -375,6 +464,26 @@ function applyApprovalRules(
           'a speaker of the language',
       );
     }
+    /*
+     * `not-required` DOES NOT EXCUSE A REVIEW-REQUIRED LANGUAGE, and this is
+     * the one rule the list was missing. `reviewRequiredLanguages` is
+     * documented as the set for which a human reader is MANDATORY before any
+     * scope may be approved -- but until this check existed, the mandate was
+     * cleared by typing `"humanReviewStatus": "not-required"` into the record,
+     * which is the editor asserting exactly the thing the list says they may
+     * not assert. `required-not-done` was refused and `not-required` was not,
+     * so the stricter-sounding value was the one that got you stopped. For
+     * these languages the only value that opens a scope is `passed`.
+     */
+    if (record.humanReviewStatus === 'not-required' && reviewIsMandatory) {
+      log.add(
+        `${path}.humanReviewStatus`,
+        `is "not-required" on a route touching a review-required language ` +
+          `(${record.sourceLanguage}->${record.targetLanguage}) with "${scope}" approved; ` +
+          'that list says a human reader is mandatory, so declaring the review unnecessary ' +
+          'is not a way to satisfy it -- only "passed" opens a scope here',
+      );
+    }
     if (record.provider === UNASSIGNED_PROVIDER) {
       log.add(
         `${path}.serviceScopes.${scope}`,
@@ -461,8 +570,9 @@ function parseRoute(
     : null;
   const licence = parseLicence(log, `${path}.licenceStatus`, value['licenceStatus']);
   const scopes = parseScopes(log, `${path}.serviceScopes`, value['serviceScopes']);
+  const review = parseReviewEvidence(log, `${path}.reviewEvidence`, value['reviewEvidence']);
 
-  if (!sound || licence === null || scopes === null) return null;
+  if (!sound || licence === null || scopes === null || review === null) return null;
 
   const record: TranslationRouteRecord = {
     sourceLanguage: normaliseLanguageTag(sourceLanguage as string),
@@ -476,6 +586,9 @@ function parseRoute(
     licenceStatus: licence,
     serviceScopes: scopes,
   };
+  // exactOptionalPropertyTypes: ABSENT, never present-and-undefined, so an
+  // unreviewed record does not carry a key that reads as an empty review.
+  if (review !== undefined) record.reviewEvidence = review;
 
   applyApprovalRules(log, path, record, reviewRequired);
   return record;
