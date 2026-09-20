@@ -75,6 +75,11 @@ import {
 } from './translatedAudioLink';
 import { nativeTranslatedPcmBackend, type TranslatedPcmBackend } from '../native/translatedPcm';
 import {
+  createRemoteVideoGate,
+  type GatedRemoteStream,
+  type RemoteVideoGate,
+} from './remoteVideoGate';
+import {
   mergeKnock,
   parseAdmission,
   parseConferenceInfo,
@@ -268,6 +273,21 @@ export type CallVideoDiagnostic =
     }
   | { readonly kind: 'inbound'; readonly participantId: string; readonly frames: number; readonly bytes: number }
   /**
+   * THE REMOTE TILE'S THREE OUTCOMES. A remote track being announced is not
+   * a picture: on this platform `track.muted` reads false before any RTP has
+   * arrived, so every call used to show a tile and take it away ~3 s later
+   * (founder report, and the callee timeline of 18 Sep 2026:
+   * video_remote_stream -> video_remote_null, video_inbound_frames 0). The
+   * tile now waits for decoded frames, and these say which of the three
+   * things happened: a track was announced (`remote-offered`), it produced a
+   * picture (`remote-live`), or it was held and never produced one
+   * (`remote-idle`) -- the last being the honest record of a far side that
+   * sends nothing, which the flash used to disguise.
+   */
+  | { readonly kind: 'remote-offered'; readonly participantId: string }
+  | { readonly kind: 'remote-live'; readonly participantId: string; readonly frames: number }
+  | { readonly kind: 'remote-idle'; readonly participantId: string; readonly heldMs: number }
+  /**
    * A stage of video NEGOTIATION, which is upstream of every stage above: a
    * camera cannot send on an m-line that was never described with a track on
    * it. `stage` distinguishes an offer that was sent from one that was never
@@ -299,6 +319,12 @@ export class CallConnection {
   private readonly options: CallConnectionOptions;
   private socket: Socket | null = null;
   private mesh: CallVideoMesh | null = null;
+  /**
+   * Between the mesh and the screen: a remote stream reaches a tile only once
+   * frames from it have been decoded. See remoteVideoGate.ts for why the
+   * platform's own muted flag cannot be trusted to decide that.
+   */
+  private remoteVideo: RemoteVideoGate | null = null;
   private local: {
     toURL(): string;
     getTracks(): { stop(): void }[];
@@ -749,6 +775,39 @@ export class CallConnection {
     /** The admission's snapshot, applied at once; null when call:state will follow on its own. */
     snapshot: unknown,
   ): Promise<void> {
+    /*
+     * THE TILE GATE, built before the mesh it measures.
+     *
+     * `meshRef` exists because the two are mutually dependent -- the gate
+     * counts frames on the mesh's peers, and the mesh hands its remote
+     * streams to the gate -- and because it is also the staleness check: a
+     * gate left running from a previous seat finds `this.mesh` is no longer
+     * the mesh it was born with and stops instead of painting a tile onto a
+     * call that has moved on.
+     */
+    this.remoteVideo?.dispose();
+    let meshRef: CallVideoMesh | null = null;
+    const gate = createRemoteVideoGate({
+      framesDecoded: async (id: string) => {
+        if (meshRef === null || this.mesh !== meshRef) return null;
+        const row = (await meshRef.videoStats()).find((entry) => entry.participantId === id);
+        return row === undefined ? null : row.inboundFrames;
+      },
+      show: (id: string, stream: GatedRemoteStream | null) =>
+        this.options.onRemoteStream(id, stream as unknown as RemoteStream),
+      delay: (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+      report: (verdict) => {
+        if (verdict.kind === 'offered') {
+          this.options.onVideoDiagnostic?.({ kind: 'remote-offered', participantId: verdict.participantId });
+        } else if (verdict.kind === 'live') {
+          this.options.onVideoDiagnostic?.({ kind: 'remote-live', participantId: verdict.participantId, frames: verdict.frames });
+        } else {
+          this.options.onVideoDiagnostic?.({ kind: 'remote-idle', participantId: verdict.participantId, heldMs: verdict.heldMs });
+        }
+      },
+    });
+    this.remoteVideo = gate;
+
     const mesh = new CallVideoMesh({
       callId: this.options.callId,
       selfParticipantId: participantId,
@@ -768,8 +827,15 @@ export class CallConnection {
       sendOffer: (payload: CallVideoSdpPayload) => socket.emit(CALL_EVENTS.VIDEO_OFFER, payload),
       sendAnswer: (payload: CallVideoSdpPayload) => socket.emit(CALL_EVENTS.VIDEO_ANSWER, payload),
       sendIce: (payload: CallVideoIcePayload) => socket.emit(CALL_EVENTS.VIDEO_ICE, payload),
+      /*
+       * NOT STRAIGHT TO THE SCREEN. The mesh publishes on the platform's
+       * word that a track is unmuted, and on react-native-webrtc that word
+       * is given before any RTP has arrived -- the one-second tile the
+       * founder reported. The gate holds it until frames are decoded;
+       * withdrawals (null) pass through it unchanged and immediately.
+       */
       onRemoteStream: (participantId: string, stream: MediaStream | null) =>
-        this.options.onRemoteStream(participantId, stream as unknown as RemoteStream),
+        gate.offer(participantId, stream as unknown as GatedRemoteStream | null),
       onPeerState: (participantId: string, state: RTCPeerConnectionState) =>
         this.options.onPeerState(participantId, String(state)),
       /*
@@ -783,6 +849,7 @@ export class CallConnection {
         this.options.onVideoDiagnostic?.({ kind: 'signalling', stage: event.kind, participantId: event.participantId }),
     });
     this.mesh = mesh;
+    meshRef = mesh;
     // Camera is OFF at start: the mesh has no local video until the person
     // turns it on. `local` is the microphone only, and voice rides the
     // gateway legs below, not the mesh.
@@ -1402,6 +1469,10 @@ export class CallConnection {
 
     this.mesh?.dispose();
     this.mesh = null;
+    // After the mesh, so a hold still in flight finds no mesh and stops
+    // rather than painting a tile onto a call that has ended.
+    this.remoteVideo?.dispose();
+    this.remoteVideo = null;
     this.publishPeer?.close();
     this.publishPeer = null;
     this.receivePeer?.close();
