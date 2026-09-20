@@ -53,6 +53,7 @@ import { videofyCall } from '../native/videofyCall';
 import { reportRingTimeline } from '../call/ringTimeline';
 import {
   CallConnection,
+  type CallTranslatedAudioDiagnostic,
   type CallTransportEvent,
   type RemoteStream,
 } from '../call/callConnection';
@@ -339,6 +340,28 @@ export function CallScreen({
       },
       onIceServers: (count) => {
         if (live) setIceCount(count);
+      },
+      /*
+       * TRANSLATED SPEECH, STAMPED. On 19 Sep 2026 a translated call was
+       * indistinguishable, from this phone, from a call that was never
+       * translated: the server said 305 frames delivered and the handset had
+       * no signal of any kind. These stamps travel with the ring timeline, so
+       * "the translation never arrived", "it arrived and was refused" and
+       * "this build cannot play it" are three different answers instead of
+       * one silence. Counts and stamps only; never audio, never text.
+       */
+      onTranslatedAudio: (event: CallTranslatedAudioDiagnostic) => {
+        if (!live) return;
+        stamp(`xlate_${event.kind}`);
+        if (event.kind === 'originals') {
+          videoStamps.current['xlate_originals_suppressed'] = event.suppressed ? 1 : 0;
+        }
+        if (event.kind === 'unavailable') {
+          setTransportLog((current) => [
+            ...current.slice(-4),
+            `${new Date().toLocaleTimeString()} translated audio unavailable on this build`,
+          ]);
+        }
       },
       onVideoDiagnostic: (event) => {
         if (!live) return;

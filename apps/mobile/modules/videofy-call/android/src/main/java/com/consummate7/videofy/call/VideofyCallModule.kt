@@ -20,6 +20,7 @@ import org.json.JSONObject
  *   reportMediaConnected(callId)          T11: two-way audio proven
  *   timeline(callId)                      the device's T4..T11 stamps, then forgotten
  *   canUseFullScreenIntent()              Android 14+: the permission a person can revoke
+ *   translatedAudio*()                    streaming PCM16 out; see TranslatedAudioTrack
  *
  * Events: 'incoming' (the native ring is up; the app may show its own
  * surface but must not ack again), 'answer', 'decline', 'timeout'.
@@ -34,7 +35,12 @@ class VideofyCallModule : Module() {
       instance = this@VideofyCallModule
       IncomingCallService.ensureChannel(context())
     }
-    OnDestroy { if (instance === this@VideofyCallModule) instance = null }
+    OnDestroy {
+      if (instance === this@VideofyCallModule) instance = null
+      // An AudioTrack outliving the JS context holds an output stream and, on
+      // some devices, the call's audio focus with it.
+      TranslatedAudioTrack.close()
+    }
 
     // Bound to the account and the session's expiry; see RingStore.
     Function("setRingCredential") { gatewayUrl: String, token: String, accountId: String, expiresAtMs: Double ->
@@ -90,6 +96,22 @@ class VideofyCallModule : Module() {
     Function("canUseFullScreenIntent") {
       if (Build.VERSION.SDK_INT >= 34) NotificationManagerCompat.from(context()).canUseFullScreenIntent() else true
     }
+
+    /*
+     * TRANSLATED SPEECH OUT. Five plain functions over one AudioTrack; every
+     * rule about which frame may be played, and in what order, is decided in
+     * shared TypeScript and proved there. This is the part that cannot be, so
+     * it is kept as small as the browser's AudioContext sink.
+     *
+     * A base64 String rather than a typed array: it is the parameter type that
+     * needs no assumption about marshalling, which matters because this file
+     * cannot be compiled or run from the workstation the JS was written on.
+     */
+    Function("translatedAudioOpen") { sampleRate: Int -> TranslatedAudioTrack.open(sampleRate) }
+    Function("translatedAudioWrite") { pcmBase64: String -> TranslatedAudioTrack.write(pcmBase64) }
+    Function("translatedAudioFlush") { TranslatedAudioTrack.flush() }
+    Function("translatedAudioQueuedMs") { TranslatedAudioTrack.queuedMs() }
+    Function("translatedAudioClose") { TranslatedAudioTrack.close() }
   }
 
   private fun context(): Context = appContext.reactContext ?: throw IllegalStateException("no context")

@@ -15,11 +15,14 @@
  * nothing in the mesh changed to run here. That is the reuse React Native was
  * chosen for, actually collected.
  *
- * NORMAL MODE ONLY, DELIBERATELY. Camera and microphone between participants and
- * nothing else -- no transcription, no translated audio, no generated-audio
- * queue. Normal mode is free on every channel and is the whole product for
- * anybody who shares a language, so proving it on a real handset is the question
- * worth answering before stacking a translation pipeline on top.
+ * TRANSLATED AUDIO ARRIVES HERE TOO, since 19 Sep 2026. It did not before, and
+ * that was the whole of the defect: the gateway emitted 305 frames of
+ * translated speech into a two-phone call and this file subscribed to thirteen
+ * events, none of them `call:translated-audio-frame`. Both people heard the
+ * original voice while every server counter said delivered. The rules are the
+ * shared controller's, exactly as on the web; see ./translatedAudioLink.ts for
+ * the phone's answers to the questions it asks. Captions and the
+ * generated-audio clip queue are still deliberately absent.
  *
  * MEDIA NEVER TOUCHES THE SERVER. Signalling is relayed by the gateway, which
  * validates the sender's binding and forwards to the target's private room;
@@ -56,12 +59,21 @@ import {
   type CallJoinAck,
   type CallJoinFormState,
   type CallResumeCredentials,
+  type CallMode,
   type CallSdpAck,
   type CallStateSnapshot,
   type CallVideoIcePayload,
   type CallVideoSdpPayload,
   type DirectCallStateSnapshot,
+  type TranslatedAudioSocketLike,
 } from '@videofy-live/call-client-core';
+import {
+  createMobileTranslatedAudio,
+  remoteOriginalsSuppressed,
+  type MobileTranslatedAudio,
+  type TranslatedAudioPolicyInput,
+} from './translatedAudioLink';
+import { nativeTranslatedPcmBackend, type TranslatedPcmBackend } from '../native/translatedPcm';
 import {
   mergeKnock,
   parseAdmission,
@@ -207,7 +219,32 @@ export interface CallConnectionOptions {
    * what they asked for; this is what the conference is.
    */
   readonly onConferenceInfo?: (info: ConferenceInfo) => void;
+  /**
+   * Where translated speech comes out of the phone.
+   *
+   * `undefined` means "use the native AudioTrack this build ships"; `null`
+   * disables translated playback outright. Injected rather than imported at the
+   * point of use so the wiring can be proved in node -- the whole reason the
+   * defect it fixes survived is that nothing about this path was testable.
+   */
+  readonly translatedAudioBackend?: TranslatedPcmBackend | null;
+  /** The translated-audio path, stage by stage; metadata only, never audio. */
+  readonly onTranslatedAudio?: (event: CallTranslatedAudioDiagnostic) => void;
 }
+
+/**
+ * Where translated speech stands, in words a timeline can carry.
+ *
+ * `unavailable` and a `listening` that only ever reports `refused` are
+ * different problems -- an APK without the native track, against a live
+ * subscription turning frames away -- and on 19 Sep 2026 neither could be told
+ * apart from a translation engine that had not run.
+ */
+export type CallTranslatedAudioDiagnostic =
+  | { readonly kind: 'unavailable' }
+  | { readonly kind: 'listening' }
+  | { readonly kind: 'refused'; readonly reason: string }
+  | { readonly kind: 'originals'; readonly suppressed: boolean };
 
 /**
  * Where the camera path stands, in words the timeline can carry. Each stage
@@ -288,6 +325,27 @@ export class CallConnection {
    */
   private resumeCredentials: CallResumeCredentials | null = null;
   private joinForm: CallJoinFormState | null = null;
+  /**
+   * The gateway's last word on who is in this call.
+   *
+   * KEPT, not just forwarded. The translated-audio controller re-reads it per
+   * frame -- to check the speaker is still here and the language is still mine
+   * -- and the original-voice policy reads it on every change. Previously each
+   * `call:state` was consumed and dropped.
+   */
+  private lastState: CallStateSnapshot | null = null;
+  /** A direct call's mode, from `call:direct:state`; a conference has none. */
+  private directMode: CallMode | null = null;
+  private translatedAudio: MobileTranslatedAudio | null = null;
+  /**
+   * The remote ORIGINAL voices, as tracks.
+   *
+   * Collected so a translated call can silence them -- see
+   * `remoteOriginalsSuppressed`. Typed to the one member used rather than to a
+   * MediaStreamTrack: react-native-webrtc's track is not the DOM one, and
+   * naming the DOM type here would be a cast that asserts nothing.
+   */
+  private remoteVoices: { enabled: boolean }[] = [];
 
   constructor(options: CallConnectionOptions) {
     this.options = options;
@@ -751,6 +809,9 @@ export class CallConnection {
      * -- two views of who is in a call is how a departed peer keeps a tile.
      */
     const applyState = (payload: CallStatePayload): void => {
+      // KEPT. The translated-audio controller re-reads this per frame, and the
+      // original-voice policy below is recomputed from it.
+      this.lastState = payload;
       // The door, for the host: who is waiting. Empty everywhere else.
       this.knocking = parseKnocking(payload);
       this.options.onKnocking?.(this.knocking);
@@ -792,6 +853,9 @@ export class CallConnection {
             : {}),
         })),
       );
+      // A language change, a departure or a mode change all land here, and each
+      // can flip whether the originals should be heard.
+      this.applyOriginalVoicePolicy();
     };
     socket.on(CALL_EVENTS.STATE, applyState);
     // An admitted joiner already holds the roster in the admission itself.
@@ -850,8 +914,12 @@ export class CallConnection {
     const publish = buildPublish();
     this.publishPeer = publish;
 
-    const buildReceive = (): CallPeer =>
-      new CallPeer({
+    const buildReceive = (): CallPeer => {
+      // A rebuilt leg brings fresh tracks; the ones held here belong to a peer
+      // that is about to be closed, and keeping them would leave the policy
+      // acting on audio nobody can hear.
+      this.remoteVoices = [];
+      return new CallPeer({
         direction: 'receive',
         createPeerConnection: peerFactory,
         remoteSlotCount: CALL_REMOTE_SLOT_COUNT,
@@ -866,8 +934,17 @@ export class CallConnection {
          * No sink to build: react-native-webrtc routes remote audio tracks to
          * the device output the moment they arrive. The web needs a WebAudio
          * sink; the phone needs the tracks to exist.
+         *
+         * They are still COLLECTED, because "routed straight to the output" is
+         * also why a translated call used to play the original voice over its
+         * own translation: the only handle on that audio is the track itself.
          */
+        onRemoteTrack: (_mid, track) => {
+          this.remoteVoices.push(track as unknown as { enabled: boolean });
+          this.applyOriginalVoicePolicy();
+        },
       });
+    };
     this.buildReceive = buildReceive;
     const receive = buildReceive();
     this.receivePeer = receive;
@@ -881,6 +958,17 @@ export class CallConnection {
     socket.on(CALL_EVENTS.RECEIVE_ICE, (payload: { candidate?: RTCIceCandidateInit | null }) => {
       void this.receivePeer?.addRemoteCandidate(payload?.candidate);
     });
+
+    /*
+     * SUBSCRIBED BEFORE THE LEGS NEGOTIATE, not after.
+     *
+     * Translated speech does not travel on either voice leg -- it arrives on
+     * this socket, in this seat's private room -- so it must not wait on a
+     * negotiation it does not depend on. If `publish.connect()` throws below,
+     * the catch reports it and the call continues; a subscription started after
+     * that point would never exist on exactly the calls that need saying most.
+     */
+    this.startTranslatedAudio(socket);
 
     try {
       await publish.connect();
@@ -945,6 +1033,104 @@ export class CallConnection {
   }
 
   /**
+   * The language THIS seat asked to hear.
+   *
+   * The gateway's own record first, the join option only as a fallback: the
+   * server is what routed the frame, and a locally remembered preference that
+   * has since been overridden would disagree with the audio actually arriving.
+   */
+  private selfHearLanguage(): string {
+    const self = this.lastState?.participants?.find(
+      (participant) => participant.participantId === this.participantId,
+    );
+    return self?.hearLanguage ?? this.options.hearLanguage ?? '';
+  }
+
+  /** Direct calls state their mode on their own wire; conferences on call:state. */
+  private currentCallMode(): CallMode | null {
+    return this.directMode ?? this.lastState?.callMode ?? null;
+  }
+
+  private policyInput(): TranslatedAudioPolicyInput {
+    return {
+      participants: this.lastState?.participants ?? [],
+      selfParticipantId: this.participantId ?? '',
+      hearLanguage: this.selfHearLanguage(),
+      callMode: this.currentCallMode(),
+    };
+  }
+
+  /**
+   * Don't let the original voice fight its own translation.
+   *
+   * The web client scales each remote original by the mode's per-speaker gain.
+   * A phone has no mixer in the path -- react-native-webrtc routes a remote
+   * audio track straight to the device output -- so the equivalent instrument
+   * is the track's own `enabled`, which is binary. That is enough for what
+   * translated mode actually asks for (gain 0), and it is why
+   * `remoteOriginalsSuppressed` refuses to act on anything less clear-cut.
+   *
+   * Re-applied rather than toggled, so a track that arrives mid-call, a leg
+   * that is rebuilt, or a mode that changes back all land in the same place.
+   */
+  private applyOriginalVoicePolicy(): void {
+    const suppressed = remoteOriginalsSuppressed(this.policyInput());
+    // Applied to EVERY track every time, unconditionally: a track that arrives
+    // after the verdict settled has to land on the settled verdict, and an
+    // "only when it changed" guard is how it would not.
+    for (const voice of this.remoteVoices) voice.enabled = !suppressed;
+    // Reported only when it changed, because the diagnostic is a timeline and
+    // a roster update every few seconds is not news.
+    if (suppressed === this.originalsSuppressed) return;
+    this.originalsSuppressed = suppressed;
+    this.options.onTranslatedAudio?.({ kind: 'originals', suppressed });
+  }
+
+  /**
+   * Subscribe this call to translated speech.
+   *
+   * Built once per call and after the seat exists, because every guard the
+   * controller applies is keyed on the participant id the gateway assigned.
+   */
+  private startTranslatedAudio(socket: Socket): void {
+    if (this.translatedAudio !== null) return;
+    const backend =
+      this.options.translatedAudioBackend === undefined
+        ? nativeTranslatedPcmBackend()
+        : this.options.translatedAudioBackend;
+    if (backend === null) {
+      // An APK built before the native track existed, or one deliberately
+      // without it. Said out loud: a translated call that cannot play its
+      // translation is otherwise indistinguishable from one that was never
+      // translated, which is precisely how this went unnoticed.
+      this.options.onTranslatedAudio?.({ kind: 'unavailable' });
+      return;
+    }
+    this.translatedAudio = createMobileTranslatedAudio({
+      socket: socket as unknown as TranslatedAudioSocketLike,
+      backend,
+      /*
+       * NULL UNTIL THERE IS A SEAT. The controller reads this per frame and
+       * treats null as "no session", which is the correct answer between
+       * `leave()` and whatever arrives a moment later: the callId option
+       * outlives the seat, and returning it then would let a frame for a call
+       * this phone has left reach the speaker.
+       */
+      callId: () => (this.participantId === null ? null : this.options.callId),
+      participantId: () => this.participantId,
+      callState: () => this.lastState,
+      callMode: () => this.currentCallMode(),
+      hearLanguage: () => this.selfHearLanguage(),
+      onRefused: (reason) => this.options.onTranslatedAudio?.({ kind: 'refused', reason }),
+    });
+    this.translatedAudio.attach();
+    this.options.onTranslatedAudio?.({ kind: 'listening' });
+  }
+
+  /** The last verdict reported, so an unchanged one does not re-report itself. */
+  private originalsSuppressed = false;
+
+  /**
    * THE HOST'S ANSWER to a knock. Bound to this phone's own seat, which is
    * how the gateway knows it is the host speaking; anyone else is refused
    * with `not-owner`. The waiting list is updated locally on success so the
@@ -983,6 +1169,19 @@ export class CallConnection {
     const raw = wire as Partial<DirectCallStateSnapshot> | null;
     if (raw === null || typeof raw !== 'object' || typeof raw.state !== 'string') return;
     const num = (value: unknown): number | null => (typeof value === 'number' ? value : null);
+    /*
+     * A PERSONAL CALL'S MODE IS STATED HERE AND NOWHERE ELSE, which is why it
+     * is captured rather than only forwarded: `call:state` carries `callMode`
+     * for a conference, and a direct call's pair mode arrives on this wire.
+     * Both the translated-audio guard and the original-voice policy need it.
+     */
+    this.directMode = raw.mode === 'translated' ? 'translated' : 'normal';
+    if (this.directMode !== 'translated') {
+      // Not a disconnect: the subscription stays bound, and the sentence that
+      // was mid-flight when the mode changed stops instead of finishing.
+      this.translatedAudio?.reset('call mode is not translated');
+    }
+    this.applyOriginalVoicePolicy();
     this.options.onDirectState?.({
       callId: typeof raw.callId === 'string' ? raw.callId : this.options.callId,
       state: raw.state,
@@ -1187,6 +1386,19 @@ export class CallConnection {
     } catch {
       // Best effort; the gateway times a participant out regardless.
     }
+
+    /*
+     * BEFORE the participant id is cleared, so the controller's own guard still
+     * has a session to compare against while it unbinds, and before the socket
+     * goes: `detach` unbinds the handler and releases the AudioTrack, and a
+     * track left open holds an output stream after the call is over.
+     */
+    this.translatedAudio?.detach();
+    this.translatedAudio = null;
+    this.remoteVoices = [];
+    this.originalsSuppressed = false;
+    this.lastState = null;
+    this.directMode = null;
 
     this.mesh?.dispose();
     this.mesh = null;
