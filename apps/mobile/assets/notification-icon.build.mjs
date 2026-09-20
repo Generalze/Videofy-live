@@ -18,11 +18,20 @@
  *     FAVICON" -- and the favicon has no teal in it at all, which is why the
  *     #3ec9c0 tint it was given looked nothing like the browser tab.
  *
- *   - IT RENDERED AT HALF SIZE. The lockup is 1.78:1. Expo's notification
- *     plugin squashes the source into a square (24/36/48/72/96 px, one per
- *     density) and Android draws that square at 24dp, so a wide glyph wastes
- *     the height. The measured alpha bounding box was 73 x 41 inside a 96
- *     square: 43% of the available height, about 10dp of the 24 on screen.
+ *   - IT RENDERED AT HALF SIZE. The old source was ALREADY a 96 x 96 square,
+ *     so the plugin's resize (`resizeMode: 'cover'` to 24/36/48/72/96 px, one
+ *     per density -- expo-notifications/plugin/build/withNotificationsAndroid.js)
+ *     was a plain proportional downscale: nothing was squeezed or cropped.
+ *     The glyph was simply small ON that square. Its measured alpha bounding
+ *     box was 73 x 41 inside the 96: 43% of the available height, about 10dp
+ *     of the 24 Android draws on screen. (An earlier note here blamed a
+ *     "squash" of the 1.78:1 lockup; that mechanism was wrong.)
+ *
+ * KEEP THE SOURCE SQUARE. Because the resize is 'cover', a NON-square source
+ * is the hazard: it is scaled to fill the square and centre-CROPPED, which
+ * silently cuts off the ends of a wide glyph. This script always emits a
+ * square, and the glyph is fitted inside it; do not replace the output with a
+ * hand-made non-square image.
  *
  * THE FIX. The favicon's own two strokes -- ecosystem-web/public/c7-mark.svg,
  * the same path data src/ui/c7.tsx draws -- are very nearly square (49.0 x
@@ -37,6 +46,31 @@
  *
  * The output is 192 px: twice xxxhdpi, so every density Expo generates is a
  * downsample and none is ever enlarged.
+ *
+ * WHICH NOTIFICATIONS THIS ICON REACHES -- read before judging it on a phone.
+ * app.json hands this PNG and its colour to the expo-notifications plugin,
+ * which writes them as the app's DEFAULT notification icon and colour. That
+ * default applies only to notifications Android (or expo-notifications)
+ * draws itself: every push sent WITH a `notification` block -- messages,
+ * contact requests, new-device sign-ins, channel-live, and the like
+ * (services/account/src/push/fcm-provider.ts builds that block for every
+ * kind except 'call').
+ *
+ * IT DOES NOT REACH THE CALL NOTIFICATIONS. A call push is sent DATA-ONLY
+ * (fcm-provider.ts: `dataOnly = notification.kind === 'call'`), Android draws
+ * nothing for it, and the native module posts the ring itself with its own
+ * icon, set explicitly in
+ * modules/videofy-call/android/.../IncomingCallService.kt:
+ *
+ *   - the incoming-call (ring) notification .......... android.R.drawable.sym_call_incoming
+ *   - the silent "Checking a call" stand-in .......... android.R.drawable.sym_call_incoming
+ *   - the "Missed call" stub for an expired push ..... android.R.drawable.sym_call_missed
+ *
+ * Those three keep Android's stock telephone glyph regardless of anything in
+ * this file or app.json. So after a build, the RING -- the notification most
+ * often seen -- will look exactly as it did before; that is not this change
+ * failing. Whether the ring should carry the C7 mark is a separate decision
+ * about the native module, not yet made.
  */
 import { deflateSync } from 'node:zlib';
 import { writeFileSync } from 'node:fs';
