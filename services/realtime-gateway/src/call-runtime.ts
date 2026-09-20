@@ -1166,6 +1166,16 @@ export class CallRuntime {
         peerAccountId: directPeerAccountId,
         callerName: (joinInput as { displayName?: string }).displayName ?? 'Caller',
         mode: directOverride.callMode,
+        /*
+         * The callee's ringing screen needs to know which way the translation
+         * runs BEFORE it answers, and `call:state` -- the only other record of
+         * a seat's languages -- does not exist until somebody has joined. This
+         * is the caller's half of that pair, taken from the same field the
+         * route check above reads, so the screen and the refusal cannot
+         * disagree about what the caller speaks. The lifecycle validates it;
+         * an unusable tag becomes null and the screen draws no pill.
+         */
+        callerSpeakLanguage: clientInput.speakLanguage,
         peerBusy: this.store.hasConnectedAccount(directPeerAccountId),
       });
     } else if (!creating && verifiedOwnerId !== null) {

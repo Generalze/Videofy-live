@@ -172,13 +172,30 @@ describe('DirectCallLifecycle', () => {
     expect(h.lifecycle.get('ring-1')?.connectedAtMs).toBe(origin);
   });
 
-  it('the wire never carries anything but ids, names, mode, state and times', () => {
+  it('the wire never carries anything but ids, names, mode, state, times and the caller’s language', () => {
+    /*
+     * AN EXACT KEY SET, on purpose: this wire is served whole to the other
+     * party by GET /calls/direct/:callId, so a field added to the record
+     * reaches a stranger's phone the moment somebody writes it. The record
+     * holds more than this -- createdAtMs, reachedDevices and the whole
+     * state timeline -- and none of it belongs to the person being called.
+     *
+     * `callerSpeakLanguage` was added deliberately on 20 Sep 2026 and is the
+     * one thing here that is neither an id, a name, a mode, a state nor a
+     * time. It is admitted because the ringing screen has to say which way
+     * the translation runs BEFORE the person decides whether to answer, and
+     * `call:state` -- the only other record of a seat's languages -- does not
+     * exist until somebody has joined. It is shape-validated at the boundary,
+     * because it is a string one account supplies and a different person
+     * reads. Anything further wanting on to this wire needs the same argument
+     * written down next to it.
+     */
     const h = harness();
     const wire = h.create();
     expect(Object.keys(wire).sort()).toEqual(
       [
-        'callId', 'callerAccountId', 'callerName', 'expiresAtMs', 'mode', 'peerAccountId',
-        'state', 'updatedAtMs', 'answeredAtMs', 'connectedAtMs', 'endedByAccountId',
+        'callId', 'callerAccountId', 'callerName', 'callerSpeakLanguage', 'expiresAtMs', 'mode',
+        'peerAccountId', 'state', 'updatedAtMs', 'answeredAtMs', 'connectedAtMs', 'endedByAccountId',
       ].sort(),
     );
   });
