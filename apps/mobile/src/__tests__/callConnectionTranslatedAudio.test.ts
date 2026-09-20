@@ -176,9 +176,12 @@ function gatewaySocket(options: {
   readonly snapshot: CallStateSnapshot;
   /** Throw from `on` for these events: the injected failure of the guard test. */
   readonly refuseToBind?: readonly string[];
+  /** Throw from `off` for these events: a teardown that fails where leave() cannot stop. */
+  readonly refuseToUnbind?: readonly string[];
 }) {
   const handlers = new Map<string, Handler[]>();
   const emitted: { event: string; payload: unknown }[] = [];
+  let disconnects = 0;
   const socket = {
     on(event: string, handler: Handler): void {
       if (options.refuseToBind?.includes(event)) {
@@ -187,6 +190,9 @@ function gatewaySocket(options: {
       handlers.set(event, [...(handlers.get(event) ?? []), handler]);
     },
     off(event: string, handler: Handler): void {
+      if (options.refuseToUnbind?.includes(event) === true) {
+        throw new Error(`injected: cannot unbind ${event}`);
+      }
       handlers.set(event, (handlers.get(event) ?? []).filter((entry) => entry !== handler));
     },
     emit(event: string, payload: unknown): void {
@@ -212,7 +218,13 @@ function gatewaySocket(options: {
       };
     },
     io: { on(): void {} },
-    disconnect(): void {},
+    disconnect(): void {
+      disconnects += 1;
+    },
+    /** How many times the call actually got as far as letting go of the socket. */
+    disconnects(): number {
+      return disconnects;
+    },
     /** What the gateway would deliver into this seat's private room. */
     deliver(event: string, payload: unknown): void {
       for (const handler of [...(handlers.get(event) ?? [])]) handler(payload);
@@ -227,17 +239,24 @@ function gatewaySocket(options: {
   return socket;
 }
 
-function recordingBackend(): TranslatedPcmBackend & {
+/** The never-compiled Kotlin: the function is there and calling it throws. */
+type NativeCall = 'write' | 'close';
+
+function recordingBackend(throwsOn: readonly NativeCall[] = []): TranslatedPcmBackend & {
   samples(): number[];
   closes: number;
   flushes: number;
 } {
   const writes: string[] = [];
+  const explode = (call: NativeCall): void => {
+    if (throwsOn.includes(call)) throw new Error(`native ${call} exploded`);
+  };
   const backend = {
     closes: 0,
     flushes: 0,
     open: () => true,
     write(pcmBase64: string): number {
+      explode('write');
       writes.push(pcmBase64);
       return Buffer.from(pcmBase64, 'base64').length;
     },
@@ -248,6 +267,7 @@ function recordingBackend(): TranslatedPcmBackend & {
     queuedMs: () => 0,
     close(): void {
       backend.closes += 1;
+      explode('close');
     },
     samples(): number[] {
       const out: number[] = [];
@@ -264,10 +284,13 @@ function recordingBackend(): TranslatedPcmBackend & {
 async function joinedCall(options: {
   readonly snapshot: CallStateSnapshot;
   readonly refuseToBind?: readonly string[];
+  readonly refuseToUnbind?: readonly string[];
+  /** Platform calls that throw when the real native module would be reached. */
+  readonly nativeThrowsOn?: readonly NativeCall[];
 }) {
   const socket = gatewaySocket(options);
   shared.socket = socket;
-  const backend = recordingBackend();
+  const backend = recordingBackend(options.nativeThrowsOn ?? []);
   const diagnostics: CallTranslatedAudioDiagnostic[] = [];
   const errors: string[] = [];
   const connection = new CallConnection({
@@ -359,6 +382,68 @@ describe('a translated-audio path that throws does not stop the call connecting'
     // And the frames that then arrive go nowhere, rather than throwing again.
     call.send({ samples: [1, 2, 3] });
     expect(call.backend.samples()).toEqual([]);
+  });
+});
+
+/**
+ * THE GUARD THE SETUP GUARD CANNOT REACH. `startTranslatedAudio` never touches
+ * the native track: the sink opens on the FIRST FRAME, which arrives long after
+ * the try/catch around setup has returned, and it arrives inside socket.io's
+ * synchronous dispatch. On a handset whose Kotlin never compiled this track,
+ * that frame is where it throws -- through the socket handler, which is the
+ * call.
+ */
+describe('a native track that throws mid-call costs the audio, never the call', () => {
+  const translatedSnapshot = (): CallStateSnapshot => ({
+    callId: CALL_ID,
+    callMode: 'translated',
+    participants: roster(),
+  });
+
+  it('survives the first frame throwing, and names the reason', async () => {
+    const call = await joinedCall({ snapshot: translatedSnapshot(), nativeThrowsOn: ['write'] });
+    expect(() => call.send({ samples: [10, 20, 30], sequence: 0 })).not.toThrow();
+    // `listening` first, then the reason: the subscription DID exist, which is
+    // exactly what separates this from a build with no native track. The two
+    // read identically without the reason attached.
+    expect(call.diagnostics).toContainEqual({ kind: 'listening' });
+    expect(call.diagnostics).toContainEqual({
+      kind: 'unavailable',
+      error: 'translated audio write threw: native write exploded',
+    });
+    // The call goes on: more frames, no error shown to the person, and the
+    // platform is not called again.
+    expect(() => call.send({ samples: [40, 50], sequence: 1 })).not.toThrow();
+    expect(call.errors).toEqual([]);
+    expect(call.diagnostics.filter((event) => event.kind === 'unavailable')).toHaveLength(1);
+    expect(() => call.connection.leave()).not.toThrow();
+  });
+
+  it('lets the person hang up when the native close throws', async () => {
+    const call = await joinedCall({ snapshot: translatedSnapshot(), nativeThrowsOn: ['close'] });
+    call.send({ samples: [1, 2], sequence: 0 });
+    expect(() => call.connection.leave()).not.toThrow();
+    // Leaving finished: the handler is off and the socket was let go.
+    expect(call.socket.handlerCount(CALL_EVENTS.TRANSLATED_AUDIO_FRAME)).toBe(0);
+    expect(call.socket.disconnects()).toBe(1);
+    expect(call.diagnostics).toContainEqual({
+      kind: 'unavailable',
+      error: 'translated audio close threw: native close exploded',
+    });
+  });
+
+  it('lets the person hang up when the unbind itself throws', async () => {
+    // Not the native track this time but the shared controller's own teardown,
+    // which sits on the same line of `leave()` and reaches everything after it.
+    const call = await joinedCall({
+      snapshot: translatedSnapshot(),
+      refuseToUnbind: [CALL_EVENTS.TRANSLATED_AUDIO_FRAME],
+    });
+    expect(() => call.connection.leave()).not.toThrow();
+    // The rest of leave() ran -- the socket, and with it the camera stop and
+    // the privacy indicator, are all downstream of the line that threw.
+    expect(call.socket.disconnects()).toBe(1);
+    expect(call.diagnostics.some((event) => event.kind === 'unavailable')).toBe(true);
   });
 });
 

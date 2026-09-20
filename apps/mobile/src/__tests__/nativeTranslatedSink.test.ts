@@ -21,11 +21,26 @@ interface FakeBackend extends TranslatedPcmBackend {
   samples(): number[];
 }
 
+/**
+ * `throwsOn` is the never-compiled Kotlin: the JS module resolves, the function
+ * exists, and calling it throws. That is what an APK built without this native
+ * track actually does, and it is the state the first device run is in.
+ */
+type NativeCall = 'open' | 'write' | 'flush' | 'close';
+
 function fakeBackend(
-  options: { openSucceeds?: boolean; refuseWrites?: boolean; flushMs?: number } = {},
+  options: {
+    openSucceeds?: boolean;
+    refuseWrites?: boolean;
+    flushMs?: number;
+    throwsOn?: readonly NativeCall[];
+  } = {},
 ): FakeBackend {
   const writes: string[] = [];
   const opens: number[] = [];
+  const explode = (call: NativeCall): void => {
+    if (options.throwsOn?.includes(call) === true) throw new Error(`native ${call} exploded`);
+  };
   const backend: FakeBackend = {
     writes,
     opens,
@@ -33,20 +48,24 @@ function fakeBackend(
     flushes: 0,
     open(sampleRate) {
       opens.push(sampleRate);
+      explode('open');
       return options.openSucceeds !== false;
     },
     write(pcmBase64) {
+      explode('write');
       if (options.refuseWrites === true) return -1;
       writes.push(pcmBase64);
       return Buffer.from(pcmBase64, 'base64').length;
     },
     flush() {
       backend.flushes += 1;
+      explode('flush');
       return options.flushMs ?? 0;
     },
     queuedMs: () => 0,
     close() {
       backend.closes += 1;
+      explode('close');
     },
     samples() {
       const out: number[] = [];
@@ -141,5 +160,75 @@ describe('createNativeTranslatedSink', () => {
     sink.play(Int16Array.from([3, 4]), 1);
     expect(backend.samples()).toEqual([1, 2]);
     expect(sink.flush()).toBe(0);
+  });
+});
+
+/**
+ * A NATIVE FUNCTION THAT THROWS, which is what an APK whose Kotlin never
+ * compiled this track does. `play` is called by the shared controller from
+ * inside socket.io's synchronous dispatch, so a throw that escapes this file
+ * unwinds through the socket handler -- it does not degrade translated audio,
+ * it takes the call.
+ */
+describe('a platform that throws costs the audio, never the call', () => {
+  it('survives a write that throws, and says why', () => {
+    const backend = fakeBackend({ throwsOn: ['write'] });
+    const errors: string[] = [];
+    const sink = createNativeTranslatedSink(backend, (error) => errors.push(error));
+    expect(() => sink.play(Int16Array.from([1, 2, 3]), 1)).not.toThrow();
+    expect(errors).toEqual(['translated audio write threw: native write exploded']);
+    // Nothing was heard, so nothing is claimed to have been.
+    expect(sink.playedMs).toBe(0);
+  });
+
+  it('stops calling a platform that threw instead of retrying it per frame', () => {
+    const backend = fakeBackend({ throwsOn: ['write'] });
+    const errors: string[] = [];
+    const sink = createNativeTranslatedSink(backend, (error) => errors.push(error));
+    for (let frame = 0; frame < 5; frame += 1) sink.play(new Int16Array(320), 1);
+    // Fifty frames a second, each one reported, would drown the timeline the
+    // report exists to be read in. One failure, said once.
+    expect(errors).toHaveLength(1);
+    // And no OTHER call goes to the platform either. A flush is the one that
+    // would: it is reached on every supersession, it is not on the play path,
+    // and the sink still counts itself open.
+    expect(sink.flush()).toBe(0);
+    expect(backend.flushes).toBe(0);
+  });
+
+  it('survives an open that throws before a single frame is written', () => {
+    const backend = fakeBackend({ throwsOn: ['open'] });
+    const errors: string[] = [];
+    const sink = createNativeTranslatedSink(backend, (error) => errors.push(error));
+    expect(() => sink.play(Int16Array.from([1, 2]), 1)).not.toThrow();
+    expect(sink.open).toBe(false);
+    expect(backend.writes).toEqual([]);
+    expect(errors).toEqual(['translated audio open threw: native open exploded']);
+  });
+
+  it('survives a close that throws, because that is the path out of a call', () => {
+    const backend = fakeBackend({ throwsOn: ['close'] });
+    const errors: string[] = [];
+    const sink = createNativeTranslatedSink(backend, (error) => errors.push(error));
+    sink.play(Int16Array.from([1, 2]), 1);
+    expect(() => sink.dispose()).not.toThrow();
+    expect(errors).toEqual(['translated audio close threw: native close exploded']);
+  });
+
+  it('still attempts the close after an earlier call threw', () => {
+    // A track that refused a write may still exist and still hold an output
+    // stream; the latch that stops retrying writes must not skip the release.
+    const backend = fakeBackend({ throwsOn: ['write'] });
+    const sink = createNativeTranslatedSink(backend, () => undefined);
+    sink.play(Int16Array.from([1, 2]), 1);
+    sink.dispose();
+    expect(backend.closes).toBe(1);
+  });
+
+  it('needs no reporter to stay standing', () => {
+    // The callback is optional; a sink built without one must still swallow.
+    const sink = createNativeTranslatedSink(fakeBackend({ throwsOn: ['write', 'close'] }));
+    expect(() => sink.play(Int16Array.from([1, 2]), 1)).not.toThrow();
+    expect(() => sink.dispose()).not.toThrow();
   });
 });

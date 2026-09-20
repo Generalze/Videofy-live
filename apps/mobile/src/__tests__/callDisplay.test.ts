@@ -14,8 +14,16 @@
  *   connectedAtMs -> WHEN it first connected. Never moves. Drives the duration.
  *   serverState   -> WHAT it is doing now. Drives every word.
  */
+import { readFileSync } from 'node:fs';
+import { URL, fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { connectedRow, isTerminal, liveStateOf, stateLine } from '../call/callDisplay';
+import {
+  connectedRow,
+  isTerminal,
+  liveStateOf,
+  stateLine,
+  translatedAudioUnavailableLine,
+} from '../call/callDisplay';
 
 const PEER = 'Ada';
 const ORIGIN = 1_700_000_000_000;
@@ -103,5 +111,44 @@ describe('before the server has said anything', () => {
   it('defers to the server the moment it speaks', () => {
     expect(stateLine('ringing', 'caller', PEER)).toBe('Ringing…');
     expect(stateLine('declined', 'caller', PEER)).toBe('Call declined');
+  });
+});
+
+/**
+ * WHICH INVESTIGATION THE TIMELINE SENDS SOMEBODY ON.
+ *
+ * `{kind:'unavailable'}` carries an optional reason, and the screen printed one
+ * fixed sentence -- "translated audio unavailable on this build" -- for both
+ * branches. On the first handset run of the native track that is the sentence
+ * most likely to be read, and if the path THREW it names the wrong cause: it
+ * would send the next step at a rebuild, when the build is not the problem.
+ */
+describe('why translated audio is unavailable', () => {
+  it('says the build has no track when there is no reason to give', () => {
+    expect(translatedAudioUnavailableLine()).toBe(
+      'translated audio unavailable: this build has no native track',
+    );
+  });
+
+  it('carries the reason verbatim when the path threw', () => {
+    const line = translatedAudioUnavailableLine('translated audio write threw: boom');
+    expect(line).toContain('the path threw');
+    expect(line).toContain('translated audio write threw: boom');
+    // The two branches must not be readable as each other.
+    expect(line).not.toBe(translatedAudioUnavailableLine());
+    expect(line).not.toContain('this build has no native track');
+  });
+
+  it('is what the call screen prints, with the reason passed through', () => {
+    // Read as text because CallScreen cannot be rendered in node. It proves
+    // the WIRING only -- that the screen calls this function with the event's
+    // own error rather than a fixed string -- and nothing about what a phone
+    // shows. The sentences themselves are proved above.
+    const screen = readFileSync(
+      fileURLToPath(new URL('../screens/CallScreen.tsx', import.meta.url)),
+      'utf8',
+    ).replace(/\r\n/gu, '\n');
+    expect(screen).toContain('translatedAudioUnavailableLine(event.error)');
+    expect(screen).not.toContain('translated audio unavailable on this build');
   });
 });

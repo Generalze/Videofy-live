@@ -31,6 +31,15 @@
  * LOADED OPTIONALLY, like src/native/videofyCall.ts. A dev client or an APK
  * built before this existed has no such functions, and must degrade to "no
  * translated audio on this build" rather than crash a call.
+ *
+ * NOTHING HERE CATCHES, on purpose, and the reason is where the catch has to
+ * be. These five functions are called from `createNativeTranslatedSink`, which
+ * is itself called by the shared controller from inside socket.io's
+ * synchronous event dispatch -- so a throw that is swallowed here would still
+ * have to leave the sink with a sensible answer for the frame it was given.
+ * The sink therefore owns the whole degradation (see `attempt` there): it
+ * decides the fallback, latches the failure, and reports the reason. A second
+ * catch here would only hide which call failed.
  */
 import { requireOptionalNativeModule } from 'expo';
 

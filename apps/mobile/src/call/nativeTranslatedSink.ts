@@ -43,7 +43,16 @@ export interface NativeTranslatedSink extends TranslatedAudioSink {
   readonly open: boolean;
 }
 
-export function createNativeTranslatedSink(backend: TranslatedPcmBackend): NativeTranslatedSink {
+export function createNativeTranslatedSink(
+  backend: TranslatedPcmBackend,
+  /**
+   * Called with the first platform failure, and only failures. See `attempt`:
+   * this is the sink's only way to say that translated audio stopped being
+   * possible, because everything above it is a void call inside a socket
+   * event.
+   */
+  onNativeError?: (error: string) => void,
+): NativeTranslatedSink {
   /**
    * OPENED ON THE FIRST FRAME, not when the call starts.
    *
@@ -54,10 +63,46 @@ export function createNativeTranslatedSink(backend: TranslatedPcmBackend): Nativ
   let opened: boolean | null = null;
   let playedMs = 0;
   let disposed = false;
+  /**
+   * Set by the first platform call that THREW, as opposed to one that returned
+   * a refusal. A returned `false`/`-1` is the platform answering; a throw means
+   * the function on the other side is not the one this file was written
+   * against -- the likeliest case being an APK whose Kotlin never compiled this
+   * track, where the JS module resolves and its methods do not behave. That
+   * does not heal, so it is latched: not calling it again fifty times a second
+   * is the same argument by which a `false` from `open` is only tried once.
+   */
+  let broken = false;
+
+  const failed = (what: string, error: unknown): void => {
+    broken = true;
+    onNativeError?.(`${what}: ${error instanceof Error ? error.message : String(error)}`);
+  };
+
+  /**
+   * EVERY CALL INTO THE PLATFORM GOES THROUGH HERE, and none of them may throw.
+   *
+   * `play` is invoked by the shared controller from inside socket.io's
+   * synchronous event dispatch. A throw from native there does not degrade
+   * translated audio -- it unwinds through the socket handler, which is the
+   * call itself. So a frame that cannot be played is worth exactly a lost
+   * frame and a diagnostic, and never the conversation.
+   */
+  const attempt = <T>(what: string, call: () => T, fallback: T): T => {
+    if (broken) return fallback;
+    try {
+      return call();
+    } catch (error) {
+      failed(what, error);
+      return fallback;
+    }
+  };
 
   const ensureOpen = (): boolean => {
-    if (disposed) return false;
-    if (opened === null) opened = backend.open(TRANSLATED_AUDIO_SAMPLE_RATE);
+    if (disposed || broken) return false;
+    if (opened === null) {
+      opened = attempt('translated audio open threw', () => backend.open(TRANSLATED_AUDIO_SAMPLE_RATE), false);
+    }
     return opened;
   };
 
@@ -65,7 +110,11 @@ export function createNativeTranslatedSink(backend: TranslatedPcmBackend): Nativ
     play(samples: Int16Array, gain: number): void {
       if (samples.length === 0) return;
       if (!ensureOpen()) return;
-      const accepted = backend.write(pcm16ToBase64(samples, gain));
+      const accepted = attempt(
+        'translated audio write threw',
+        () => backend.write(pcm16ToBase64(samples, gain)),
+        -1,
+      );
       // A refusal is NOT counted as played. `playedMs` is what a diagnostic
       // reads to answer "did this phone actually make a sound", and a counter
       // that rises while the platform is rejecting every write answers it
@@ -78,7 +127,7 @@ export function createNativeTranslatedSink(backend: TranslatedPcmBackend): Nativ
       // Only what has NOT been heard, which is the backend's number to give:
       // audio already presented is in somebody's ear and cannot be recalled.
       if (opened !== true || disposed) return 0;
-      return backend.flush();
+      return attempt('translated audio flush threw', () => backend.flush(), 0);
     },
 
     get playedMs(): number {
@@ -94,7 +143,16 @@ export function createNativeTranslatedSink(backend: TranslatedPcmBackend): Nativ
       disposed = true;
       // Closed even when `open` was never called: a backend that failed to open
       // may still hold a partially built track, and close is documented safe.
-      backend.close();
+      //
+      // ATTEMPTED EVEN AFTER A THROW, unlike the calls above, and caught here
+      // rather than at the call site. `dispose` runs on the path that LEAVES a
+      // call; a native throw on teardown must cost the track, not the person's
+      // ability to hang up.
+      try {
+        backend.close();
+      } catch (error) {
+        failed('translated audio close threw', error);
+      }
     },
   };
 }

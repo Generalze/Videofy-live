@@ -246,7 +246,7 @@ export interface CallConnectionOptions {
  * apart from a translation engine that had not run.
  */
 export type CallTranslatedAudioDiagnostic =
-  /** No `error`: this build has no native track. With one: the path threw while being set up. */
+  /** No `error`: this build has no native track. With one: the path threw -- at setup, on a frame, or on teardown. */
   | { readonly kind: 'unavailable'; readonly error?: string }
   | { readonly kind: 'listening' }
   | { readonly kind: 'refused'; readonly reason: string }
@@ -1218,6 +1218,14 @@ export class CallConnection {
       callMode: () => this.currentCallMode(),
       hearLanguage: () => this.selfHearLanguage(),
       onRefused: (reason) => this.options.onTranslatedAudio?.({ kind: 'refused', reason }),
+      /*
+       * The platform threw AFTER the subscription was live -- the setup guard
+       * above cannot see this, because the native track is not touched until
+       * the first frame arrives. Reported as the same degraded state the
+       * missing-module branch reports, with the reason attached, because from
+       * here on this call has no translated audio either way.
+       */
+      onBackendError: (error) => this.options.onTranslatedAudio?.({ kind: 'unavailable', error }),
     });
     this.translatedAudio.attach();
     this.options.onTranslatedAudio?.({ kind: 'listening' });
@@ -1498,8 +1506,21 @@ export class CallConnection {
      * has a session to compare against while it unbinds, and before the socket
      * goes: `detach` unbinds the handler and releases the AudioTrack, and a
      * track left open holds an output stream after the call is over.
+     *
+     * AND GUARDED, because everything after this line is how a person stops
+     * being in a call: the socket disconnect, the camera stop, the privacy
+     * indicator going out. `dispose` catches the native close itself; this
+     * catches the rest of the teardown -- the shared controller's unbind among
+     * it -- so that no throw here can leave somebody unable to hang up.
      */
-    this.translatedAudio?.detach();
+    try {
+      this.translatedAudio?.detach();
+    } catch (error) {
+      this.options.onTranslatedAudio?.({
+        kind: 'unavailable',
+        error: `translated audio detach threw: ${error instanceof Error ? error.message : String(error)}`,
+      });
+    }
     this.translatedAudio = null;
     this.remoteVoices = [];
     this.originalsSuppressed = false;

@@ -47,7 +47,7 @@ import {
 import { createAudioRouter, resolveRoute, type AudioRoute } from '../call/audioRoute';
 import { elapsedSinceMs, formatElapsed, observeServerClock } from '../call/callTimer';
 import { TERMINAL_DIRECT_STATES } from '../call/directCallApi';
-import { connectedRow, stateLine } from '../call/callDisplay';
+import { connectedRow, stateLine, translatedAudioUnavailableLine } from '../call/callDisplay';
 import { Icon } from '../ui/icons';
 import { videofyCall } from '../native/videofyCall';
 import { reportRingTimeline } from '../call/ringTimeline';
@@ -357,9 +357,13 @@ export function CallScreen({
           videoStamps.current['xlate_originals_suppressed'] = event.suppressed ? 1 : 0;
         }
         if (event.kind === 'unavailable') {
+          // The reason, not just the fact. A build that cannot play translated
+          // audio and a native track that threw read identically otherwise,
+          // and only one of them is fixed by building again.
+          videoStamps.current['xlate_unavailable_threw'] = event.error === undefined ? 0 : 1;
           setTransportLog((current) => [
             ...current.slice(-4),
-            `${new Date().toLocaleTimeString()} translated audio unavailable on this build`,
+            `${new Date().toLocaleTimeString()} ${translatedAudioUnavailableLine(event.error)}`,
           ]);
         }
       },

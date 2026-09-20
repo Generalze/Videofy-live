@@ -145,6 +145,13 @@ export interface MobileTranslatedAudioDeps {
   readonly hearLanguage: () => string;
   /** Diagnostics only. Never audio, never text. */
   readonly onRefused?: (reason: CallFrameRefusal, frame: CallTranslatedAudioFrameEvent) => void;
+  /**
+   * The platform threw. Translated audio is over for this call and the reason
+   * is the only thing that will explain it afterwards -- "this build has no
+   * native track" and "the native track threw on the first frame" are two
+   * different investigations and, until this existed, one message.
+   */
+  readonly onBackendError?: (error: string) => void;
   readonly log?: (line: string, detail?: Record<string, unknown>) => void;
 }
 
@@ -166,7 +173,7 @@ export function createMobileTranslatedAudio(
   const decoder = ensureBase64Decoder();
   if (decoder === 'installed') deps.log?.('translated audio installed a base64 decoder');
 
-  const sink = createNativeTranslatedSink(deps.backend);
+  const sink = createNativeTranslatedSink(deps.backend, deps.onBackendError);
 
   const policy = (): TranslatedAudioPolicyInput => ({
     participants: deps.callState()?.participants ?? [],

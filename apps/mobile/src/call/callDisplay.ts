@@ -88,3 +88,25 @@ export function connectedRow(
     warn: live !== 'connected',
   };
 }
+
+/**
+ * WHY TRANSLATED AUDIO IS UNAVAILABLE, in the line the transport log carries.
+ *
+ * The screen used to print one fixed sentence -- "translated audio unavailable
+ * on this build" -- for both branches of the diagnostic, and the two branches
+ * are different investigations:
+ *
+ *   no reason    the APK genuinely ships no native track, so the next step is a
+ *                build that contains one.
+ *   a reason     the track is there and THREW. A build would change nothing;
+ *                the message is the whole evidence, and on a handset it is the
+ *                only evidence anybody will get.
+ *
+ * This matters most on the first device run of the native track, where the
+ * wrong sentence would send the investigation at a rebuild that cannot help.
+ */
+export function translatedAudioUnavailableLine(error?: string): string {
+  return error === undefined
+    ? 'translated audio unavailable: this build has no native track'
+    : `translated audio unavailable: the path threw -- ${error}`;
+}
