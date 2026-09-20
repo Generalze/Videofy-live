@@ -15,17 +15,26 @@
  *   - IT WAS THE WRONG MARK. That crop came from the launcher lockup (a teal
  *     C, a white 7 and a teal dot laid out side by side), not from the site
  *     favicon. src/ui/c7.tsx states the rule -- "THE MARK IS THE WEBSITE
- *     FAVICON" -- and the favicon has no teal in it at all, which is why the
- *     #3ec9c0 tint it was given looked nothing like the browser tab.
+ *     FAVICON" -- so the geometry below is the favicon's.
+ *
+ *     THE TINT IS A SEPARATE QUESTION, AND IT IS SETTLED. The favicon's own
+ *     strokes are #93a1bd and white, and for a day app.json declared the
+ *     #93a1bd. The founder ruled on 20 Sep 2026 that the tint is #3ec9c0 --
+ *     the teal the app's own UI uses, src/ui/c7.tsx `teal` -- so app.json
+ *     declares that, and IncomingCallService passes the same value to
+ *     setColor. The SHAPE is the favicon; the COLOUR is the product's teal.
  *
  *   - IT RENDERED AT HALF SIZE. The old source was ALREADY a 96 x 96 square,
  *     so the plugin's resize (`resizeMode: 'cover'` to 24/36/48/72/96 px, one
  *     per density -- expo-notifications/plugin/build/withNotificationsAndroid.js)
  *     was a plain proportional downscale: nothing was squeezed or cropped.
  *     The glyph was simply small ON that square. Its measured alpha bounding
- *     box was 73 x 41 inside the 96: 43% of the available height, about 10dp
+ *     box was 73 x 47 inside the 96: 49% of the available height, about 12dp
  *     of the 24 Android draws on screen. (An earlier note here blamed a
- *     "squash" of the 1.78:1 lockup; that mechanism was wrong.)
+ *     "squash" of the 1.78:1 lockup; that mechanism was wrong. A later one
+ *     put the box at 73 x 41 and 43%; re-decoding the 09011da asset gives
+ *     73 x 47, identical at every alpha threshold from 1 to 128, so the
+ *     height figure was simply wrong. The point stands: half the canvas.)
  *
  * KEEP THE SOURCE SQUARE. Because the resize is 'cover', a NON-square source
  * is the hazard: it is scaled to fill the square and centre-CROPPED, which
@@ -37,7 +46,8 @@
  * the same path data src/ui/c7.tsx draws -- are very nearly square (49.0 x
  * 47.1 in the 64-unit viewBox), so they fill the canvas. Scaled to the
  * Material system-icon keyline (20 of 24, i.e. 160 of 192 here) the glyph
- * lands at 160 x 154 px: 80% of the height against the old 43%.
+ * lands at 160 x 154 px: 80% of the height against the old 49%. (Decoding the
+ * emitted PNG confirms it: alpha bbox 160 x 154, 83.3% x 80.2% of the 192.)
  *
  * ANDROID DISCARDS THE COLOUR CHANNELS of a small icon and tints the alpha
  * silhouette with the colour declared in app.json, so this is drawn as pure
@@ -60,17 +70,23 @@
  * (fcm-provider.ts: `dataOnly = notification.kind === 'call'`), Android draws
  * nothing for it, and the native module posts the ring itself with its own
  * icon, set explicitly in
- * modules/videofy-call/android/.../IncomingCallService.kt:
+ * modules/videofy-call/android/.../IncomingCallService.kt. There are exactly
+ * three such notifications -- grep NotificationCompat.Builder in that module
+ * and no fourth exists:
  *
- *   - the incoming-call (ring) notification .......... android.R.drawable.sym_call_incoming
- *   - the silent "Checking a call" stand-in .......... android.R.drawable.sym_call_incoming
- *   - the "Missed call" stub for an expired push ..... android.R.drawable.sym_call_missed
+ *   - the incoming-call (ring) notification
+ *   - the silent "Checking a call" stand-in, the only other ongoing one
+ *   - the "Missed call" stub for an expired push
  *
- * Those three keep Android's stock telephone glyph regardless of anything in
- * this file or app.json. So after a build, the RING -- the notification most
- * often seen -- will look exactly as it did before; that is not this change
- * failing. Whether the ring should carry the C7 mark is a separate decision
- * about the native module, not yet made.
+ * Until 20 Sep 2026 those three named Android's stock telephone glyph and so
+ * ignored everything in this file and in app.json, which meant the RING --
+ * the notification most often seen -- looked unbranded no matter what was
+ * done here. The founder ruled that the ring carries the mark, so all three
+ * now name the module's own res/drawable/ic_c7_notification.xml and pass the
+ * same #3ec9c0 to setColor. That drawable is this SAME favicon geometry,
+ * stroked by Android instead of rasterised here; rasterising it at 192 px
+ * through its own group transform reproduces this PNG's alpha exactly, max
+ * per-pixel difference 0/255. Change the mark and BOTH must be redone.
  */
 import { deflateSync } from 'node:zlib';
 import { writeFileSync } from 'node:fs';
