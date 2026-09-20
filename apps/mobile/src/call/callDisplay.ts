@@ -22,6 +22,7 @@
  * "Reconnecting..." in the other, for the identical state.
  */
 import { directStateWords, TERMINAL_DIRECT_STATES } from './directCallApi';
+import { formatSpokenElapsed } from './callTimer';
 
 /**
  * The state the server currently asserts, or null when there is none to show.
@@ -87,6 +88,67 @@ export function connectedRow(
     words: directStateWords(live, peerName),
     warn: live !== 'connected',
   };
+}
+
+/** Which of the board's three direct-call treatments this call is in. */
+export type DirectCallPhase = 'placing' | 'live' | 'ended';
+
+/**
+ * The phase, from the two facts that decide it and no others.
+ *
+ * `live` is deliberately the SAME condition the timer row has always used --
+ * an origin to count from AND a live state to describe -- rather than a second
+ * opinion about when a call is up. Two answers to "is this call connected" is
+ * how a screen comes to disagree with the call it is showing.
+ */
+export function directCallPhase(input: {
+  readonly serverState: string | null;
+  readonly elapsedMs: number | null;
+  readonly connectedRowShown: boolean;
+}): DirectCallPhase {
+  if (isTerminal(input.serverState)) return 'ended';
+  return input.elapsedMs !== null && input.connectedRowShown ? 'live' : 'placing';
+}
+
+/**
+ * THE EYEBROW: the small capitals naming the moment.
+ *
+ * Nothing for a live call -- the board gives that screen a speech indicator
+ * and a timer instead, and a caption above them would only repeat what the
+ * running clock already says.
+ *
+ * `placing` reads differently at the two ends, and it is the one sentence on
+ * this screen that is allowed to: which end of the call this device is, is the
+ * single thing it knows for certain before the server has spoken.
+ */
+export function callEyebrow(
+  serverState: string | null,
+  role: 'caller' | 'callee',
+  phase: DirectCallPhase,
+): string | null {
+  if (phase === 'ended') return 'Call ended';
+  if (phase === 'live') return null;
+  return role === 'caller' ? 'Calling…' : 'Connecting';
+}
+
+/**
+ * The line under the name on the ended screen: `4 min 51 s · translated`.
+ *
+ * Null when the call never connected, because there is then no duration and
+ * "0 s · translated" would describe a call that did not happen. The mode half
+ * is dropped when the server never stated one; it is not guessed at 'normal',
+ * which is the exact coercion that silenced translated audio for a whole call
+ * once already (see callConnection's `deliverDirectState`).
+ */
+export function endedSummaryLine(
+  elapsedMs: number | null,
+  mode: 'normal' | 'translated' | null,
+): string | null {
+  if (elapsedMs === null) return null;
+  const duration = formatSpokenElapsed(elapsedMs);
+  if (mode === 'translated') return `${duration} · translated`;
+  if (mode === 'normal') return `${duration} · original voices`;
+  return duration;
 }
 
 /**

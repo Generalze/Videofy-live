@@ -7,11 +7,29 @@
  * caller's side means this screen is actually on somebody's phone. No codes
  * anywhere: a direct call is a person. Same C7 surface as the call itself,
  * so answering does not feel like changing apps.
+ *
+ * TWO THINGS THE FOUNDER'S BOARD ASKS FOR AND THIS SCREEN CANNOT HONESTLY
+ * DRAW, both for the same reason: this phone is not in the call yet.
+ *
+ *   the language pair  `YO -> EN` needs the other seat's speakLanguage and
+ *                      this seat's hearLanguage, and both live on `call:state`,
+ *                      which only exists after joining. The pre-join wire --
+ *                      GET /calls/direct/:callId, see ../call/directCallApi.ts
+ *                      -- carries ring, state, mode, callerAccountId and
+ *                      callerName, and no language of any kind. The MODE is
+ *                      carried and is shown, because the mode is the honest
+ *                      half of the same fact: this call will be translated.
+ *   "mobile"           the caller's device class is on no wire the handset
+ *                      reads. A pill reading "mobile" under every caller would
+ *                      be a decoration shaped like a fact.
+ *
+ * Both are server-side questions and are reported as such rather than filled
+ * in with something plausible.
  */
 import { type JSX } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useBottomInset } from '../ui/insets';
-import { AvatarHalo, C7Mark, CALL_COLORS, CallBackdrop } from '../ui/callTheme';
+import { AvatarHalo, C7Mark, CALL_COLORS, CallBackdrop, Eyebrow } from '../ui/callTheme';
 import { Icon } from '../ui/icons';
 
 export interface IncomingCallScreenProps {
@@ -35,9 +53,20 @@ export function IncomingCallScreen({
         <C7Mark caption={mode === 'translated' ? 'Translated call' : 'Incoming call'} />
       </View>
       <View style={styles.identity}>
-        <AvatarHalo accountId={caller.accountId} name={caller.name} size={136} pulsing />
+        <Eyebrow>Incoming call</Eyebrow>
+        <AvatarHalo accountId={caller.accountId} name={caller.name} size={136} pulsing ring />
         <Text style={styles.name}>{caller.name}</Text>
         <Text style={styles.kicker}>is calling you on C7</Text>
+        {/*
+          * The MODE, which the pre-join wire does carry. It is not the board's
+          * language pill and does not pretend to be: it says the call will be
+          * translated, not which way round.
+          */}
+        {mode === 'translated' && (
+          <View style={styles.modePill}>
+            <Text style={styles.modePillLabel}>Translated call</Text>
+          </View>
+        )}
       </View>
       <View style={[styles.actions, { paddingBottom: bottomInset + 40 }]}>
         <View style={styles.action}>
@@ -71,6 +100,16 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: CALL_COLORS.ground, justifyContent: 'space-between' },
   top: { paddingTop: 52, paddingHorizontal: 22 },
   identity: { alignItems: 'center', gap: 8, paddingHorizontal: 28 },
+  modePill: {
+    marginTop: 6,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(62,201,192,0.5)',
+    backgroundColor: 'rgba(62,201,192,0.08)',
+    paddingHorizontal: 14,
+    paddingVertical: 5,
+  },
+  modePillLabel: { color: CALL_COLORS.teal, fontSize: 13, fontWeight: '600' },
   name: { color: CALL_COLORS.text, fontSize: 30, fontWeight: '700', marginTop: 8, textAlign: 'center' },
   kicker: { color: CALL_COLORS.muted, fontSize: 15 },
   actions: { flexDirection: 'row', justifyContent: 'space-evenly', paddingHorizontal: 24 },

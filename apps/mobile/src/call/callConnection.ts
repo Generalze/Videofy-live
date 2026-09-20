@@ -21,8 +21,20 @@
  * events, none of them `call:translated-audio-frame`. Both people heard the
  * original voice while every server counter said delivered. The rules are the
  * shared controller's, exactly as on the web; see ./translatedAudioLink.ts for
- * the phone's answers to the questions it asks. Captions and the
- * generated-audio clip queue are still deliberately absent.
+ * the phone's answers to the questions it asks.
+ *
+ * CAPTIONS ARRIVE HERE TOO, since 20 Sep 2026, and the same sentence used to
+ * stand where this one does: "Captions and the generated-audio clip queue are
+ * still deliberately absent". The gateway had been routing `call:caption` per
+ * recipient with BOTH texts on it the whole time, and the phone was not
+ * listening -- the same unjoined seam, one event along. The generated-audio
+ * clip queue really is still absent: an uploaded programme has a finished file
+ * and a conversation does not, and this client only ever meets the second.
+ *
+ * THE PAIR OF LANGUAGES IS SURFACED TOO, from `call:state` -- the only record
+ * of what the seats asked for, and the one the server routed the audio
+ * against. See ./callLanguages.ts for why neither the handset's own profile
+ * nor the first caption is allowed to answer that question.
  *
  * MEDIA NEVER TOUCHES THE SERVER. Signalling is relayed by the gateway, which
  * validates the sender's binding and forwards to the target's private room;
@@ -61,12 +73,15 @@ import {
   type CallResumeCredentials,
   type CallMode,
   type CallSdpAck,
+  type CallCaptionEvent,
   type CallStateSnapshot,
   type CallVideoIcePayload,
   type CallVideoSdpPayload,
   type DirectCallStateSnapshot,
   type TranslatedAudioSocketLike,
 } from '@videofy-live/call-client-core';
+import { parseCaption } from './callCaption';
+import { directLanguagePair, type CallLanguagePair } from './callLanguages';
 import {
   createMobileTranslatedAudio,
   remoteOriginalsSuppressed,
@@ -235,6 +250,32 @@ export interface CallConnectionOptions {
   readonly translatedAudioBackend?: TranslatedPcmBackend | null;
   /** The translated-audio path, stage by stage; metadata only, never audio. */
   readonly onTranslatedAudio?: (event: CallTranslatedAudioDiagnostic) => void;
+  /**
+   * ONE UTTERANCE, AS IT WAS SAID AND AS IT WAS TRANSLATED.
+   *
+   * The validated `call:caption` payload, exactly as the gateway addressed it
+   * to this seat. Partials arrive before their final and the caller decides
+   * what supersedes what -- ./callCaption.ts asks the shared merge that
+   * question rather than answering it twice.
+   */
+  readonly onCaption?: (event: CallCaptionEvent) => void;
+  /**
+   * The pair of languages this call is running on, as `call:state` records
+   * them, or null while it cannot be measured (one seat, a conference, or a
+   * roster with blank languages). Re-sent on every membership change, because
+   * a language can be changed mid-call.
+   */
+  readonly onLanguages?: (pair: CallLanguagePair | null) => void;
+  /**
+   * THE SERVER SAYING IT CANNOT TRANSLATE. `call:error` with code
+   * `translation-engine-unavailable`, sent privately when a TRANSLATED call is
+   * joined on a deployment whose engine is not real. Reported apart from
+   * `onError` because it is not a failure of this call -- the call works, and
+   * everybody will hear original voices -- and apart from the translated-audio
+   * diagnostic because "this build has no native track" and "this server has
+   * no engine" send an investigation to two different places.
+   */
+  readonly onTranslationEngine?: (available: false) => void;
 }
 
 /**
@@ -705,9 +746,21 @@ export class CallConnection {
       void this.resumeSeat(attempt);
     });
 
-    socket.on(CALL_EVENTS.ERROR, (payload: { message?: string }) =>
-      this.options.onError(payload?.message ?? 'The call service refused this call.'),
-    );
+    socket.on(CALL_EVENTS.ERROR, (payload: { message?: string; code?: string }) => {
+      /*
+       * THE ENGINE VERDICT IS NOT A CALL FAILURE. `translation-engine-unavailable`
+       * says this deployment cannot translate; the call itself is fine and both
+       * people will hear each other's original voices. Routed to its own
+       * reporter as well as the error box so the screen can stop saying
+       * "Connecting translation service…" to something that is never going to
+       * connect -- which is the exact shape of the night this app spent
+       * claiming translated audio over silence.
+       */
+      if (payload?.code === 'translation-engine-unavailable') {
+        this.options.onTranslationEngine?.(false);
+      }
+      this.options.onError(payload?.message ?? 'The call service refused this call.');
+    });
     socket.on('connect_error', () => this.options.onError('Could not reach the call service.'));
 
     /*
@@ -939,11 +992,36 @@ export class CallConnection {
             : {}),
         })),
       );
+      /*
+       * THE LANGUAGE PAIR, FROM THE ONLY RECORD OF IT. Computed over the WHOLE
+       * roster, not the filtered one above: the pair needs this seat's own
+       * `hearLanguage`, and `joined` is the list that has just had this seat
+       * removed from it. A language changed mid-call lands here too, which is
+       * why it is re-answered on every state rather than captured at join.
+       */
+      this.options.onLanguages?.(
+        directLanguagePair({
+          selfParticipantId: this.participantId,
+          participants: payload?.participants ?? [],
+        }),
+      );
       // A language change, a departure or a mode change all land here, and each
       // can flip whether the originals should be heard.
       this.applyOriginalVoicePolicy();
     };
     socket.on(CALL_EVENTS.STATE, applyState);
+
+    /*
+     * CAPTIONS. Addressed to this seat's private room, one delivery per
+     * recipient, carrying the sentence as it was said AND -- for a recipient
+     * whose language differs -- the translation of it. Validated before it
+     * goes anywhere near the screen: a caption becomes the largest text on the
+     * call, and a sentence assembled out of `undefined` is worse than none.
+     */
+    socket.on(CALL_EVENTS.CAPTION, (raw: unknown) => {
+      const caption = parseCaption(raw, this.options.callId);
+      if (caption !== null) this.options.onCaption?.(caption);
+    });
     // An admitted joiner already holds the roster in the admission itself.
     if (snapshot !== null && typeof snapshot === 'object') applyState(snapshot as CallStatePayload);
 

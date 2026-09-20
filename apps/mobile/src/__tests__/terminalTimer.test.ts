@@ -43,8 +43,21 @@ describe('every terminal state the server can send is terminal here', () => {
 });
 
 describe("the screen's own timer stops", () => {
-  it('ticks only while there is an origin and the call has not ended', () => {
-    expect(screen).toContain('if (connectedAtMs === null || terminal) return undefined;');
+  it('ticks only while there is something to advance and the call has not ended', () => {
+    /*
+     * WIDENED 20 Sep 2026, and the half that matters is untouched.
+     *
+     * The tick used to require an origin to count from, which is right for the
+     * duration and left the OUTGOING ring arc frozen for the whole of the ring
+     * -- the one phase it exists for. It now also runs while the server has
+     * given this screen a ring deadline.
+     *
+     * What T1 asserts is unchanged and is asserted here: `!terminal` leads the
+     * condition, so a call the server has ended stops the clock before any
+     * other consideration, and the effect refuses to arm at all without it.
+     */
+    expect(screen).toContain('const ticking = !terminal && (connectedAtMs !== null');
+    expect(screen).toContain('if (!ticking) return undefined;');
   });
 
   it('derives terminal from the server state, not the timer, roster or socket', () => {
