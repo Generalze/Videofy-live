@@ -97,19 +97,38 @@ describe('the ended screen states a length, not a clock face', () => {
     expect(formatSpokenElapsed(120_000)).toBe('2 min');
   });
 
-  it('says whether the call was translated, when the server said so', () => {
-    expect(endedSummaryLine(291_000, 'translated')).toBe('4 min 51 s · translated');
-    expect(endedSummaryLine(291_000, 'normal')).toBe('4 min 51 s · original voices');
+  it('says the call was translated only where that was PROVEN', () => {
+    expect(endedSummaryLine(291_000, 'translated', 'translated')).toBe('4 min 51 s · translated');
+    expect(endedSummaryLine(291_000, 'normal', 'unproven')).toBe('4 min 51 s · original voices');
+  });
+
+  it('will not certify a translated call the phone measured as untranslated', () => {
+    /*
+     * THE WORST DEFECT OF THE FIRST CUT. The line derived "· translated" from
+     * the configured MODE alone, while the screen above it had spent four
+     * minutes saying "This server cannot translate" from the gateway's own
+     * `translation-engine-unavailable`. The contradiction was measured and
+     * thrown away; three elements then agreed on the false half and nothing
+     * dissented.
+     */
+    expect(endedSummaryLine(291_000, 'translated', 'not-translated')).toBe('4 min 51 s · not translated');
+  });
+
+  it('claims NOTHING about a translated call in which nothing was measured', () => {
+    // Configured translated, nothing played, nothing captioned, no fault
+    // reported. The duration is a fact; "· translated" would not be.
+    expect(endedSummaryLine(291_000, 'translated', 'unproven')).toBe('4 min 51 s');
   });
 
   it('states the duration alone when the server never named a mode', () => {
-    expect(endedSummaryLine(291_000, null)).toBe('4 min 51 s');
+    expect(endedSummaryLine(291_000, null, 'unproven')).toBe('4 min 51 s');
+    expect(endedSummaryLine(291_000, null, 'translated')).toBe('4 min 51 s');
   });
 
   it('states NOTHING for a call that never connected', () => {
     // A declined call has no duration. "0 s · translated" would describe a
     // conversation that did not happen.
-    expect(endedSummaryLine(null, 'translated')).toBeNull();
+    expect(endedSummaryLine(null, 'translated', 'translated')).toBeNull();
   });
 });
 

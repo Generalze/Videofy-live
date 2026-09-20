@@ -146,6 +146,18 @@ export interface MobileTranslatedAudioDeps {
   /** Diagnostics only. Never audio, never text. */
   readonly onRefused?: (reason: CallFrameRefusal, frame: CallTranslatedAudioFrameEvent) => void;
   /**
+   * THE FIRST TRANSLATED SOUND THIS PHONE ACTUALLY MADE, once per call.
+   *
+   * The sink has counted `playedMs` since it was written and nothing outside
+   * its own tests has ever read it, so the strongest signal in the whole
+   * translated path -- audio that reached the platform and was accepted -- was
+   * held one object away from the screen, which meanwhile said "Listening"
+   * because a handler had been bound. This is the signal that lets a screen
+   * claim translation is running, and it is announced once because a call needs
+   * the fact, not fifty announcements a second.
+   */
+  readonly onPlayed?: (playedMs: number) => void;
+  /**
    * The platform threw. Translated audio is over for this call and the reason
    * is the only thing that will explain it afterwards -- "this build has no
    * native track" and "the native track threw on the first frame" are two
@@ -175,6 +187,30 @@ export function createMobileTranslatedAudio(
 
   const sink = createNativeTranslatedSink(deps.backend, deps.onBackendError);
 
+  /*
+   * The sink, watched for the one transition worth reporting: `playedMs` going
+   * from nothing to something. A refused write does not move it -- the sink is
+   * careful about that -- so this cannot fire for audio the platform rejected.
+   */
+  let announced = false;
+  const watched: NativeTranslatedSink = {
+    play(samples: Int16Array, gain: number): void {
+      sink.play(samples, gain);
+      if (!announced && sink.playedMs > 0) {
+        announced = true;
+        deps.onPlayed?.(sink.playedMs);
+      }
+    },
+    flush: () => sink.flush(),
+    dispose: () => sink.dispose(),
+    get playedMs(): number {
+      return sink.playedMs;
+    },
+    get open(): boolean {
+      return sink.open;
+    },
+  };
+
   const policy = (): TranslatedAudioPolicyInput => ({
     participants: deps.callState()?.participants ?? [],
     selfParticipantId: deps.participantId() ?? '',
@@ -184,7 +220,7 @@ export function createMobileTranslatedAudio(
 
   const controller = createCallTranslatedAudioController({
     socket: deps.socket,
-    createSink: () => sink,
+    createSink: () => watched,
     currentCallId: deps.callId,
     currentParticipantId: deps.participantId,
     callState: deps.callState,

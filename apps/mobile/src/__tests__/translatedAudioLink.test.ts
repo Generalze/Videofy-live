@@ -153,6 +153,7 @@ function harness(state: CallStateSnapshot | null = translatedCall()) {
   let snapshot = state;
   let seat: string | null = ME;
   const refusals: string[] = [];
+  const played: number[] = [];
   const deps: MobileTranslatedAudioDeps = {
     socket,
     backend,
@@ -162,6 +163,7 @@ function harness(state: CallStateSnapshot | null = translatedCall()) {
     callMode: () => snapshot?.callMode ?? null,
     hearLanguage: () => 'fr',
     onRefused: (reason) => refusals.push(reason),
+    onPlayed: (playedMs) => played.push(playedMs),
   };
   const link = createMobileTranslatedAudio(deps);
   return {
@@ -169,6 +171,7 @@ function harness(state: CallStateSnapshot | null = translatedCall()) {
     backend,
     link,
     refusals,
+    played,
     setState(next: CallStateSnapshot | null): void {
       snapshot = next;
     },
@@ -180,6 +183,48 @@ function harness(state: CallStateSnapshot | null = translatedCall()) {
     },
   };
 }
+
+describe('the phone says, once, that it has actually made a sound', () => {
+  /*
+   * THE SIGNAL THAT EXISTED AND NEVER LEFT THE SINK. `playedMs` has counted
+   * accepted output since this file was written, and nothing outside its own
+   * tests ever read it -- so the screen said "Listening for translated speech"
+   * (a socket handler is bound) with no way to ever say more, while the one
+   * piece of audible proof sat one object away. It is now announced, once.
+   */
+  it('announces the first frame the platform accepted', () => {
+    const call = harness();
+    call.link.attach();
+    expect(call.played).toEqual([]);
+    call.send({ samples: [10, 20, 30], sequence: 0 });
+    expect(call.played).toHaveLength(1);
+    expect(call.played[0]).toBeGreaterThan(0);
+    // Once per call: a phone needs the fact, not fifty announcements a second.
+    call.send({ samples: [40, 50], sequence: 1 });
+    expect(call.played).toHaveLength(1);
+  });
+
+  it('says nothing for frames the phone never played', () => {
+    // A frame for a call this seat has left. Refused before any output, so
+    // there is no sound to report and the proof must not appear.
+    const call = harness();
+    call.link.attach();
+    call.leaveSeat();
+    call.send({ samples: [10, 20, 30], sequence: 0 });
+    expect(call.backend.samples()).toEqual([]);
+    expect(call.played).toEqual([]);
+  });
+
+  it('says nothing when the platform refuses every write', () => {
+    const call = harness();
+    // The write returns a refusal rather than a byte count; `playedMs` is
+    // deliberately not advanced by one, and neither is the proof.
+    call.backend.write = () => -1;
+    call.link.attach();
+    call.send({ samples: [10, 20, 30], sequence: 0 });
+    expect(call.played).toEqual([]);
+  });
+});
 
 describe('mobile translated audio, socket to output', () => {
   it('plays the translated speech the gateway sends', () => {

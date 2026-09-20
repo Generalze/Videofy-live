@@ -797,10 +797,25 @@ function AppInner(): JSX.Element {
 
   if (activeCall !== null) {
     const ringPeer = activeCall.kind === 'direct' && activeCall.ring ? activeCall.peer : null;
+    /*
+     * THE ENDED SCREEN'S TWO BUTTONS, wired to the entry points that already
+     * exist: `callContact`, which every other Call control in the app goes
+     * through, and the chat the profile and the contact list open. Nothing new
+     * is invented here -- a direct call carries the peer, so the person is
+     * already in hand. A conference has no single peer and gets neither.
+     */
+    const endedPeer = activeCall.kind === 'direct' ? activeCall.peer : null;
+    const endedPerson: ContactPerson | null =
+      endedPeer === null
+        ? null
+        : { accountId: endedPeer.accountId, username: null, displayName: endedPeer.name };
     return (
       <>
         <StatusBar style="light" />
         <CallScreen
+          /* A new callId is a new call: the screen starts from nothing rather
+             than inheriting the last call's state through a re-render. */
+          key={activeCall.callId}
           call={
             activeCall.kind === 'direct'
               ? { kind: 'direct', callId: activeCall.callId, peer: activeCall.peer }
@@ -822,6 +837,19 @@ function AppInner(): JSX.Element {
             videofyCall.reportCallEnded(activeCall.callId);
             setActiveCall(null);
           }}
+          {...(endedPerson === null
+            ? {}
+            : {
+                onCallBack: () => {
+                  videofyCall.reportCallEnded(activeCall.callId);
+                  callContact(endedPerson);
+                },
+                onMessagePeer: () => {
+                  videofyCall.reportCallEnded(activeCall.callId);
+                  setActiveCall(null);
+                  setChatWith(endedPerson);
+                },
+              })}
         />
       </>
     );

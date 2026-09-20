@@ -258,7 +258,7 @@ export interface CallConnectionOptions {
    * what supersedes what -- ./callCaption.ts asks the shared merge that
    * question rather than answering it twice.
    */
-  readonly onCaption?: (event: CallCaptionEvent) => void;
+  readonly onCaption?: (event: CallCaptionEvent, meta: CallCaptionOrigin) => void;
   /**
    * The pair of languages this call is running on, as `call:state` records
    * them, or null while it cannot be measured (one seat, a conference, or a
@@ -286,10 +286,18 @@ export interface CallConnectionOptions {
  * subscription turning frames away -- and on 19 Sep 2026 neither could be told
  * apart from a translation engine that had not run.
  */
+/** Which end of the call a caption came from, decided where the seat id lives. */
+export interface CallCaptionOrigin {
+  /** This phone's own speech, echoed back by the gateway. */
+  readonly self: boolean;
+}
+
 export type CallTranslatedAudioDiagnostic =
   /** No `error`: this build has no native track. With one: the path threw -- at setup, on a frame, or on teardown. */
   | { readonly kind: 'unavailable'; readonly error?: string }
   | { readonly kind: 'listening' }
+  /** Translated audio this phone actually played. Announced once per call. */
+  | { readonly kind: 'played'; readonly playedMs: number }
   | { readonly kind: 'refused'; readonly reason: string }
   | { readonly kind: 'originals'; readonly suppressed: boolean };
 
@@ -1020,7 +1028,18 @@ export class CallConnection {
      */
     socket.on(CALL_EVENTS.CAPTION, (raw: unknown) => {
       const caption = parseCaption(raw, this.options.callId);
-      if (caption !== null) this.options.onCaption?.(caption);
+      /*
+       * WHOSE WORDS. The gateway deliberately delivers a speaker their OWN
+       * transcript as well as the other side's, so a caption is not evidence
+       * that the peer said anything. The seat id is known HERE and nowhere
+       * above, and a screen that guessed from the display name would be
+       * deriving an identity from a label the person can change.
+       */
+      if (caption !== null) {
+        this.options.onCaption?.(caption, {
+          self: this.participantId !== null && caption.speakerParticipantId === this.participantId,
+        });
+      }
     });
     // An admitted joiner already holds the roster in the admission itself.
     if (snapshot !== null && typeof snapshot === 'object') applyState(snapshot as CallStatePayload);
@@ -1301,6 +1320,7 @@ export class CallConnection {
       callMode: () => this.currentCallMode(),
       hearLanguage: () => this.selfHearLanguage(),
       onRefused: (reason) => this.options.onTranslatedAudio?.({ kind: 'refused', reason }),
+      onPlayed: (playedMs) => this.options.onTranslatedAudio?.({ kind: 'played', playedMs }),
       /*
        * The platform threw AFTER the subscription was live -- the setup guard
        * above cannot see this, because the native track is not touched until

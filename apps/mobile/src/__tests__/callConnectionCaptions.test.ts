@@ -203,6 +203,8 @@ async function joinedCall(snapshot?: CallStateSnapshot) {
   const socket = gatewaySocket(state);
   shared.socket = socket;
   const captions: CallCaptionEvent[] = [];
+  /** Whose words each caption was, as the connection judged it. */
+  const origins: boolean[] = [];
   const languages: (CallLanguagePair | null)[] = [];
   const engine: boolean[] = [];
   const errors: string[] = [];
@@ -215,7 +217,10 @@ async function joinedCall(snapshot?: CallStateSnapshot) {
     sessionToken: 'session-token',
     iceServers: [],
     translatedAudioBackend: null,
-    onCaption: (event) => captions.push(event),
+    onCaption: (event, origin) => {
+      captions.push(event);
+      origins.push(origin.self);
+    },
     onLanguages: (pair) => languages.push(pair),
     onTranslationEngine: (available) => engine.push(available),
     onRemoteStream: () => undefined,
@@ -223,7 +228,7 @@ async function joinedCall(snapshot?: CallStateSnapshot) {
     onError: (message) => errors.push(message),
   });
   const ack = await connection.join();
-  return { socket, captions, languages, engine, errors, connection, ack, state };
+  return { socket, captions, origins, languages, engine, errors, connection, ack, state };
 }
 
 describe('a joined call is subscribed to its captions', () => {
@@ -237,6 +242,30 @@ describe('a joined call is subscribed to its captions', () => {
     expect(call.captions[0]?.originalText).toBe('Bawo ni, se daadaa ni?');
     expect(call.captions[0]?.translatedText).toBe('Hello, is everything well?');
     expect(call.errors).toEqual([]);
+  });
+
+  it('says which end of the call each caption came from', async () => {
+    /*
+     * The gateway DELIVERS A SPEAKER THEIR OWN TRANSCRIPT (call-session-store's
+     * routeCaption, §12: captions let people verify names, numbers and terms),
+     * so a caption arriving is not evidence the other person said anything. The
+     * seat id lives here and nowhere above, and the screen's speech indicator --
+     * which sits over the PEER's face -- moved for this phone's own speech until
+     * this flag existed.
+     */
+    const call = await joinedCall();
+    call.socket.deliver(CALL_EVENTS.CAPTION, captionPayload());
+    expect(call.origins).toEqual([false]);
+    call.socket.deliver(
+      CALL_EVENTS.CAPTION,
+      captionPayload({
+        speakerParticipantId: ME,
+        sequence: 2,
+        targetLanguage: null,
+        translatedText: null,
+      }),
+    );
+    expect(call.origins).toEqual([false, true]);
   });
 
   it('is bound exactly once, and stops when the call is left', async () => {

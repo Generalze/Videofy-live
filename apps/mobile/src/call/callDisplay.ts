@@ -23,6 +23,7 @@
  */
 import { directStateWords, TERMINAL_DIRECT_STATES } from './directCallApi';
 import { formatSpokenElapsed } from './callTimer';
+import type { EndedTranslationVerdict } from './translationReadiness';
 
 /**
  * The state the server currently asserts, or null when there is none to show.
@@ -139,15 +140,35 @@ export function callEyebrow(
  * is dropped when the server never stated one; it is not guessed at 'normal',
  * which is the exact coercion that silenced translated audio for a whole call
  * once already (see callConnection's `deliverDirectState`).
+ *
+ * THE MODE IS NOT ENOUGH TO CERTIFY A CALL AS TRANSLATED, and this line got
+ * that wrong for a day. `translated` is what the call was CONFIGURED as; by the
+ * time it ends the phone may also hold the gateway's own
+ * `translation-engine-unavailable`, or its own playback verdict, or the proof
+ * of a frame it actually played. The screen warned "This server cannot
+ * translate" for four minutes and then wrote "· translated" underneath, which
+ * is this product's signature defect with the contradiction already in hand.
+ *
+ * So the verdict is a REQUIRED third argument -- see
+ * `endedTranslationVerdict` -- and it is required rather than defaulted so that
+ * forgetting it is a compile error rather than a confident sentence:
+ *
+ *   translated      something was measured: a frame played, or a translated
+ *                   caption arrived.
+ *   not-translated  something was measured that says it did not happen.
+ *   unproven        neither. The duration alone; the call claims nothing.
  */
 export function endedSummaryLine(
   elapsedMs: number | null,
   mode: 'normal' | 'translated' | null,
+  verdict: EndedTranslationVerdict,
 ): string | null {
   if (elapsedMs === null) return null;
   const duration = formatSpokenElapsed(elapsedMs);
-  if (mode === 'translated') return `${duration} · translated`;
   if (mode === 'normal') return `${duration} · original voices`;
+  if (mode !== 'translated') return duration;
+  if (verdict === 'translated') return `${duration} · translated`;
+  if (verdict === 'not-translated') return `${duration} · not translated`;
   return duration;
 }
 

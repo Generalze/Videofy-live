@@ -123,6 +123,15 @@ export function parseCaption(raw: unknown, callId: string): CallCaptionEvent | n
  * media revision, a partial arriving after its own final, an older language
  * revision), so reference identity is the refusal, and nothing about those
  * rules is restated here.
+ *
+ * ONE RULE THE SHARED MERGE DOES NOT HAVE, AND A SINGLE SLOT NEEDS. The merge
+ * keeps a rolling LIST, so an unseen entry id simply appends: for one speaker
+ * at one media revision, sequence 9 arriving after sequence 10 has settled is
+ * appended out of order, which in a fifty-line transcript is untidy and in a
+ * one-line display REPLACES the sentence on screen with an older one. So the
+ * slot adds the guard its own shape requires, and nothing else. (Reachability
+ * is low -- socket.io delivers in order on one connection -- and it is written
+ * down rather than argued about.)
  */
 export function nextCaption(
   current: CallCaptionEvent | null,
@@ -132,7 +141,17 @@ export function nextCaption(
   const merged = mergeCallCaption(base, incoming);
   // Refused: the shared rules handed back the array untouched.
   if (merged === base) return current;
+  if (current !== null && isSequenceRegression(current, incoming)) return current;
   return incoming;
+}
+
+/** An earlier utterance from the same speaker at the same media revision. */
+function isSequenceRegression(current: CallCaptionEvent, incoming: CallCaptionEvent): boolean {
+  if (current.speakerParticipantId !== incoming.speakerParticipantId) return false;
+  // A different media revision is a resume, where the counter legitimately
+  // restarts; the shared merge already refuses the OLDER of those two.
+  if (current.mediaRevision !== incoming.mediaRevision) return false;
+  return incoming.sequence < current.sequence;
 }
 
 /** True when the two events are revisions of the SAME utterance. */

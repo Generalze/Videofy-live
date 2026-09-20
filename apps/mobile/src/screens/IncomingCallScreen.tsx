@@ -55,7 +55,11 @@ export function IncomingCallScreen({
       <View style={styles.identity}>
         <Eyebrow>Incoming call</Eyebrow>
         <AvatarHalo accountId={caller.accountId} name={caller.name} size={136} pulsing ring />
-        <Text style={styles.name}>{caller.name}</Text>
+        {/* One line, like every other name on these screens: a long Nigerian
+            name at 30pt wrapped to three and pushed the two buttons down. */}
+        <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6} style={styles.name}>
+          {caller.name}
+        </Text>
         <Text style={styles.kicker}>is calling you on C7</Text>
         {/*
           * The MODE, which the pre-join wire does carry. It is not the board's

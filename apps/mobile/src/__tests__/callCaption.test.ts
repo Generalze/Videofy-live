@@ -116,6 +116,25 @@ describe('which caption belongs on screen is the shared merge answer', () => {
     expect(nextCaption(first, second)).toBe(second);
   });
 
+  it('REFUSES an earlier sentence arriving after a later one has settled', () => {
+    /*
+     * THE ONE RULE A SINGLE SLOT NEEDS AND A LIST DOES NOT. The shared merge
+     * keeps a rolling transcript, so an unseen entry id simply appends: for one
+     * speaker at one media revision, sequence 9 arriving after sequence 10 is
+     * appended out of order, which is untidy in fifty lines and, in a slot that
+     * holds exactly one sentence, REPLACES what is on screen with an older one.
+     */
+    const current = wire({ sequence: 10, originalText: 'Mo wa daadaa' });
+    const older = wire({ sequence: 9, originalText: 'Bawo ni' });
+    expect(nextCaption(current, older)).toBe(current);
+    // A different speaker is not a regression: it is the other person talking.
+    expect(nextCaption(current, wire({ sequence: 9, speakerParticipantId: 'participant_me' }))).not.toBe(
+      current,
+    );
+    // Nor is a resume, where the server's sequence counter legitimately restarts.
+    expect(nextCaption(current, wire({ sequence: 1, mediaRevision: 2 }))).not.toBe(current);
+  });
+
   it('knows two revisions of one utterance from two different ones', () => {
     expect(isSameUtterance(wire({ isFinal: false }), wire({ isFinal: true }))).toBe(true);
     expect(isSameUtterance(wire({ sequence: 1 }), wire({ sequence: 2 }))).toBe(false);

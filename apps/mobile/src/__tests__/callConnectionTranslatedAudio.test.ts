@@ -338,6 +338,24 @@ describe('CallConnection subscribes a joined call to translated speech', () => {
     expect(call.errors).toEqual([]);
   });
 
+  it('tells the screen, once, that translated audio actually played', async () => {
+    /*
+     * THE PROOF, JOINED UP. The sink has counted accepted output since it was
+     * written and nothing above it ever read the counter, so the screen could
+     * say "Listening for translated speech" (a handler is bound) and never say
+     * more, however much it heard. `played` is the one signal that entitles a
+     * screen to claim translation is running -- and the ended screen to
+     * certify the call as translated.
+     */
+    const call = await joinedCall({ snapshot: { callId: CALL_ID, callMode: 'translated', participants: roster() } });
+    expect(call.diagnostics.filter((event) => event.kind === 'played')).toHaveLength(0);
+    call.send({ samples: [10, 20, 30], sequence: 0 });
+    call.send({ samples: [40, 50], sequence: 1 });
+    const played = call.diagnostics.filter((event) => event.kind === 'played');
+    expect(played).toHaveLength(1);
+    expect(played[0]).toMatchObject({ kind: 'played' });
+  });
+
   it('is bound once, before the voice legs negotiate', async () => {
     const call = await joinedCall({ snapshot: { callId: CALL_ID, callMode: 'translated', participants: roster() } });
     expect(call.socket.handlerCount(CALL_EVENTS.TRANSLATED_AUDIO_FRAME)).toBe(1);

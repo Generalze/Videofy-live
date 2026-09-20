@@ -15,11 +15,7 @@ import { useEffect, useRef, type JSX, type ReactNode } from 'react';
 import { Animated, Easing, Pressable, StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import { AvatarView } from '../media/AvatarView';
-import {
-  languagePairLabel,
-  languagePairNames,
-  type CallLanguagePair,
-} from '../call/callLanguages';
+import { ringGeometry } from '../call/callRingGeometry';
 
 export const CALL_COLORS = {
   ground: '#070c14',
@@ -71,93 +67,95 @@ export function Eyebrow({ children }: { readonly children: string }): JSX.Elemen
 }
 
 /**
- * THE LANGUAGE PAIR, as a pill: `YO → EN`.
+ * THE ONE PILL, whichever of the two it is: `YO → EN`, or `Translated call`.
  *
- * Rendered only where a pair was measured -- the component takes a
- * `CallLanguagePair`, and there is no shape of it meaning "unknown", on
- * purpose. A screen with nothing to show draws no pill; see
- * ../call/callLanguages.ts for where the pair comes from and why the handset's
- * own profile is not allowed to supply it.
+ * The board draws ONE. The screen drew two side by side in the same teal
+ * treatment -- the mode and the pair -- which reads as a duplicated control and
+ * wrapped to a second row on a narrow phone.
  *
- * The codes are what the board asks for and what fits; the screen reader gets
- * the whole names, because "Y O arrow E N" is not a sentence.
+ * NEITHER THE LABEL NOR THE SPOKEN SENTENCE IS DECIDED HERE. The pill used to
+ * hard-code the screen-reader label `Translating <from> to <to>` and render on
+ * the pair alone, so a normal-mode call announced "Translating Yoruba to
+ * English" and a same-language pair announced "Translating English to English".
+ * Both are now decided in ../call/callScreenModel.ts, where the mode and the
+ * pair are both in hand and the decision can be tested.
  */
-export function LanguagePill({ pair }: { readonly pair: CallLanguagePair }): JSX.Element {
+export function CallStatePill({
+  label,
+  accessibilityLabel,
+  kind,
+}: {
+  readonly label: string;
+  /** What a screen reader says. Never assembled from the label. */
+  readonly accessibilityLabel: string;
+  readonly kind: 'mode' | 'languages';
+}): JSX.Element {
   return (
-    <View style={styles.langPill}>
+    <View style={kind === 'languages' ? styles.langPill : styles.modePill}>
       <Text
-        accessibilityLabel={`Translating ${languagePairNames(pair)}`}
-        style={styles.langPillLabel}
+        accessibilityLabel={accessibilityLabel}
+        numberOfLines={1}
+        style={kind === 'languages' ? styles.langPillLabel : styles.modePillLabel}
       >
-        {languagePairLabel(pair)}
+        {label}
       </Text>
     </View>
   );
 }
 
 /**
- * THE RING MOTIF behind the avatar: a dashed outer ring and a solid arc.
+ * THE RING MOTIF behind the avatar: a dashed ring, and an arc inside it.
  *
- * `progress` is the arc, and it is a MEASUREMENT or it is absent. Given a
- * number in 0..1 the arc sweeps that share of the circle and carries a bright
- * node at its head; given null it draws the board's static quarter-arc, which
- * asserts nothing. There is deliberately no spinning variant: an arc that
- * travels looks like something advancing, and on this screen the only thing
- * that advances is the ring window (see ../call/callTimer.ts `ringProgress`).
+ * `remaining` is the arc, and it is a MEASUREMENT or it is absent. It is the
+ * share of the server's ring window still LEFT, so the arc DRAINS -- full when
+ * the ring starts, empty at the deadline the gateway will declare no_answer at.
+ * Given null there is no arc at all: the quarter-arc this used to substitute
+ * was a hand-drawn stand-in wearing the colour and weight of a measurement.
+ *
+ * Every number comes from `ringGeometry`, which is where all three of those
+ * decisions can be read and tested. There is deliberately no spinning variant.
  */
 export function CallRing({
   size,
-  progress = null,
+  remaining = null,
   dim = false,
 }: {
   readonly size: number;
-  readonly progress?: number | null;
+  /** Share of the ring window LEFT (1 at the start, 0 at the deadline), or null. */
+  readonly remaining?: number | null;
   readonly dim?: boolean;
 }): JSX.Element {
   const stroke = 2;
-  const radius = (size - stroke) / 2;
-  const circumference = 2 * Math.PI * radius;
-  // Clamped here rather than trusted: a progress computed from two clocks can
-  // land outside the circle, and an arc longer than its circle draws a second
-  // lap that reads as the deadline having been extended.
-  const swept = progress === null ? 0.25 : Math.min(1, Math.max(0, progress));
-  const arc = circumference * swept;
+  const geometry = ringGeometry({ size, stroke, remaining });
   const opacity = dim ? 0.35 : 1;
-  // The node sits at the head of the arc: 12 o'clock is -90deg, and the arc is
-  // drawn from there clockwise, so the head is swept*360 degrees round.
-  const headAngle = (swept * 360 - 90) * (Math.PI / 180);
-  const centre = size / 2;
   return (
     <Svg width={size} height={size} style={{ position: 'absolute', opacity }}>
       {/* The dashed outer ring: texture, never a value. */}
       <Circle
-        cx={centre}
-        cy={centre}
-        r={radius}
+        cx={geometry.centre}
+        cy={geometry.centre}
+        r={geometry.radius}
         stroke="rgba(62,201,192,0.28)"
         strokeWidth={stroke}
         strokeDasharray="3 9"
         fill="none"
       />
-      <Circle
-        cx={centre}
-        cy={centre}
-        r={radius}
-        stroke={CALL_COLORS.teal}
-        strokeWidth={stroke + 1}
-        strokeLinecap="round"
-        strokeDasharray={`${arc} ${Math.max(0, circumference - arc)}`}
-        // -90deg puts the start of the arc at the top of the circle.
-        transform={`rotate(-90 ${centre} ${centre})`}
-        fill="none"
-      />
-      {progress !== null && (
-        <Circle
-          cx={centre + radius * Math.cos(headAngle)}
-          cy={centre + radius * Math.sin(headAngle)}
-          r={4}
-          fill="#ffffff"
-        />
+      {geometry.arc !== null && (
+        <>
+          <Circle
+            cx={geometry.centre}
+            cy={geometry.centre}
+            r={geometry.arc.radius}
+            stroke={CALL_COLORS.teal}
+            strokeWidth={stroke + 1}
+            strokeLinecap="round"
+            strokeDasharray={geometry.arc.dash}
+            // -90deg puts the start of the arc at the top of the circle.
+            transform={`rotate(-90 ${geometry.centre} ${geometry.centre})`}
+            fill="none"
+          />
+          <Circle cx={geometry.arc.head.cx} cy={geometry.arc.head.cy} r={4} fill="#ffffff" />
+        </>
       )}
     </Svg>
   );
@@ -168,9 +166,17 @@ export function CallRing({
  * being placed -- the one animated thing on the screen, so it means
  * something: "still trying".
  *
- * `ring` puts the board's dashed ring and arc around it; `progress` fills that
+ * `ring` puts the board's dashed ring around it; `remaining` draws the draining
  * arc from a real figure. `dim` is the ended screen: the same person, greyed,
  * rather than a different picture of them.
+ *
+ * THE BREATH AND THE RING ARE NOT ALTERNATIVES, and for one commit they were:
+ * the pulsing view was rendered only inside `{!ring && ...}` while every caller
+ * in the app passed both, so the animation drove a value no view consumed and
+ * the incoming-call screen -- which had breathed since it was built -- went
+ * still. The pulse now renders whenever it is asked for. It expands OUTWARD
+ * from the dashed ring and fades, which is a wave rather than the pair of
+ * static concentric circles the original guard was written to avoid.
  */
 export function AvatarHalo({
   accountId,
@@ -178,7 +184,7 @@ export function AvatarHalo({
   size = 120,
   pulsing = false,
   ring = false,
-  progress = null,
+  remaining = null,
   dim = false,
 }: {
   readonly accountId: string;
@@ -186,7 +192,8 @@ export function AvatarHalo({
   readonly size?: number;
   readonly pulsing?: boolean;
   readonly ring?: boolean;
-  readonly progress?: number | null;
+  /** Share of the ring window left; null draws no arc. */
+  readonly remaining?: number | null;
   readonly dim?: boolean;
 }): JSX.Element {
   const pulse = useRef(new Animated.Value(0)).current;
@@ -214,10 +221,8 @@ export function AvatarHalo({
   const inner = size + 28;
   return (
     <View style={{ width: outer, height: outer, alignItems: 'center', justifyContent: 'center' }}>
-      {ring && <CallRing size={outer} progress={progress} dim={dim} />}
-      {/* The plain outer ring gives way to the dashed one: two concentric
-          circles a hair apart read as a rendering fault, not a motif. */}
-      {!ring && (
+      {ring && <CallRing size={outer} remaining={remaining} dim={dim} />}
+      {pulsing ? (
         <Animated.View
           style={[
             styles.haloRing,
@@ -226,17 +231,29 @@ export function AvatarHalo({
               height: outer,
               borderRadius: outer / 2,
               borderColor: 'rgba(62,201,192,0.16)',
-              opacity: pulsing ? pulse.interpolate({ inputRange: [0, 1], outputRange: [0.9, 0] }) : 1,
+              opacity: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.9, 0] }),
               transform: [
-                {
-                  scale: pulsing
-                    ? pulse.interpolate({ inputRange: [0, 1], outputRange: [0.86, 1.12] })
-                    : 1,
-                },
+                { scale: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.86, 1.12] }) },
               ],
             },
           ]}
         />
+      ) : (
+        /* A still outer ring only where there is no dashed one: two concentric
+           circles a hair apart read as a rendering fault, not a motif. */
+        !ring && (
+          <View
+            style={[
+              styles.haloRing,
+              {
+                width: outer,
+                height: outer,
+                borderRadius: outer / 2,
+                borderColor: 'rgba(62,201,192,0.16)',
+              },
+            ]}
+          />
+        )
       )}
       <View
         style={[
@@ -269,7 +286,19 @@ export function AvatarHalo({
  * At rest the bars stay, short and grey. Removing them entirely would make the
  * name jump up the screen every time a sentence ended.
  */
-export function SpeechIndicator({ active }: { readonly active: boolean }): JSX.Element {
+export function SpeechIndicator({
+  active,
+  accessibilityLabel,
+}: {
+  readonly active: boolean;
+  /**
+   * WHOSE. The bare word "Speaking" named no mouth, and these bars sit above
+   * one particular person's face; the caller says who, because only the caller
+   * knows whether the caption behind the measurement was theirs. See
+   * ../call/callScreenModel.ts.
+   */
+  readonly accessibilityLabel: string;
+}): JSX.Element {
   const wave = useRef(new Animated.Value(0)).current;
   useEffect(() => {
     if (!active) {
@@ -306,11 +335,7 @@ export function SpeechIndicator({ active }: { readonly active: boolean }): JSX.E
     { rest: 4, peak: 14 },
   ];
   return (
-    <View
-      accessibilityLabel={active ? 'Speaking' : 'Quiet'}
-      accessibilityRole="image"
-      style={styles.waveRow}
-    >
+    <View accessibilityLabel={accessibilityLabel} accessibilityRole="image" style={styles.waveRow}>
       {bars.map((bar, index) => (
         <Animated.View
           key={`${bar.rest}-${index}`}
@@ -446,7 +471,11 @@ export function RoundControl({
       <View style={[styles.round, active && styles.roundActive]}>
         {icon ?? <Text style={[styles.roundMark, active && styles.roundMarkActive]}>{mark ?? ''}</Text>}
       </View>
-      <Text style={styles.roundLabel}>{label}</Text>
+      {/* One line, and a bounded one: a long label used to widen its control
+          and push the red End button off the right edge of a 360dp screen. */}
+      <Text numberOfLines={1} style={styles.roundLabel}>
+        {label}
+      </Text>
     </Pressable>
   );
 }
@@ -473,7 +502,9 @@ export function EndCallButton({
       style={({ pressed }) => [styles.roundWrap, (pressed || disabled) && styles.pressed]}
     >
       <View style={[styles.round, styles.end]}>{icon ?? <Text style={styles.endLabel}>End</Text>}</View>
-      <Text style={styles.roundLabel}>{label}</Text>
+      <Text numberOfLines={1} style={styles.roundLabel}>
+        {label}
+      </Text>
     </Pressable>
   );
 }
@@ -540,6 +571,16 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     textAlign: 'center',
   },
+
+  modePill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: 'rgba(62,201,192,0.5)',
+    backgroundColor: 'rgba(62,201,192,0.08)',
+    paddingHorizontal: 14,
+    paddingVertical: 5,
+  },
+  modePillLabel: { color: CALL_COLORS.teal, fontSize: 13, fontWeight: '600' },
 
   langPill: {
     borderRadius: 999,
@@ -628,7 +669,9 @@ const styles = StyleSheet.create({
     paddingBottom: 18,
     gap: 16,
   },
-  roundWrap: { alignItems: 'center', gap: 8, minWidth: 72 },
+  // Bounded at both ends: 72 keeps the touch targets evenly spaced, and 88 stops
+  // one long word from claiming the width the End button needs.
+  roundWrap: { alignItems: 'center', gap: 8, minWidth: 72, maxWidth: 88 },
   round: {
     width: 60,
     height: 60,

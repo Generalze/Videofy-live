@@ -110,11 +110,27 @@ export function languagePairLabel(pair: CallLanguagePair): string {
   return `${languageShortCode(pair.from)} → ${languageShortCode(pair.to)}`;
 }
 
-/** The summary card and the screen reader: `Yoruba → English`. */
-export function languagePairNames(pair: CallLanguagePair): string {
+/** The two whole names, as the catalogue gives them. */
+function pairNames(pair: CallLanguagePair): { from: string; to: string } {
   const from = pair.from.trim().split('-')[0] ?? pair.from;
   const to = pair.to.trim().split('-')[0] ?? pair.to;
-  return `${languageName(from)} → ${languageName(to)}`;
+  return { from: languageName(from), to: languageName(to) };
+}
+
+/** The summary card: `Yoruba → English`. */
+export function languagePairNames(pair: CallLanguagePair): string {
+  const names = pairNames(pair);
+  return `${names.from} → ${names.to}`;
+}
+
+/**
+ * The screen reader: `Yoruba to English`. An arrow is not a word, and
+ * "Y O arrow E N" is not a sentence -- which is why the pill's spoken label is
+ * built from this and never from what is printed on it.
+ */
+export function languagePairSpoken(pair: CallLanguagePair): string {
+  const names = pairNames(pair);
+  return `${names.from} to ${names.to}`;
 }
 
 /** True when the two sides are the same language, so nothing is translated. */
