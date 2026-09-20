@@ -59,11 +59,20 @@
  * delivers a mute verdict for a frameless track: without it such a track
  * would be held with nobody looking. iOS has not been measured either way.
  *
- * WHEN MEASUREMENT FAILS, THE GATE FAILS OPEN. `getStats` rejecting is not
- * "zero frames"; treating it as such would turn a one-second ghost into video
- * that can never be shown at all. An unmeasurable stream is shown on the
+ * WHEN MEASUREMENT FAILS REPEATEDLY, THE GATE FAILS OPEN. `getStats` rejecting
+ * is not "zero frames"; treating it as such would turn a one-second ghost into
+ * video that can never be shown at all. An unmeasurable stream is shown on the
  * platform's word, as every stream was before this gate existed, and the
  * timeline says so (`remote-unmeasured`) rather than claiming it was proven.
+ *
+ * But ONE rejection is not a phone that cannot measure. Failing open on the
+ * first sample made a transient `getStats` rejection at t=0 -- a peer still
+ * assembling its stats collector, a momentary platform hiccup -- identical to
+ * a handset that can never answer, and it brought the flash straight back for
+ * the one call in a hundred that hiccupped. The gate now wants
+ * UNMEASURED_BEFORE_OPEN rejections IN A ROW before it gives up, and one
+ * answered sample resets the run. A handset that genuinely never measures
+ * still gets its tile, just a sample or two later.
  *
  * THIS DOES NOT MAKE VIDEO ARRIVE. A call where the far side genuinely sends
  * nothing still shows no picture; it now shows the avatar for the whole call
@@ -130,13 +139,25 @@ export interface RemoteVideoGate {
  * the stream, which ends this watch, so an idle recorded any later would
  * never reach the timeline on the exact call this gate was built for: the
  * device proof of the fix is `video_remote_offered` then `video_remote_idle`
- * with no `video_remote_stream`, and it has to be achievable.
+ * -- the latter carrying `video_remote_held_ms: 2000`, which CallScreen
+ * records from the verdict's `heldMs` -- with no `video_remote_stream`, and
+ * it has to be achievable.
  */
 const FAST_SAMPLE_MS = 500;
 const FAST_SAMPLES = 8;
 const IDLE_SAMPLE_MS = 2000;
 /** Samples of nothing before the hold is recorded as idle: 4 x 500 ms = 2 s. */
 const IDLE_AFTER_SAMPLES = 4;
+/**
+ * Unanswered samples IN A ROW before the gate stops waiting to be able to
+ * measure and shows the stream unproven. Three, at the 500 ms fast cadence,
+ * is 1 s: long enough that no single transient rejection can open the gate,
+ * and short enough that it lands well inside Android's own 3 s mute verdict,
+ * so a handset that truly never measures still gets its tile while the mesh
+ * is still offering the stream. A fourth sample would buy nothing -- a phone
+ * whose getStats has refused three times running is not about to start.
+ */
+const UNMEASURED_BEFORE_OPEN = 3;
 
 export function createRemoteVideoGate(deps: RemoteVideoGateDeps): RemoteVideoGate {
   /** participantId -> the token of the hold currently entitled to show it. */
@@ -155,6 +176,8 @@ export function createRemoteVideoGate(deps: RemoteVideoGateDeps): RemoteVideoGat
     deps.report?.({ kind: 'offered', participantId });
     let heldMs = 0;
     let saidIdle = false;
+    /** Consecutive samples getStats would not answer; any answer resets it. */
+    let unmeasuredRun = 0;
     for (let sample = 0; ; sample += 1) {
       if (!mine(participantId, token)) return;
       const inbound = await deps.inbound(participantId);
@@ -164,23 +187,37 @@ export function createRemoteVideoGate(deps: RemoteVideoGateDeps): RemoteVideoGat
       if (!mine(participantId, token)) return;
       if (inbound === null) return;
       if (!inbound.measured) {
-        // Unprovable is not disproved. Fail open, on the platform's word, and
-        // say so: a gate that held this forever would hide every picture on
-        // a phone whose getStats does not answer.
-        holds.delete(participantId);
-        deps.show(participantId, stream);
-        deps.report?.({ kind: 'unmeasured', participantId });
-        return;
-      }
-      if (inbound.frames > 0 || inbound.bytes > 0) {
-        holds.delete(participantId);
-        deps.show(participantId, stream);
-        deps.report?.({ kind: 'live', participantId, frames: inbound.frames, bytes: inbound.bytes });
-        return;
-      }
-      if (sample >= IDLE_AFTER_SAMPLES && !saidIdle) {
-        saidIdle = true;
-        deps.report?.({ kind: 'idle', participantId, heldMs });
+        /*
+         * Unprovable is not disproved -- but one rejection is not unprovable
+         * either. Wait for a run of them, then fail open on the platform's
+         * word and say so: a gate that held this forever would hide every
+         * picture on a phone whose getStats does not answer, and a gate that
+         * opened on the first rejection would put the flash back on a phone
+         * that merely stumbled once. The counters are NOT consulted here:
+         * they are zero because nothing was counted.
+         */
+        unmeasuredRun += 1;
+        if (unmeasuredRun >= UNMEASURED_BEFORE_OPEN) {
+          holds.delete(participantId);
+          deps.show(participantId, stream);
+          deps.report?.({ kind: 'unmeasured', participantId });
+          return;
+        }
+      } else {
+        unmeasuredRun = 0;
+        if (inbound.frames > 0 || inbound.bytes > 0) {
+          holds.delete(participantId);
+          deps.show(participantId, stream);
+          deps.report?.({ kind: 'live', participantId, frames: inbound.frames, bytes: inbound.bytes });
+          return;
+        }
+        // Idle is a MEASURED verdict: "this phone looked and saw nothing".
+        // An unanswered sample has not looked, and must never be recorded as
+        // having seen nothing.
+        if (sample >= IDLE_AFTER_SAMPLES && !saidIdle) {
+          saidIdle = true;
+          deps.report?.({ kind: 'idle', participantId, heldMs });
+        }
       }
       const wait = sample < FAST_SAMPLES ? FAST_SAMPLE_MS : IDLE_SAMPLE_MS;
       await deps.delay(wait);

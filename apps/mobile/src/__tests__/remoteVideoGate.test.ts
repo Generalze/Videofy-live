@@ -165,12 +165,13 @@ describe('a remote tile is shown only for video that is arriving', () => {
 });
 
 describe('a phone that cannot measure is not a phone that receives nothing', () => {
-  it('shows the stream on the platform word when getStats does not answer', async () => {
-    const { gate, painted, verdicts, unmeasurable, settle } = harness();
+  it('shows the stream on the platform word when getStats never answers', async () => {
+    const { gate, painted, verdicts, unmeasurable, tick } = harness();
 
     unmeasurable.add(THEM);
     gate.offer(THEM, stream('rtc://them'));
-    await settle();
+    // Three refusals in a row: samples at 0, 500 and 1000 ms.
+    await tick(2);
 
     // Failing closed here would be worse than the flash: no picture, ever.
     expect(painted).toEqual([{ participantId: THEM, url: 'rtc://them' }]);
@@ -182,15 +183,82 @@ describe('a phone that cannot measure is not a phone that receives nothing', () 
     gate.dispose();
   });
 
-  it('still clears an unmeasured tile when the mesh withdraws the stream', async () => {
-    const { gate, painted, unmeasurable, settle } = harness();
+  /*
+   * ONE REJECTION IS NOT A PHONE THAT CANNOT MEASURE. Opening on the first
+   * unmeasured sample made a momentary getStats rejection at t=0 -- the peer
+   * still assembling its stats collector -- indistinguishable from a handset
+   * that can never answer, and put the founder's flash straight back on any
+   * call that stumbled once. These three fix the boundary in both directions.
+   */
+  it('does not open on a single rejection at t=0', async () => {
+    const { gate, painted, verdicts, unmeasurable, tick } = harness();
 
     unmeasurable.add(THEM);
     gate.offer(THEM, stream('rtc://them'));
-    await settle();
+    await tick(1);
+    // Two samples in: one short of giving up, so nothing is on screen yet.
+    expect(painted).toEqual([]);
+    expect(verdicts.some((verdict) => verdict.kind === 'unmeasured')).toBe(false);
+
+    // getStats comes back, with no frames. This is an audio-only call, not an
+    // unmeasurable phone, and the tile must stay down for the rest of it.
+    unmeasurable.delete(THEM);
+    await tick(20);
+    expect(painted).toEqual([]);
+    expect(verdicts.some((verdict) => verdict.kind === 'unmeasured')).toBe(false);
+    gate.dispose();
+  });
+
+  it('does not open on rejections that keep being interrupted by answers', async () => {
+    const { gate, painted, unmeasurable, tick } = harness();
+
+    gate.offer(THEM, stream('rtc://them'));
+    // Sample 0 answers, with no frames: an ordinary audio-only call.
+    await tick(0);
+    // Then a flapping stats collector: refuse twice, answer once, over and
+    // over. Sixteen rejections in all, never three together.
+    for (let round = 0; round < 8; round += 1) {
+      unmeasurable.add(THEM);
+      await tick(2);
+      unmeasurable.delete(THEM);
+      await tick(1);
+    }
+
+    expect(painted).toEqual([]);
+    gate.dispose();
+  });
+
+  it('records no idle for samples that were never answered', async () => {
+    const { gate, verdicts, unmeasurable, tick } = harness();
+
+    unmeasurable.add(THEM);
+    gate.offer(THEM, stream('rtc://them'));
+    await tick(6);
+
+    // "Held 2 s and saw nothing" is a claim about looking. A phone that could
+    // not look has not seen nothing, and the timeline must not say it did.
+    expect(verdicts.map((verdict) => verdict.kind)).toEqual(['offered', 'unmeasured']);
+    gate.dispose();
+  });
+
+  it('still clears an unmeasured tile when the mesh withdraws the stream', async () => {
+    const { gate, painted, unmeasurable, tick } = harness();
+
+    unmeasurable.add(THEM);
+    gate.offer(THEM, stream('rtc://them'));
+    await tick(2);
     gate.offer(THEM, null);
 
-    expect(painted[painted.length - 1]).toEqual({ participantId: THEM, url: null });
+    /*
+     * THE SEQUENCE, NOT THE LAST VALUE. Asserting only that the final paint
+     * is null was true whether or not a tile was ever shown, so this test
+     * passed with the fail-open removed entirely -- it certified nothing. The
+     * claim is that the tile WAS shown and was THEN taken away.
+     */
+    expect(painted).toEqual([
+      { participantId: THEM, url: 'rtc://them' },
+      { participantId: THEM, url: null },
+    ]);
     gate.dispose();
   });
 });

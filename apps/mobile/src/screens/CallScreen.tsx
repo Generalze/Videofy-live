@@ -375,6 +375,17 @@ export function CallScreen({
           videoStamps.current[`video_${event.kind}_bytes`] = event.bytes;
         }
         /*
+         * THE HOLD, AS A NUMBER. `stamp` records a first-seen time and an
+         * `_n` count per point and drops everything else, so the stated
+         * device proof -- `video_remote_idle (heldMs 2000)` -- named a figure
+         * the timeline did not carry, and a human checking a handset would
+         * have been looking for something that could not appear. It appears
+         * now, under its own key, the way the rebuild verdict's numbers do.
+         */
+        if (event.kind === 'remote-idle') {
+          videoStamps.current['video_remote_held_ms'] = event.heldMs;
+        }
+        /*
          * The verdict is the whole point of the rebuild watch, so it travels
          * with its numbers. A bare timestamp would say the rebuild finished
          * and still not say whether video ever moved.

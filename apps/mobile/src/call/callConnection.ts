@@ -288,10 +288,15 @@ export type CallVideoDiagnostic =
    * would not answer on this phone: the gate fails open there rather than
    * hide every picture, and the timeline must not call that "live".
    *
-   * The device proof of the fix is `video_remote_offered` then
-   * `video_remote_idle` with NO `video_remote_stream` on an audio-only call.
+   * The device proof of the fix, on an audio-only call, is
+   * `video_remote_offered`, then `video_remote_idle` with
+   * `video_remote_held_ms: 2000` beside it, and NO `video_remote_stream`.
    * The idle is recorded at 2 s so it lands before the platform's 3 s mute
-   * withdraws the stream and ends the watch.
+   * withdraws the stream and ends the watch. `heldMs` reaches the timeline
+   * only because CallScreen copies it to `video_remote_held_ms`: the stamp
+   * helper carries a first-seen time and an `_n` count and nothing else, so
+   * a number stated as proof has to be written to its own key or it is not
+   * on the wire at all.
    */
   | { readonly kind: 'remote-offered'; readonly participantId: string }
   | { readonly kind: 'remote-live'; readonly participantId: string; readonly frames: number; readonly bytes: number }
