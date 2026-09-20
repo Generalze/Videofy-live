@@ -246,7 +246,8 @@ export interface CallConnectionOptions {
  * apart from a translation engine that had not run.
  */
 export type CallTranslatedAudioDiagnostic =
-  | { readonly kind: 'unavailable' }
+  /** No `error`: this build has no native track. With one: the path threw while being set up. */
+  | { readonly kind: 'unavailable'; readonly error?: string }
   | { readonly kind: 'listening' }
   | { readonly kind: 'refused'; readonly reason: string }
   | { readonly kind: 'originals'; readonly suppressed: boolean };
@@ -1034,8 +1035,23 @@ export class CallConnection {
      * negotiation it does not depend on. If `publish.connect()` throws below,
      * the catch reports it and the call continues; a subscription started after
      * that point would never exist on exactly the calls that need saying most.
+     *
+     * AND GUARDED, because it is ahead of voice negotiation on every call --
+     * normal-mode calls included, which are the whole product for anybody who
+     * shares a language. Everything inside has run in node, not on a phone:
+     * the optional native module lookup, the base64 decoder installed onto
+     * globalThis, the controller build, the socket bind. A throw from any of
+     * it must be the degraded mode this code already models (no translated
+     * audio, said out loud), not a call that fails to connect.
      */
-    this.startTranslatedAudio(socket);
+    try {
+      this.startTranslatedAudio(socket);
+    } catch (error) {
+      this.options.onTranslatedAudio?.({
+        kind: 'unavailable',
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
 
     try {
       await publish.connect();
@@ -1241,11 +1257,21 @@ export class CallConnection {
      * is captured rather than only forwarded: `call:state` carries `callMode`
      * for a conference, and a direct call's pair mode arrives on this wire.
      * Both the translated-audio guard and the original-voice policy need it.
+     *
+     * BLANK IS NOT A CHOICE. Only an explicit mode changes what is held; a
+     * payload that carries none -- `reconcileDirectState` builds exactly such
+     * a one, callId and state only -- leaves the last stated mode standing.
+     * Coercing an absent mode to 'normal' put the one value that fails CLOSED
+     * into the field every later read consults first, so a single mode-less
+     * payload silenced translated audio for the rest of the call.
      */
-    this.directMode = raw.mode === 'translated' ? 'translated' : 'normal';
-    if (this.directMode !== 'translated') {
+    this.directMode =
+      raw.mode === 'translated' ? 'translated' : raw.mode === 'normal' ? 'normal' : this.directMode;
+    if (this.directMode === 'normal') {
       // Not a disconnect: the subscription stays bound, and the sentence that
-      // was mid-flight when the mode changed stops instead of finishing.
+      // was mid-flight when the mode changed stops instead of finishing. Only
+      // on an EXPLICIT normal, for the reason above: an unknown mode is not a
+      // mode change, and audibility fails open on it.
       this.translatedAudio?.reset('call mode is not translated');
     }
     this.applyOriginalVoicePolicy();
