@@ -55,6 +55,8 @@ function view(over: Partial<CallScreenViewInput> = {}) {
       playedAtMs: null,
       refusedAtMs: null,
       captionedAtMs: null,
+      playedCoveredMs: 0,
+      refusedCoveredMs: 0,
     },
     languages: { from: 'yo', to: 'en' },
     connectedRow: { show: true, words: 'Connected', warn: false },
@@ -65,6 +67,10 @@ function view(over: Partial<CallScreenViewInput> = {}) {
     elapsedMs: 291_000,
     ringElapsed: null,
     nowMs: NOW,
+    // The 360x800 Android phone every layout figure in this app was computed
+    // against. Tests that care about another screen say so.
+    widthDp: 360,
+    heightDp: 800,
     muted: false,
     speakerOn: false,
     cameraOn: false,
@@ -139,6 +145,8 @@ describe('the translation line says only what was measured', () => {
         playedAtMs: null,
         refusedAtMs: null,
         captionedAtMs: null,
+        playedCoveredMs: 0,
+        refusedCoveredMs: 0,
       },
       phase: 'placing',
     });
@@ -156,6 +164,8 @@ describe('the translation line says only what was measured', () => {
           playedAtMs: null,
           refusedAtMs: null,
           captionedAtMs: null,
+          playedCoveredMs: 0,
+          refusedCoveredMs: 0,
         },
       }).readinessLine,
     ).toBeNull();
@@ -177,6 +187,8 @@ describe('the translation line says only what was measured', () => {
         playedAtMs: null,
         refusedAtMs: null,
         captionedAtMs: null,
+        playedCoveredMs: 0,
+        refusedCoveredMs: 0,
       },
     });
     expect(ended.readinessLine?.warn).toBe(true);
@@ -194,6 +206,8 @@ describe('the translation line says only what was measured', () => {
         playedAtMs: null,
         refusedAtMs: null,
         captionedAtMs: null,
+        playedCoveredMs: 0,
+        refusedCoveredMs: 0,
       },
     });
     expect(ended.readinessLine).toBeNull();
@@ -213,6 +227,8 @@ describe('the ended screen cannot certify what the phone measured as untranslate
         playedAtMs: null,
         refusedAtMs: null,
         captionedAtMs: null,
+        playedCoveredMs: 0,
+        refusedCoveredMs: 0,
         ...over,
       },
     });
@@ -231,13 +247,30 @@ describe('the ended screen cannot certify what the phone measured as untranslate
     expect(endedWith({ playback: 'unavailable' }).endedLine).toBe('4 min 51 s · not translated');
   });
 
-  it('says "translated" once audio actually played', () => {
-    const ended = endedWith({ playedAtMs: NOW - 5_000 });
+  it('says "translated" once audio covered MOST of the call', () => {
+    const ended = endedWith({ playedAtMs: NOW - 5_000, playedCoveredMs: 280_000 });
     expect(ended.endedLine).toBe('4 min 51 s · translated');
     expect(ended.summary?.rows).toEqual([
       { label: 'Duration', value: '4 min 51 s' },
       { label: 'Languages', value: 'Yoruba → English' },
     ]);
+  });
+
+  it('WILL NOT say "translated" on the strength of one frame in 291 seconds', () => {
+    /*
+     * The headline inversion of the round before this one. `playedAtMs` was
+     * enough on its own, so a frame at second three ended "4 min 51 s ·
+     * translated" with the language pair printed as a fact -- and the pill, the
+     * Languages row and the silent readiness line all agreed with it.
+     */
+    const ended = endedWith({ playedAtMs: NOW - 288_000, playedCoveredMs: 4_000 });
+    expect(ended.endedLine).toBe('4 min 51 s · translated for about 1% of the call');
+    expect(ended.summary?.rows).toEqual([
+      { label: 'Duration', value: '4 min 51 s' },
+      { label: 'Translation', value: 'Audio for about 1% of the call' },
+    ]);
+    // And nothing else on the screen says the flattering thing either.
+    expect(ended.pill).toBeNull();
   });
 
   it('will NOT say "translated" for a call that only ever produced text', () => {
@@ -255,12 +288,17 @@ describe('the ended screen cannot certify what the phone measured as untranslate
     ]);
   });
 
-  it('says it stopped when it played and then every frame was refused', () => {
-    const ended = endedWith({ playedAtMs: NOW - 200_000, refusedAtMs: NOW - 5_000 });
-    expect(ended.endedLine).toBe('4 min 51 s · translation stopped partway');
+  it('says it stopped when it played and then every frame was refused, and how much played', () => {
+    const ended = endedWith({
+      playedAtMs: NOW - 200_000,
+      playedCoveredMs: 91_000,
+      refusedAtMs: NOW - 5_000,
+      refusedCoveredMs: 195_000,
+    });
+    expect(ended.endedLine).toBe('4 min 51 s · translated for about 31% of the call, then stopped');
     expect(ended.summary?.rows).toEqual([
       { label: 'Duration', value: '4 min 51 s' },
-      { label: 'Translation', value: 'Stopped partway' },
+      { label: 'Translation', value: 'Audio for about 31% of the call, then stopped' },
     ]);
   });
 
@@ -306,6 +344,8 @@ describe('the ended screen cannot certify what the phone measured as untranslate
         playedAtMs: null,
         refusedAtMs: null,
         captionedAtMs: null,
+        playedCoveredMs: 0,
+        refusedCoveredMs: 0,
       },
     });
     expect(unanswered.summary).toBeNull();
@@ -369,6 +409,8 @@ describe('one pill, and it states a pair rather than an activity', () => {
         playedAtMs: null,
         refusedAtMs: null,
         captionedAtMs: null,
+        playedCoveredMs: 0,
+        refusedCoveredMs: 0,
       },
     }).pill;
     expect(pill?.kind).toBe('mode');
@@ -400,6 +442,8 @@ describe('one pill, and it states a pair rather than an activity', () => {
           playedAtMs: null,
           refusedAtMs: null,
           captionedAtMs: null,
+          playedCoveredMs: 0,
+          refusedCoveredMs: 0,
         },
       }).pill,
     ).toBeNull();
@@ -421,6 +465,8 @@ describe('one pill, and it states a pair rather than an activity', () => {
         playedAtMs: null,
         refusedAtMs: null,
         captionedAtMs: null,
+        playedCoveredMs: 0,
+        refusedCoveredMs: 0,
       },
     });
     expect(noEngine.pill).toBeNull();
@@ -433,6 +479,8 @@ describe('one pill, and it states a pair rather than an activity', () => {
         playedAtMs: null,
         refusedAtMs: null,
         captionedAtMs: null,
+        playedCoveredMs: 0,
+        refusedCoveredMs: 0,
       },
     });
     expect(noPlayback.pill).toBeNull();
@@ -451,6 +499,8 @@ describe('one pill, and it states a pair rather than an activity', () => {
           playedAtMs: null,
           refusedAtMs: null,
           captionedAtMs: null,
+          playedCoveredMs: 0,
+          refusedCoveredMs: 0,
           ...over,
         },
       });
@@ -458,9 +508,19 @@ describe('one pill, and it states a pair rather than an activity', () => {
     // the one thing on the screen still claiming a translation.
     expect(ended({}).pill).toBeNull();
     expect(ended({ captionedAtMs: NOW }).pill).toBeNull();
-    expect(ended({ playedAtMs: NOW - 1_000, refusedAtMs: NOW }).pill).toBeNull();
+    expect(
+      ended({
+        playedAtMs: NOW - 1_000,
+        playedCoveredMs: 20_000,
+        refusedAtMs: NOW,
+        refusedCoveredMs: 200_000,
+      }).pill,
+    ).toBeNull();
+    // A call translated for a fraction of its length is not a call that wears
+    // its language pair either: the pill agrees with the verdict or is absent.
+    expect(ended({ playedAtMs: NOW, playedCoveredMs: 4_000 }).pill).toBeNull();
     // Proven: the pair is exactly what the summary card also says.
-    expect(ended({ playedAtMs: NOW }).pill?.label).toBe('YO → EN');
+    expect(ended({ playedAtMs: NOW, playedCoveredMs: 280_000 }).pill?.label).toBe('YO → EN');
   });
 
   it('belongs to a direct call; a conference has no pair to state', () => {
@@ -470,22 +530,30 @@ describe('one pill, and it states a pair rather than an activity', () => {
 
 describe('the ring arc is a measurement, drained, and it says what of', () => {
   it('is full at the start of the ring window and empty at the deadline', () => {
-    expect(view({ phase: 'placing', ringElapsed: 0 }).halo.remaining).toBe(1);
-    expect(view({ phase: 'placing', ringElapsed: 1 }).halo.remaining).toBe(0);
-    expect(view({ phase: 'placing', ringElapsed: 0.25 }).halo.remaining).toBeCloseTo(0.75, 6);
+    expect(view({ phase: 'placing', ringElapsed: 0 }).halo.measure?.remaining).toBe(1);
+    expect(view({ phase: 'placing', ringElapsed: 1 }).halo.measure?.remaining).toBe(0);
+    expect(view({ phase: 'placing', ringElapsed: 0.25 }).halo.measure?.remaining).toBeCloseTo(
+      0.75,
+      6,
+    );
   });
 
-  it('names what it is a share of, for somebody who cannot see it', () => {
-    // A teal arc shrinking under "Calling…" reads as falling signal as readily
-    // as it reads as time left, and it carried no label of any kind.
+  it('names what it is a share of, in the SAME value as the figure', () => {
+    /*
+     * A teal arc shrinking under "Calling…" reads as falling signal as readily
+     * as it reads as time left, and it carried no label of any kind. The figure
+     * and the sentence are one value now, so the screen cannot pass one and
+     * drop the other -- `remainingLabel={null}` left the arc drawn and silent,
+     * and the whole suite stayed green.
+     */
     const halo = view({ phase: 'placing', ringElapsed: 0.25 }).halo;
-    expect(halo.remainingLabel).toBe('Time left for them to answer: 75%');
-    expect(view({ phase: 'placing', ringElapsed: null }).halo.remainingLabel).toBeNull();
+    expect(halo.measure).toEqual({ remaining: 0.75, label: 'Time left for them to answer: 75%' });
+    expect(view({ phase: 'placing', ringElapsed: null }).halo.measure).toBeNull();
   });
 
   it('draws no arc, and breathes instead, when no deadline was measured', () => {
     const halo = view({ phase: 'placing', ringElapsed: null }).halo;
-    expect(halo.remaining).toBeNull();
+    expect(halo.measure).toBeNull();
     expect(halo.pulsing).toBe(true);
     expect(halo.ring).toBe(true);
   });
@@ -495,9 +563,9 @@ describe('the ring arc is a measurement, drained, and it says what of', () => {
   });
 
   it('carries no arc into a live or ended call', () => {
-    expect(view({ phase: 'live', ringElapsed: 0.5 }).halo.remaining).toBeNull();
+    expect(view({ phase: 'live', ringElapsed: 0.5 }).halo.measure).toBeNull();
     expect(view({ phase: 'live' }).halo.ring).toBe(false);
-    expect(view({ phase: 'ended', ringElapsed: 0.5 }).halo.remaining).toBeNull();
+    expect(view({ phase: 'ended', ringElapsed: 0.5 }).halo.measure).toBeNull();
     expect(view({ phase: 'ended' }).halo.dim).toBe(true);
   });
 });

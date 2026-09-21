@@ -23,7 +23,7 @@
  */
 import { directStateWords, TERMINAL_DIRECT_STATES } from './directCallApi';
 import { formatSpokenElapsed } from './callTimer';
-import type { EndedTranslationVerdict } from './translationReadiness';
+import type { EndedTranslationOutcome } from './translationReadiness';
 
 /**
  * The state the server currently asserts, or null when there is none to show.
@@ -149,16 +149,19 @@ export function callEyebrow(
  * translate" for four minutes and then wrote "· translated" underneath, which
  * is this product's signature defect with the contradiction already in hand.
  *
- * So the verdict is a REQUIRED third argument -- see
- * `endedTranslationVerdict` -- and it is required rather than defaulted so that
+ * So the outcome is a REQUIRED third argument -- see
+ * `endedTranslationOutcome` -- and it is required rather than defaulted so that
  * forgetting it is a compile error rather than a confident sentence:
  *
- *   translated      a frame of translated speech was PLAYED here. Only this
- *                   entitles the line to the bare word "translated": a caption
- *                   proves the engine ran, not that anybody heard it, and for
- *                   one day a caption was enough to write this word over a call
- *                   in which every translated frame was turned away.
- *   interrupted     it played, and then it stopped.
+ *   translated      translated audio covered MOST of the call. Only this
+ *                   entitles the line to the bare word "translated". A caption
+ *                   proves the engine ran, not that anybody heard it; and one
+ *                   played frame proves one played frame, which for one commit
+ *                   was enough to write this word over a 291-second call with
+ *                   three seconds of audio in it.
+ *   partly          it played for a measured minority of the call, and the line
+ *                   says which minority.
+ *   interrupted     the same, and it finished with frames being turned away.
  *   text-only       translated text arrived and no audio ever played.
  *   not-translated  something was measured that says it did not happen.
  *   unproven        nothing. The duration alone; the call claims nothing.
@@ -166,17 +169,35 @@ export function callEyebrow(
 export function endedSummaryLine(
   elapsedMs: number | null,
   mode: 'normal' | 'translated' | null,
-  verdict: EndedTranslationVerdict,
+  outcome: EndedTranslationOutcome,
 ): string | null {
   if (elapsedMs === null) return null;
   const duration = formatSpokenElapsed(elapsedMs);
   if (mode === 'normal') return `${duration} · original voices`;
   if (mode !== 'translated') return duration;
+  const { verdict } = outcome;
   if (verdict === 'translated') return `${duration} · translated`;
-  if (verdict === 'interrupted') return `${duration} · translation stopped partway`;
+  if (verdict === 'partly') return `${duration} · translated for ${sharePhrase(outcome.playedShare)}`;
+  if (verdict === 'interrupted') {
+    return `${duration} · translated for ${sharePhrase(outcome.playedShare)}, then stopped`;
+  }
   if (verdict === 'text-only') return `${duration} · translated text only`;
   if (verdict === 'not-translated') return `${duration} · not translated`;
   return duration;
+}
+
+/**
+ * THE SHARE OF THE CALL, IN WORDS A PERSON READS -- "about 4% of the call".
+ *
+ * ROUNDED DOWN, always. Rounding is a choice about which way to be wrong, and
+ * on this screen the direction is settled: a figure that flatters the
+ * translation is the defect this whole file exists to prevent. 0.9% is "less
+ * than 1%", not "about 1%".
+ */
+export function sharePhrase(share: number | null): string {
+  if (share === null) return 'part of the call';
+  const percent = Math.floor(Math.min(1, Math.max(0, share)) * 100);
+  return percent < 1 ? 'less than 1% of the call' : `about ${percent}% of the call`;
 }
 
 /**

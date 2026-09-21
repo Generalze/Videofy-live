@@ -43,7 +43,13 @@
  *   sentence          verdict about the whole call must not be removed one
  *                     frame before the line that contradicts it appears.
  */
-import { callEyebrow, endedSummaryLine, stateLine, type DirectCallPhase } from './callDisplay';
+import {
+  callEyebrow,
+  endedSummaryLine,
+  sharePhrase,
+  stateLine,
+  type DirectCallPhase,
+} from './callDisplay';
 import type { CaptionCardModel } from './callCaption';
 import {
   isSameLanguagePair,
@@ -53,11 +59,12 @@ import {
   type CallLanguagePair,
 } from './callLanguages';
 import {
-  endedTranslationVerdict,
+  endedTranslationOutcome,
   translationReadiness,
-  type EndedTranslationVerdict,
+  type EndedTranslationOutcome,
   type TranslationSignals,
 } from './translationReadiness';
+import type { RingMeasure } from './callRingGeometry';
 import { formatCallClock, formatSpokenElapsed } from './callTimer';
 import { languageName } from '../people/languageChoices';
 
@@ -111,15 +118,17 @@ export interface CallScreenView {
   readonly halo: {
     readonly pulsing: boolean;
     readonly ring: boolean;
-    /** The share of the ring window LEFT, or null when none was measured. */
-    readonly remaining: number | null;
     /**
-     * WHAT THE ARC IS A SHARE OF, said out loud. A teal arc shrinking under
-     * "Calling…" reads as falling signal as readily as it reads as time left,
-     * and to a screen reader it did not read at all: the Svg carried no label
-     * and no text on the screen mentioned a deadline.
+     * THE ARC AND WHAT IT IS A SHARE OF, TOGETHER OR NOT AT ALL.
+     *
+     * These were two fields and the screen wired them as two props, so
+     * `remainingLabel={null}` silenced the arc for a screen reader while
+     * leaving it drawn -- the exact defect the label was added for -- and the
+     * whole suite stayed green. One value: an arc without a sentence saying
+     * what it measures is no longer a thing this codebase can express. See
+     * `RingMeasure`.
      */
-    readonly remainingLabel: string | null;
+    readonly measure: RingMeasure | null;
     readonly dim: boolean;
   };
   readonly speech: SpeechView | null;
@@ -130,7 +139,21 @@ export interface CallScreenView {
   readonly connected: { readonly words: string; readonly warn: boolean } | null;
   readonly stateLine: string | null;
   readonly endedLine: string | null;
-  readonly readinessLine: { readonly words: string; readonly warn: boolean } | null;
+  readonly readinessLine: {
+    readonly words: string;
+    readonly warn: boolean;
+    /**
+     * THIS SENTENCE SURVIVES A CAMERA COMING ON.
+     *
+     * The video branch has room for one line and asked the wrong question of
+     * it. Gated on `warn`, it drew nothing during the ONE state the surface
+     * exists for -- captions arriving, no audio played, the documented
+     * September failure -- because that state is not amber. The question a
+     * surface with room for one sentence has to ask is whether the person is
+     * missing the translation, not whether the sentence is yellow.
+     */
+    readonly onVideo: boolean;
+  } | null;
   readonly caption: CaptionCardView | null;
   readonly summary: SummaryView | null;
   readonly hint: string | null;
@@ -139,15 +162,40 @@ export interface CallScreenView {
   readonly endLabel: string;
   readonly endedActions: readonly EndedActionId[];
   /**
-   * IS THERE ROOM FOR A WORD UNDER EACH CONTROL? The board draws ONE row, and
-   * five labelled controls need 458dp -- wider than any portrait phone, so the
-   * dock wrapped to two rows and took 97dp out of the stage, which is what
-   * pushed the caption card off the bottom of the screen. Five icon-only
-   * controls fit 360dp with room to spare; four labelled ones also fit. The
+   * IS THERE ROOM FOR A WORD UNDER EACH CONTROL, AT THIS WIDTH? The board draws
+   * ONE row, and five labelled controls need 458dp -- wider than any portrait
+   * phone, so the dock wrapped to two rows and took 97dp out of the stage,
+   * which is what pushed the caption card off the bottom of the screen. The
    * label never disappears from the screen READER -- `DockControl.label` is the
    * accessibility name either way.
+   *
+   * DECIDED AGAINST THE MEASURED WIDTH. This used to be a fixed COUNT, and a
+   * count cannot see a screen: it answered the same way at 360dp and at the
+   * ~320dp the same handset reports at Android's "Larger" display setting,
+   * where the row does not fit and `flexWrap` quietly made the dock two rows
+   * again. The arithmetic is {@link dockRowDp}.
    */
   readonly dockLabels: boolean;
+  /**
+   * EVEN THE CIRCLES DO NOT FIT, so they are drawn smaller ON PURPOSE.
+   *
+   * The alternative is not "nothing happens": it is `flexWrap` taking over and
+   * the dock growing back by about 97dp, which is precisely the regression two
+   * rounds were spent undoing, arrived at silently. A 44dp circle is the touch
+   * floor and a deliberate choice; a wrapped row is neither.
+   */
+  readonly dockCompact: boolean;
+  /**
+   * HOW TALL THE CAPTION CARD'S SLOT MAY GROW, on THIS screen.
+   *
+   * It was a flat 216dp, which is about 210dp of usable height, and an ordinary
+   * three-line sentence with its three-line translation measures about 237dp --
+   * so the last line of the TRANSLATION, which is this product's billable unit,
+   * was always behind an internal scroll. On a 412x915 phone that happened with
+   * 276dp of stage sitting unused. The cap is a share of the screen the phone
+   * actually has, never smaller than the old figure.
+   */
+  readonly captionSlotMaxDp: number;
   /**
    * THE COLUMN YIELDS; THE CAPTION CARD DOES NOT. With a card on screen the
    * avatar, the clock and the name are drawn smaller, because the card is the
@@ -195,6 +243,13 @@ export interface CallScreenViewInput {
    * licence to say "playing" at minute four.
    */
   readonly nowMs: number;
+  /**
+   * THE SCREEN, IN DP, as `useWindowDimensions` reports it. Every layout answer
+   * below that used to be a constant chosen against one phone is now a function
+   * of these two: the dock's row, and the caption card's slot.
+   */
+  readonly widthDp: number;
+  readonly heightDp: number;
   readonly muted: boolean;
   readonly speakerOn: boolean;
   readonly cameraOn: boolean;
@@ -207,16 +262,58 @@ export interface CallScreenViewInput {
 /** The states in which a call was never answered, and the board offers a way on. */
 const UNREACHED = new Set(['unavailable', 'no_answer', 'busy', 'declined']);
 
-/**
- * HOW MANY CONTROLS CAN WEAR A WORD ON ONE ROW of a 360dp phone.
- *
- * The arithmetic, from the styles as written: 360 - 28 (dockWrap) - 2 (dock
- * border) - 36 (dock padding) = 294dp of usable width. A labelled control needs
- * about 66dp for "Camera off" at 12pt; an icon-only one needs its 52dp circle.
- * Four labelled plus gaps is 282dp and fits; five is 354dp and does not, which
- * is how the dock came to be two rows tall and a third of the screen.
+/*
+ * THE DOCK'S WIDTH, AS ARITHMETIC. Every figure is read off ../ui/callTheme's
+ * styles, and the point of having them here is that the row is now decided
+ * against a MEASURED screen width rather than a count of controls chosen once
+ * against one phone. See `dockRowDp`.
  */
-const LABELLED_CONTROLS_THAT_FIT = 4;
+/** `dockWrap` padding 14x2, the dock's 1dp border x2, and its padding 16x2. */
+const DOCK_CHROME_DP = 62;
+/** `controlsRow`'s `columnGap`. */
+const DOCK_GAP_DP = 6;
+/** A round control's circle, which is also `roundWrap`'s `minWidth`. */
+const CONTROL_DP = 52;
+/** The red one is bigger. */
+const END_CONTROL_DP = 56;
+/** A circle wearing a word: "Camera off" at 11pt needs about this much. */
+const LABELLED_CONTROL_DP = 66;
+/** The compact row: 44dp is the touch floor, and the red one keeps four dp on it. */
+const COMPACT_CONTROL_DP = 44;
+const COMPACT_END_DP = 48;
+const COMPACT_GAP_DP = 4;
+
+/** What one row of `count` controls actually measures, chrome and gaps included. */
+function dockRowDp(
+  count: number,
+  sizes: { readonly control: number; readonly end: number; readonly gap: number },
+): number {
+  if (count <= 0) return DOCK_CHROME_DP;
+  return DOCK_CHROME_DP + sizes.gap * (count - 1) + sizes.control * (count - 1) + sizes.end;
+}
+
+/** The ordinary row, at this many controls. Exported so the arithmetic is testable. */
+export function fullDockRowDp(controlsInRow: number): number {
+  return dockRowDp(controlsInRow, { control: CONTROL_DP, end: END_CONTROL_DP, gap: DOCK_GAP_DP });
+}
+
+/** What `dockCompact` promises instead: the same row, at the 44dp touch floor. */
+export function compactDockRowDp(controlsInRow: number): number {
+  return dockRowDp(controlsInRow, {
+    control: COMPACT_CONTROL_DP,
+    end: COMPACT_END_DP,
+    gap: COMPACT_GAP_DP,
+  });
+}
+
+/**
+ * THE CAPTION CARD MAY TAKE UP TO TWO FIFTHS OF THE PHONE, and never less than
+ * the flat 216dp it had before -- so this only ever gives the card room it did
+ * not have, and on a 915dp screen it gives it 150dp of the 276 that were going
+ * unused. It is a CAP: a one-line caption still draws a one-line card.
+ */
+const CAPTION_SLOT_SHARE = 0.4;
+const CAPTION_SLOT_FLOOR_DP = 216;
 
 /** Long enough to read "Call ended" and no longer, on a screen with nothing to press. */
 const ENDED_AUTO_DISMISS_MS = 2_500;
@@ -257,7 +354,7 @@ function languageLabel(tag: string): string {
  * has measured that translation is NOT happening; and on the ended screen it is
  * drawn only where the verdict says a translation was actually heard.
  */
-function pillFor(input: CallScreenViewInput, verdict: EndedTranslationVerdict): CallPill | null {
+function pillFor(input: CallScreenViewInput, outcome: EndedTranslationOutcome): CallPill | null {
   if (input.kind !== 'direct') return null;
   /*
    * A KNOWN-NEGATIVE ENGINE SILENCES THE PILL. The readiness line beneath it
@@ -273,7 +370,11 @@ function pillFor(input: CallScreenViewInput, verdict: EndedTranslationVerdict): 
    * and a call that ended claiming nothing does not have the pill claim
    * something on its behalf.
    */
-  if (input.phase === 'ended' && input.translation.mode === 'translated' && verdict !== 'translated') {
+  if (
+    input.phase === 'ended' &&
+    input.translation.mode === 'translated' &&
+    outcome.verdict !== 'translated'
+  ) {
     return null;
   }
   const pair = input.languages;
@@ -355,7 +456,7 @@ function endLabelFor(input: CallScreenViewInput): string {
 
 function summaryFor(
   input: CallScreenViewInput,
-  verdict: EndedTranslationVerdict,
+  outcome: EndedTranslationOutcome,
 ): SummaryView | null {
   if (input.phase !== 'ended' || input.kind !== 'direct') return null;
   /*
@@ -376,16 +477,26 @@ function summaryFor(
    * measured NOT to have happened the card says that instead; where neither was
    * measured the card says nothing about languages at all.
    */
-  if (verdict === 'translated' && input.languages !== null) {
+  const share = sharePhrase(outcome.playedShare);
+  if (outcome.verdict === 'translated' && input.languages !== null) {
     rows.push({ label: 'Languages', value: languagePairNames(input.languages) });
   }
-  if (verdict === 'interrupted') {
-    rows.push({ label: 'Translation', value: 'Stopped partway' });
+  /*
+   * A PARTIAL SAYS HOW PARTIAL. "Stopped partway" was the only word this card
+   * had for every degree of failure between "translated" and "not available",
+   * and it was never reached by the commoner case -- audio that simply stops
+   * arriving, with nothing left to refuse.
+   */
+  if (outcome.verdict === 'partly') {
+    rows.push({ label: 'Translation', value: `Audio for ${share}` });
   }
-  if (verdict === 'text-only') {
+  if (outcome.verdict === 'interrupted') {
+    rows.push({ label: 'Translation', value: `Audio for ${share}, then stopped` });
+  }
+  if (outcome.verdict === 'text-only') {
     rows.push({ label: 'Translation', value: 'Text only — no audio played' });
   }
-  if (verdict === 'not-translated') {
+  if (outcome.verdict === 'not-translated') {
     rows.push({ label: 'Translation', value: 'Not available' });
   }
   return { title: 'Call summary', rows };
@@ -393,7 +504,7 @@ function summaryFor(
 
 export function callScreenView(input: CallScreenViewInput): CallScreenView {
   const readiness = translationReadiness(input.translation, input.nowMs);
-  const verdict = endedTranslationVerdict(input.translation);
+  const outcome = endedTranslationOutcome(input.translation, input.elapsedMs);
   const eyebrow = callEyebrow(input.serverState, input.role, input.phase);
   const words = stateLine(input.serverState, input.role, input.peerName);
   const direct = input.kind === 'direct';
@@ -419,7 +530,19 @@ export function callScreenView(input: CallScreenViewInput): CallScreenView {
   }
   const unreached = input.serverState !== null && UNREACHED.has(input.serverState);
   const dock = dockFor(input);
-  const summary = summaryFor(input, verdict);
+  const summary = summaryFor(input, outcome);
+  /*
+   * NOTHING ON THE ENDED SCREEN MAY CLAIM ANYTHING ABOUT A CALL NOBODY
+   * ANSWERED. The summary card was taught this and the fault sentence was not,
+   * so a caller who rang an unavailable line read "Call ended / No answer /
+   * This server cannot translate — you will hear original voices" and concluded
+   * the translation had broken the call. The caller joins the gateway before
+   * ringing, so the engine verdict arrives on every one of those calls. A
+   * duration is the evidence that there was a call to have an opinion about --
+   * the same evidence the summary uses, asked once.
+   */
+  const answered = input.elapsedMs !== null;
+  const controlsInRow = dock.length + endedActions.length + 1;
   /** Is the caption card actually on screen? The column's size depends on it. */
   const cardShown = direct && input.phase === 'live' && input.captionsShown && card !== null;
   return {
@@ -430,11 +553,13 @@ export function callScreenView(input: CallScreenViewInput): CallScreenView {
       // wherever there is a window to draw.
       pulsing: input.phase === 'placing' && remaining === null,
       ring: input.phase !== 'live',
-      remaining,
-      remainingLabel:
+      measure:
         remaining === null
           ? null
-          : `Time left for them to answer: ${Math.round(remaining * 100)}%`,
+          : {
+              remaining,
+              label: `Time left for them to answer: ${Math.round(remaining * 100)}%`,
+            },
       dim: input.phase === 'ended',
     },
     speech:
@@ -455,7 +580,7 @@ export function callScreenView(input: CallScreenViewInput): CallScreenView {
                 : `${who} is quiet`,
           }
         : null,
-    pill: pillFor(input, verdict),
+    pill: pillFor(input, outcome),
     timer:
       input.phase === 'live' && input.elapsedMs !== null ? formatCallClock(input.elapsedMs) : null,
     connected: input.phase === 'live' && input.connectedRow.show
@@ -471,16 +596,18 @@ export function callScreenView(input: CallScreenViewInput): CallScreenView {
       input.phase === 'live' || (input.phase === 'ended' && words === eyebrow) ? null : words,
     endedLine:
       input.phase === 'ended'
-        ? endedSummaryLine(input.elapsedMs, input.translation.mode, verdict)
+        ? endedSummaryLine(input.elapsedMs, input.translation.mode, outcome)
         : null,
     /*
-     * THE READINESS SENTENCE SURVIVES THE END OF THE CALL WHEN IT IS A FAULT.
-     * It was gated `phase !== 'ended'`, which removed the one sentence that
-     * contradicted the ended line exactly one frame before that line appeared.
+     * THE READINESS SENTENCE SURVIVES THE END OF THE CALL WHEN IT IS A FAULT,
+     * AND ONLY OF A CALL THAT RAN. It was gated `phase !== 'ended'`, which
+     * removed the one sentence that contradicted the ended line exactly one
+     * frame before that line appeared; then it was gated on the fault alone,
+     * which left it stating a translation verdict over "No answer".
      */
     readinessLine:
-      readiness.words !== null && (input.phase !== 'ended' || readiness.warn)
-        ? { words: readiness.words, warn: readiness.warn }
+      readiness.words !== null && (input.phase !== 'ended' || (readiness.warn && answered))
+        ? { words: readiness.words, warn: readiness.warn, onVideo: readiness.unheard }
         : null,
     caption:
       cardShown && card !== null
@@ -515,7 +642,22 @@ export function callScreenView(input: CallScreenViewInput): CallScreenView {
     dock,
     endLabel: endLabelFor(input),
     endedActions,
-    dockLabels: dock.length + endedActions.length + 1 <= LABELLED_CONTROLS_THAT_FIT,
+    dockLabels:
+      dockRowDp(controlsInRow, {
+        control: LABELLED_CONTROL_DP,
+        end: LABELLED_CONTROL_DP,
+        gap: DOCK_GAP_DP,
+      }) <= input.widthDp,
+    /*
+     * Not "compact if compact would fit": compact whenever the full row does
+     * NOT, because the alternative at that width is a wrapped two-row dock, and
+     * a narrower row is better than that at every width below the threshold.
+     */
+    dockCompact: fullDockRowDp(controlsInRow) > input.widthDp,
+    captionSlotMaxDp: Math.max(
+      CAPTION_SLOT_FLOOR_DP,
+      Math.round(input.heightDp * CAPTION_SLOT_SHARE),
+    ),
     compactIdentity: cardShown,
     /*
      * THE ENDED SCREEN DISMISSES ITSELF ONLY WHERE THERE IS NOTHING TO ACT ON.

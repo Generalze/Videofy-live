@@ -119,9 +119,22 @@ describe("the screen's own timer stops", () => {
     expect(screen).toContain('startCallTick({ ticking, intervalMs: tickIntervalMs, onTick: setNowMs })');
   });
 
-  it('derives terminal from the server state, not the timer, roster or socket', () => {
+  it('derives terminal from the server state, and from this phone’s own End', () => {
+    /*
+     * The two -- and only the two. Not the timer, not the roster, not the
+     * socket. `serverTerminal` is the server's word; `endedHere` is this
+     * handset's own acknowledged End press, which is a local fact about a local
+     * action and the reason the ended screen is now reachable by pressing End
+     * rather than 600 ms of network luck.
+     */
     expect(screen).toContain(
-      'const terminal = serverState !== null && TERMINAL_DIRECT_STATES.has(serverState);',
+      'const serverTerminal = serverState !== null && TERMINAL_DIRECT_STATES.has(serverState);',
+    );
+    expect(screen).toContain('const terminal = serverTerminal || endedHere;');
+    // And the server's own word always outranks it where it has one, so a
+    // declined or busy call keeps the words that explain it.
+    expect(screen).toContain(
+      "const callState = !serverTerminal && endedHere ? 'ended' : serverState;",
     );
   });
 });
@@ -151,6 +164,8 @@ describe("the system's timer stops too, through the whole chain", () => {
           playedAtMs: null,
           refusedAtMs: null,
           captionedAtMs: null,
+          playedCoveredMs: 0,
+          refusedCoveredMs: 0,
         },
         languages: null,
         connectedRow: { show: false, words: '', warn: false },
@@ -161,6 +176,8 @@ describe("the system's timer stops too, through the whole chain", () => {
         elapsedMs: null,
         ringElapsed: null,
         nowMs: 1_700_000_000_000,
+        widthDp: 360,
+        heightDp: 800,
         muted: false,
         speakerOn: false,
         cameraOn: false,

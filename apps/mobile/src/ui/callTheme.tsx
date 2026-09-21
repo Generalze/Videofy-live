@@ -15,7 +15,7 @@ import { useEffect, useRef, type JSX, type ReactNode } from 'react';
 import { Animated, Easing, Pressable, StyleSheet, Text, View } from 'react-native';
 import Svg, { Circle } from 'react-native-svg';
 import { AvatarView } from '../media/AvatarView';
-import { ringGeometry } from '../call/callRingGeometry';
+import { ringGeometry, type RingMeasure } from '../call/callRingGeometry';
 
 export const CALL_COLORS = {
   ground: '#070c14',
@@ -117,41 +117,35 @@ export function CallStatePill({
  */
 export function CallRing({
   size,
-  remaining = null,
-  remainingLabel = null,
+  measure,
   dim = false,
 }: {
   readonly size: number;
-  /** Share of the ring window LEFT (1 at the start, 0 at the deadline), or null. */
-  readonly remaining?: number | null;
   /**
-   * WHAT THE ARC IS A SHARE OF, for a screen reader -- because nothing on this
-   * screen said. The arc carried no label of any kind and the only text near it
-   * is "Calling…" and a name, so a shrinking teal arc read as falling signal as
-   * readily as it read as a deadline. Decided in ../call/callScreenModel.ts,
-   * where the figure behind it is.
+   * THE ARC, OR NULL. Required and undefaulted: see {@link RingMeasure} for
+   * why the figure and its spoken label are one value and why neither of them
+   * has a default to restore a hand-drawn quarter-arc into.
    */
-  readonly remainingLabel?: string | null;
+  readonly measure: RingMeasure | null;
   readonly dim?: boolean;
 }): JSX.Element {
   const stroke = 2;
-  const geometry = ringGeometry({ size, stroke, remaining });
+  const geometry = ringGeometry({ size, stroke, remaining: measure === null ? null : measure.remaining });
   const opacity = dim ? 0.35 : 1;
-  const measured = geometry.arc !== null && remainingLabel !== null;
   return (
     <Svg
       width={size}
       height={size}
       style={{ position: 'absolute', opacity }}
       // A ring with no arc is texture and is not announced at all.
-      {...(measured
-        ? {
+      {...(measure === null
+        ? {}
+        : {
             accessible: true,
             accessibilityRole: 'progressbar' as const,
-            accessibilityLabel: remainingLabel,
-            accessibilityValue: { min: 0, max: 100, now: Math.round((remaining ?? 0) * 100) },
-          }
-        : {})}
+            accessibilityLabel: measure.label,
+            accessibilityValue: { min: 0, max: 100, now: Math.round(measure.remaining * 100) },
+          })}
     >
       {/* The dashed outer ring: texture, never a value. */}
       <Circle
@@ -205,21 +199,25 @@ export function AvatarHalo({
   accountId,
   name,
   size = 120,
-  pulsing = false,
-  ring = false,
-  remaining = null,
-  remainingLabel = null,
+  pulsing,
+  ring,
+  measure,
   dim = false,
 }: {
   readonly accountId: string;
   readonly name: string;
   readonly size?: number;
-  readonly pulsing?: boolean;
-  readonly ring?: boolean;
-  /** Share of the ring window left; null draws no arc. */
-  readonly remaining?: number | null;
-  /** What that share is OF, spoken. See {@link CallRing}. */
-  readonly remainingLabel?: string | null;
+  /**
+   * REQUIRED AND UNDEFAULTED, all three of these, because each of them is a
+   * behaviour that a DROPPED prop turns off silently. `pulsing` defaulted to
+   * false is how the incoming-call screen went still and shipped: the prop was
+   * removed at the one call site and nothing -- not the type checker, not the
+   * suite -- had an opinion. An omission is now a compile error.
+   */
+  readonly pulsing: boolean;
+  readonly ring: boolean;
+  /** The draining arc and what it measures, or null for none. See {@link CallRing}. */
+  readonly measure: RingMeasure | null;
   readonly dim?: boolean;
 }): JSX.Element {
   const pulse = useRef(new Animated.Value(0)).current;
@@ -247,9 +245,7 @@ export function AvatarHalo({
   const inner = size + 28;
   return (
     <View style={{ width: outer, height: outer, alignItems: 'center', justifyContent: 'center' }}>
-      {ring && (
-        <CallRing size={outer} remaining={remaining} remainingLabel={remainingLabel} dim={dim} />
-      )}
+      {ring && <CallRing size={outer} measure={measure} dim={dim} />}
       {pulsing ? (
         <Animated.View
           style={[
@@ -499,6 +495,7 @@ export function RoundControl({
   active = false,
   disabled = false,
   showLabel = true,
+  compact = false,
   onPress,
 }: {
   /** A short text mark; used when no icon is given. */
@@ -516,6 +513,16 @@ export function RoundControl({
    * drawn or not: this hides a word, never a meaning.
    */
   readonly showLabel?: boolean;
+  /**
+   * THE NARROW-SCREEN ROW, chosen deliberately rather than fallen into. See
+   * `dockCompact` in ../call/callScreenModel.ts: below about 350dp of usable
+   * width the five circles no longer fit, and the alternative to shrinking them
+   * is `flexWrap` silently making the dock two rows tall again -- which is what
+   * took the caption card off the bottom of the screen in the first place. The
+   * compact circle is 44dp, which is the touch-target floor and not a point
+   * under it.
+   */
+  readonly compact?: boolean;
   readonly onPress: () => void;
 }): JSX.Element {
   return (
@@ -525,9 +532,14 @@ export function RoundControl({
       accessibilityRole="button"
       accessibilityLabel={label}
       accessibilityState={{ selected: active, disabled }}
-      style={({ pressed }) => [styles.roundWrap, pressed && styles.pressed, disabled && styles.disabled]}
+      style={({ pressed }) => [
+        styles.roundWrap,
+        compact && styles.roundWrapCompact,
+        pressed && styles.pressed,
+        disabled && styles.disabled,
+      ]}
     >
-      <View style={[styles.round, active && styles.roundActive]}>
+      <View style={[styles.round, compact && styles.roundCompact, active && styles.roundActive]}>
         {icon ?? <Text style={[styles.roundMark, active && styles.roundMarkActive]}>{mark ?? ''}</Text>}
       </View>
       {/* One line, and a bounded one: a long label used to widen its control
@@ -548,6 +560,7 @@ export function EndCallButton({
   icon,
   disabled = false,
   showLabel = true,
+  compact = false,
 }: {
   readonly label: string;
   readonly onPress: () => void;
@@ -556,6 +569,8 @@ export function EndCallButton({
   readonly disabled?: boolean;
   /** See {@link RoundControl}. The red circle is never in doubt; the word can go. */
   readonly showLabel?: boolean;
+  /** See {@link RoundControl}. Still the biggest circle in the row, and still over 44dp. */
+  readonly compact?: boolean;
 }): JSX.Element {
   return (
     <Pressable
@@ -563,9 +578,15 @@ export function EndCallButton({
       accessibilityRole="button"
       accessibilityLabel={label}
       accessibilityState={{ disabled }}
-      style={({ pressed }) => [styles.roundWrap, (pressed || disabled) && styles.pressed]}
+      style={({ pressed }) => [
+        styles.roundWrap,
+        compact && styles.roundWrapCompact,
+        (pressed || disabled) && styles.pressed,
+      ]}
     >
-      <View style={[styles.round, styles.end]}>{icon ?? <Text style={styles.endLabel}>End</Text>}</View>
+      <View style={[styles.round, styles.end, compact && styles.endCompact]}>
+        {icon ?? <Text style={styles.endLabel}>End</Text>}
+      </View>
       {showLabel && (
         <Text numberOfLines={1} style={styles.roundLabel}>
           {label}
@@ -744,6 +765,15 @@ const styles = StyleSheet.create({
    * (border) - 32 (padding) = 298dp usable; four 52dp circles, one 56dp red
    * one and four 6dp gaps is 288dp. It fits, with the touch targets still well
    * over the 44dp floor.
+   *
+   * TEN DP OF MARGIN, AND IT USED TO BE TWO. This comment claimed a 6dp gap
+   * while `controlsRow` was rendering 8, so the figure above was eight dp
+   * optimistic and the real row measured 358 against 360 -- and below 360dp
+   * effective width, which the same handset produces at Android's "Larger"
+   * display setting, `flexWrap` took over in silence. The gap is now the 6 this
+   * says, and which row is drawn is decided against the MEASURED width rather
+   * than a fixed count of controls: see `dockLabels` and `dockCompact` in
+   * ../call/callScreenModel.ts, where the figures below are the inputs.
    */
   dock: {
     backgroundColor: CALL_COLORS.glass,
@@ -768,11 +798,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
+  // The narrow-screen row. 44dp is the touch-target floor, on BOTH axes.
+  roundWrapCompact: { minWidth: 44, maxWidth: 72 },
+  roundCompact: { width: 44, height: 44, borderRadius: 22 },
   roundActive: { backgroundColor: CALL_COLORS.teal, borderColor: CALL_COLORS.teal },
   roundMark: { color: CALL_COLORS.text, fontSize: 12, fontWeight: '800', letterSpacing: 1.5 },
   roundMarkActive: { color: CALL_COLORS.ground },
   roundLabel: { color: CALL_COLORS.muted, fontSize: 11 },
   end: { backgroundColor: CALL_COLORS.red, borderColor: CALL_COLORS.red, width: 56, height: 56, borderRadius: 28 },
+  // Still the biggest circle in the row, and still four dp over the floor.
+  endCompact: { width: 48, height: 48, borderRadius: 24 },
   endLabel: { color: '#ffffff', fontSize: 14, fontWeight: '700', letterSpacing: 0.3 },
   pressed: { opacity: 0.75 },
   disabled: { opacity: 0.4 },

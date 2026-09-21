@@ -62,7 +62,19 @@ export function IncomingCallScreen({
       </View>
       <View style={styles.identity}>
         <Eyebrow>Incoming call</Eyebrow>
-        <AvatarHalo accountId={caller.accountId} name={caller.name} size={136} pulsing ring />
+        {/* The pulse is the only animated thing on this screen, and when it
+            stopped a ringing phone looked frozen. `pulsing` and `ring` are
+            required props on AvatarHalo now: dropping either is a compile
+            error rather than a silent regression. There is no arc here --
+            nothing has measured a deadline before this phone is in the call. */}
+        <AvatarHalo
+          accountId={caller.accountId}
+          name={caller.name}
+          size={136}
+          pulsing
+          ring
+          measure={null}
+        />
         {/* One line, like every other name on these screens: a long Nigerian
             name at 30pt wrapped to three and pushed the two buttons down. */}
         <Text numberOfLines={1} adjustsFontSizeToFit minimumFontScale={0.6} style={styles.name}>

@@ -26,7 +26,9 @@ import { describe, expect, it } from 'vitest';
 import {
   applyCaptionEvidence,
   applyTranslatedAudioDiagnostic,
-  endedTranslationVerdict,
+  COVERAGE_BRIDGE_MS,
+  endedTranslationOutcome,
+  MOSTLY_OF_THE_CALL,
   NO_TRANSLATION_SIGNALS,
   PRESENT_MS,
   translationReadiness,
@@ -36,6 +38,8 @@ import {
 /** A call that started at t=0 on the phone's clock. */
 const T0 = 1_700_000_000_000;
 const NOW = T0 + 60_000;
+/** The call the reviewers' probes all use: four minutes fifty-one. */
+const LONG_CALL_MS = 291_000;
 
 const signals = (over: Partial<TranslationSignals>): TranslationSignals => ({
   mode: 'translated',
@@ -44,8 +48,31 @@ const signals = (over: Partial<TranslationSignals>): TranslationSignals => ({
   playedAtMs: null,
   refusedAtMs: null,
   captionedAtMs: null,
+  playedCoveredMs: 0,
+  refusedCoveredMs: 0,
   ...over,
 });
+
+/** The verdict alone, where the share is not what is being asserted. */
+const verdictOf = (state: TranslationSignals, elapsedMs: number | null = LONG_CALL_MS): string =>
+  endedTranslationOutcome(state, elapsedMs).verdict;
+
+/**
+ * A call in which translated audio really was playing throughout: the sink
+ * heartbeats once a second while the peer talks, and the coverage bridges the
+ * user's own turns. Built by driving the real fold rather than by asserting a
+ * figure into the state, so the two halves are two witnesses.
+ */
+function playedThroughout(callMs: number): TranslationSignals {
+  let state: TranslationSignals = signals({ playback: 'listening' });
+  for (let at = 0; at < callMs; at += 1_000) {
+    state = {
+      ...state,
+      ...applyTranslatedAudioDiagnostic(state, { kind: 'played', playedMs: at }, T0 + at),
+    };
+  }
+  return state;
+}
 
 describe('a caption is not proof that anybody heard anything', () => {
   it('lets refusals contradict a caption -- the defect this round exists to close', () => {
@@ -64,7 +91,7 @@ describe('a caption is not proof that anybody heard anything', () => {
     expect(readiness.warn).toBe(true);
     expect(readiness.words).toMatch(/not playing it/iu);
     // And the call does not end certified as translated.
-    expect(endedTranslationVerdict(state)).toBe('not-translated');
+    expect(verdictOf({ ...state, refusedCoveredMs: 60_000 })).toBe('not-translated');
   });
 
   it('will not let ONE frame from second three speak for the whole call', () => {
@@ -81,8 +108,14 @@ describe('a caption is not proof that anybody heard anything', () => {
     const readiness = translationReadiness(state, T0 + 50_500);
     expect(readiness.kind).toBe('refusing');
     expect(readiness.warn).toBe(true);
-    // It did play once, so the call is not "not translated" -- it stopped.
-    expect(endedTranslationVerdict(state)).toBe('interrupted');
+    // It did play once, so the call is not "not translated" -- it stopped. And
+    // "once" is all it did: four seconds of a 291-second call.
+    const outcome = endedTranslationOutcome(
+      { ...state, playedCoveredMs: PRESENT_MS, refusedCoveredMs: 40_000 },
+      LONG_CALL_MS,
+    );
+    expect(outcome.verdict).toBe('interrupted');
+    expect(outcome.playedShare).toBeLessThan(0.02);
   });
 
   it('says only what a caption proves: the engine ran, not that it was heard', () => {
@@ -93,7 +126,7 @@ describe('a caption is not proof that anybody heard anything', () => {
     expect(readiness.words).not.toMatch(/playing|hearing/iu);
     expect(readiness.warn).toBe(false);
     // Weaker than heard, and the ended screen says so in its own words.
-    expect(endedTranslationVerdict(state)).toBe('text-only');
+    expect(verdictOf(state)).toBe('text-only');
   });
 
   it('stops claiming to be playing once nothing has played for a while', () => {
@@ -104,8 +137,8 @@ describe('a caption is not proof that anybody heard anything', () => {
     // it started in -- subscribed, waiting -- not a fault and not a claim.
     expect(later.kind).toBe('waiting');
     expect(later.words).toBe('Listening for translated speech');
-    // The call still ends as translated: something WAS heard.
-    expect(endedTranslationVerdict(state)).toBe('translated');
+    // What the WHOLE call ended as is a different question, and it is answered
+    // by how much of the call this covered -- see the ended-verdict block.
   });
 });
 
@@ -227,6 +260,34 @@ describe('a translated call says what has actually been measured', () => {
     expect(readiness.words).toMatch(/server/iu);
   });
 
+  it('marks every sentence that means the person is MISSING the translation', () => {
+    /*
+     * `warn` is "is this amber" and `unheard` is "is the person missing the
+     * translation", and the video branch was gated on the first while needing
+     * the second: the caption-only state -- the 19 Sep failure, captions
+     * arriving and no audio played -- is not amber, so a video call showed
+     * nothing at all during exactly that call.
+     */
+    const unheardOf = (over: Partial<TranslationSignals>, atMs = NOW): boolean =>
+      translationReadiness(signals(over), atMs).unheard;
+    expect(unheardOf({ playback: 'listening', captionedAtMs: NOW - 200 })).toBe(true);
+    expect(unheardOf({ playback: 'listening', refusedAtMs: NOW - 200 })).toBe(true);
+    expect(unheardOf({ engine: false })).toBe(true);
+    expect(unheardOf({ playback: 'unavailable' })).toBe(true);
+    // And progress is not a fault: neither of these belongs over a video call.
+    expect(unheardOf({ playback: 'listening' })).toBe(false);
+    expect(unheardOf({})).toBe(false);
+    expect(unheardOf({ playback: 'listening', playedAtMs: NOW - 100 })).toBe(false);
+    expect(unheardOf({ mode: 'normal', playback: 'listening' })).toBe(false);
+    // The caption-only state is the one that is unheard WITHOUT being a warning.
+    const captioning = translationReadiness(
+      signals({ playback: 'listening', captionedAtMs: NOW - 200 }),
+      NOW,
+    );
+    expect(captioning.warn).toBe(false);
+    expect(captioning.unheard).toBe(true);
+  });
+
   it('does not downgrade a working call because the engine was never mentioned', () => {
     // `engine: null` is "the gateway said nothing", which is the NORMAL case --
     // the error is only sent by a deployment whose engine is not real.
@@ -267,10 +328,16 @@ describe('the diagnostics are folded into one measured picture', () => {
     expect(
       applyTranslatedAudioDiagnostic(refused, { kind: 'refused', reason: 'no-session' }, T0 + 20),
     ).toBe(refused);
-    expect(
-      applyTranslatedAudioDiagnostic(refused, { kind: 'refused', reason: 'no-session' }, T0 + 1_000)
-        .refusedAtMs,
-    ).toBe(T0 + 1_000);
+    const second = applyTranslatedAudioDiagnostic(
+      refused,
+      { kind: 'refused', reason: 'no-session' },
+      T0 + 1_000,
+    );
+    expect(second.refusedAtMs).toBe(T0 + 1_000);
+    // And the DURATION grows with them, which is what an ended verdict about a
+    // whole call needs and what a stamp on its own could never give it.
+    expect(refused.refusedCoveredMs).toBe(PRESENT_MS);
+    expect(second.refusedCoveredMs).toBe(PRESENT_MS + 1_000);
   });
 
   it('stamps the audible proof, and keeps stamping it as the audio continues', () => {
@@ -282,6 +349,10 @@ describe('the diagnostics are folded into one measured picture', () => {
     expect(played.playedAtMs).toBe(T0);
     const later = applyTranslatedAudioDiagnostic(played, { kind: 'played', playedMs: 1_020 }, T0 + 1_000);
     expect(later.playedAtMs).toBe(T0 + 1_000);
+    expect(played.playedCoveredMs).toBe(PRESENT_MS);
+    expect(later.playedCoveredMs).toBe(PRESENT_MS + 1_000);
+    // A refusal never adds to the played duration, nor the other way round.
+    expect(later.refusedCoveredMs).toBe(0);
   });
 
   it('keeps the caption evidence in a field of its OWN, never as a rank of audio', () => {
@@ -319,34 +390,176 @@ describe('what the ENDED screen is allowed to certify', () => {
   it('will not certify a call the server said it could not translate', () => {
     // The worst defect this wave exists to fix: the screen warned "This server
     // cannot translate" for four minutes and then wrote "· translated".
-    expect(endedTranslationVerdict(signals({ engine: false, playback: 'listening' }))).toBe(
-      'not-translated',
-    );
+    expect(verdictOf(signals({ engine: false, playback: 'listening' }))).toBe('not-translated');
   });
 
   it('will not certify a call this phone could not play', () => {
-    expect(endedTranslationVerdict(signals({ playback: 'unavailable' }))).toBe('not-translated');
-  });
-
-  it('certifies as translated only where audio was actually played', () => {
-    expect(endedTranslationVerdict(signals({ playback: 'listening', playedAtMs: T0 }))).toBe(
-      'translated',
-    );
-    // Text alone is a weaker, honest verdict of its own -- never 'translated'.
-    expect(endedTranslationVerdict(signals({ captionedAtMs: T0 }))).not.toBe('translated');
-    expect(endedTranslationVerdict(signals({ captionedAtMs: T0 }))).toBe('text-only');
+    expect(verdictOf(signals({ playback: 'unavailable' }))).toBe('not-translated');
   });
 
   it('says frames were turned away when none was ever played', () => {
     expect(
-      endedTranslationVerdict(signals({ playback: 'listening', refusedAtMs: T0, captionedAtMs: T0 })),
+      verdictOf(
+        signals({
+          playback: 'listening',
+          refusedAtMs: T0,
+          refusedCoveredMs: 120_000,
+          captionedAtMs: T0,
+        }),
+      ),
     ).toBe('not-translated');
   });
 
   it('says UNPROVEN for a translated call in which nothing was ever measured', () => {
     // Configured translated, subscribed, and not one frame or caption. The mode
     // alone is not evidence, and the ended line says nothing about translation.
-    expect(endedTranslationVerdict(signals({ playback: 'listening' }))).toBe('unproven');
-    expect(endedTranslationVerdict(signals({}))).toBe('unproven');
+    expect(verdictOf(signals({ playback: 'listening' }))).toBe('unproven');
+    expect(verdictOf(signals({}))).toBe('unproven');
+  });
+});
+
+describe('the ended verdict measures HOW MUCH, not WHETHER', () => {
+  it('WILL NOT let one frame at second three certify a 291-second call', () => {
+    /*
+     * The reviewer's probe, and the reason this block exists. One played frame,
+     * no refusal ever, and the screen used to end "4 min 51 s · translated"
+     * with the language pair printed beside it -- four elements agreeing, none
+     * of them measuring what it claimed. It is the September shape in
+     * miniature: audio starts, the subscription dies, and nothing is refused
+     * because nothing arrives to refuse.
+     */
+    const base = signals({ playback: 'listening' });
+    const state: TranslationSignals = {
+      ...base,
+      ...applyTranslatedAudioDiagnostic(base, { kind: 'played', playedMs: 20 }, T0 + 3_000),
+    };
+    const outcome = endedTranslationOutcome(state, LONG_CALL_MS);
+    expect(outcome.verdict).toBe('partly');
+    expect(outcome.verdict).not.toBe('translated');
+    // Four seconds of 291: about one per cent, and the screen prints it.
+    expect(outcome.playedShare).toBeLessThan(0.02);
+    expect(outcome.playedShare).toBeGreaterThan(0);
+  });
+
+  it('WILL NOT let ten seconds at the end certify four minutes fifty of refusals', () => {
+    // The mirror case. A person who heard original voices for the whole call
+    // except the last ten seconds was handed "translated" plus a language pair.
+    const outcome = endedTranslationOutcome(
+      signals({
+        playback: 'listening',
+        refusedAtMs: T0 + 280_000,
+        refusedCoveredMs: 280_000,
+        playedAtMs: T0 + 290_000,
+        playedCoveredMs: 14_000,
+      }),
+      LONG_CALL_MS,
+    );
+    expect(outcome.verdict).not.toBe('translated');
+    expect(outcome.playedShare).toBeLessThan(0.05);
+  });
+
+  it('certifies a call whose translated audio really did run through it', () => {
+    /*
+     * The other direction, and the one that keeps this from being a threshold
+     * nobody can meet: a real stream heartbeating once a second, folded by the
+     * real reducer, covers the call and ends as translated.
+     */
+    const outcome = endedTranslationOutcome(playedThroughout(LONG_CALL_MS), LONG_CALL_MS);
+    expect(outcome.verdict).toBe('translated');
+    expect(outcome.playedShare).toBeGreaterThanOrEqual(MOSTLY_OF_THE_CALL);
+  });
+
+  it('does not count an ordinary conversational turn against a working translation', () => {
+    /*
+     * On a two-party call this phone plays translated audio only while the OTHER
+     * person is speaking, so a turn taken by the user is a gap in the heartbeat
+     * of a translation that is working perfectly. Twenty seconds of the user
+     * talking, between two stretches of translated speech, is bridged.
+     */
+    let state: TranslationSignals = signals({ playback: 'listening' });
+    const beat = (atMs: number): void => {
+      state = {
+        ...state,
+        ...applyTranslatedAudioDiagnostic(state, { kind: 'played', playedMs: atMs }, T0 + atMs),
+      };
+    };
+    for (let at = 0; at < 40_000; at += 1_000) beat(at);
+    for (let at = 60_000; at < 100_000; at += 1_000) beat(at);
+    const outcome = endedTranslationOutcome(state, 100_000);
+    expect(outcome.verdict).toBe('translated');
+  });
+
+  it('does NOT bridge a silence longer than a turn', () => {
+    // The same two stretches, four minutes apart. That is a subscription that
+    // died, not somebody taking their turn, and the gap is not credited.
+    let state: TranslationSignals = signals({ playback: 'listening' });
+    state = {
+      ...state,
+      ...applyTranslatedAudioDiagnostic(state, { kind: 'played', playedMs: 20 }, T0),
+    };
+    state = {
+      ...state,
+      ...applyTranslatedAudioDiagnostic(
+        state,
+        { kind: 'played', playedMs: 40 },
+        T0 + 240_000,
+      ),
+    };
+    // Two stamps: four seconds for the first, and the bridge cap for the second.
+    expect(state.playedCoveredMs).toBe(PRESENT_MS + COVERAGE_BRIDGE_MS);
+    expect(endedTranslationOutcome(state, LONG_CALL_MS).verdict).toBe('partly');
+  });
+
+  it('puts "most of the call" between two thirds and two fifths, in figures', () => {
+    /*
+     * The threshold, pinned to something other than itself. Asserting against
+     * MOSTLY_OF_THE_CALL would agree with any value it was moved to; these are
+     * absolute, and they bracket it: seven tenths of a call is translated, two
+     * fifths of one is not, and no reading of "most" puts the line outside
+     * that.
+     */
+    const covered = (share: number): TranslationSignals =>
+      signals({
+        playback: 'listening',
+        playedAtMs: T0 + 1_000,
+        playedCoveredMs: Math.round(LONG_CALL_MS * share),
+      });
+    expect(endedTranslationOutcome(covered(0.7), LONG_CALL_MS).verdict).toBe('translated');
+    expect(endedTranslationOutcome(covered(0.4), LONG_CALL_MS).verdict).toBe('partly');
+    expect(MOSTLY_OF_THE_CALL).toBeGreaterThan(0.4);
+    expect(MOSTLY_OF_THE_CALL).toBeLessThanOrEqual(0.7);
+  });
+
+  it('calls it INTERRUPTED where the partial call finished being refused', () => {
+    // Played, then turned away, with none played since. The two partials are
+    // told apart by which one the call ENDED in.
+    const outcome = endedTranslationOutcome(
+      signals({
+        playback: 'listening',
+        playedAtMs: T0 + 60_000,
+        playedCoveredMs: 60_000,
+        refusedAtMs: T0 + 200_000,
+        refusedCoveredMs: 140_000,
+      }),
+      LONG_CALL_MS,
+    );
+    expect(outcome.verdict).toBe('interrupted');
+  });
+
+  it('gives the UNPROVEN verdict, never the flattering one, when there is no duration', () => {
+    /*
+     * A proportion needs a denominator. Where the call has none -- it never
+     * connected -- the gap in the evidence lands on 'unproven'; it does not
+     * fall back to the stamp, because falling back to the stamp is what
+     * certified 291 seconds on the strength of one frame.
+     */
+    const played = signals({
+      playback: 'listening',
+      playedAtMs: T0,
+      playedCoveredMs: PRESENT_MS,
+    });
+    expect(endedTranslationOutcome(played, null).verdict).toBe('unproven');
+    expect(endedTranslationOutcome(played, 0).verdict).toBe('unproven');
+    expect(endedTranslationOutcome(played, null).playedShare).toBeNull();
   });
 });

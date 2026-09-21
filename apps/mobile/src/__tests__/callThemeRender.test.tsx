@@ -30,6 +30,7 @@ import {
   SpeechIndicator,
   SummaryCard,
 } from '../ui/callTheme';
+import type { RingMeasure } from '../call/callRingGeometry';
 import { nodesOfType, nodesWhere, render, styleOf, textOf, textsOf } from './stubs/render';
 
 describe('the caption card: what was said, and what it became', () => {
@@ -109,9 +110,14 @@ describe('the caption card: what was said, and what it became', () => {
 });
 
 describe('the ring arc is a measurement or it is absent', () => {
+  /** An arc costs a sentence saying what it measures; there is no other shape. */
+  const measure = (remaining: number): RingMeasure => ({
+    remaining,
+    label: `Time left for them to answer: ${Math.round(remaining * 100)}%`,
+  });
   /** The arc is the second Circle; the first is the dashed texture. */
-  const circles = (remaining: number | null, label: string | null = null) =>
-    nodesOfType(render(<CallRing size={188} remaining={remaining} remainingLabel={label} />).tree, 'Circle');
+  const circles = (arc: RingMeasure | null) =>
+    nodesOfType(render(<CallRing size={188} measure={arc} />).tree, 'Circle');
 
   it('draws NO arc when nothing was measured', () => {
     /*
@@ -119,6 +125,12 @@ describe('the ring arc is a measurement or it is absent', () => {
      * same colour and weight as a real measurement. An unmeasured thing drawn
      * in the language of a measured one is the same lie as a status line over
      * silence.
+     *
+     * A reviewer restored it three separate ways -- at the AvatarHalo call
+     * site, and as either component's own default -- and it is now none of
+     * them: `measure` is required, undefaulted, and carries the figure and its
+     * spoken label as ONE value, so the cheapest re-cut costs a sentence
+     * nobody writes by accident.
      */
     const drawn = circles(null);
     expect(drawn).toHaveLength(1);
@@ -126,7 +138,7 @@ describe('the ring arc is a measurement or it is absent', () => {
   });
 
   it('draws the arc, and its head, from the figure it was given', () => {
-    const drawn = circles(0.5);
+    const drawn = circles(measure(0.5));
     expect(drawn).toHaveLength(3);
     const arc = drawn[1]!;
     const radius = arc.props['radius'] ?? arc.props['r'];
@@ -140,7 +152,12 @@ describe('the ring arc is a measurement or it is absent', () => {
 
   it('is emptier as the window drains, and never the other way round', () => {
     const run = (remaining: number): number =>
-      Number(String(nodesOfType(render(<CallRing size={188} remaining={remaining} />).tree, 'Circle')[1]?.props['strokeDasharray']).split(' ')[0]);
+      Number(
+        String(
+          nodesOfType(render(<CallRing size={188} measure={measure(remaining)} />).tree, 'Circle')[1]
+            ?.props['strokeDasharray'],
+        ).split(' ')[0],
+      );
     expect(run(1)).toBeGreaterThan(run(0.5));
     expect(run(0.5)).toBeGreaterThan(run(0.05));
   });
@@ -149,22 +166,47 @@ describe('the ring arc is a measurement or it is absent', () => {
     // Nothing on the screen said what the arc was a share of, and the Svg
     // carried no label at all: a shrinking teal arc under "Calling…" reads as
     // falling signal as readily as it reads as a deadline.
-    const labelled = render(
-      <CallRing size={188} remaining={0.75} remainingLabel="Time left for them to answer: 75%" />,
-    ).tree;
+    const labelled = render(<CallRing size={188} measure={measure(0.75)} />).tree;
     const svg = nodesOfType(labelled, 'Svg')[0]!;
     expect(svg.props['accessibilityLabel']).toBe('Time left for them to answer: 75%');
     expect(svg.props['accessibilityRole']).toBe('progressbar');
     expect(svg.props['accessibilityValue']).toEqual({ min: 0, max: 100, now: 75 });
     // Texture is not announced.
-    const bare = nodesOfType(render(<CallRing size={188} />).tree, 'Svg')[0]!;
+    const bare = nodesOfType(render(<CallRing size={188} measure={null} />).tree, 'Svg')[0]!;
     expect(bare.props['accessibilityLabel']).toBeUndefined();
+    expect(bare.props['accessibilityRole']).toBeUndefined();
+  });
+
+  it('cannot draw an arc without announcing one: the two are ONE value', () => {
+    /*
+     * The seam that survived a green suite: `remainingLabel={null}` at the
+     * screen's call site left the arc drawn and took it out of the
+     * accessibility tree entirely -- the exact defect the label was added for.
+     * Every arc this component can draw carries a label, by construction.
+     */
+    const drawn = render(<CallRing size={188} measure={measure(0.4)} />).tree;
+    const arcs = nodesOfType(drawn, 'Circle').filter(
+      (node) => node.props['strokeDasharray'] !== '3 9',
+    );
+    expect(arcs.length).toBeGreaterThan(0);
+    const svg = nodesOfType(drawn, 'Svg')[0]!;
+    expect(typeof svg.props['accessibilityLabel']).toBe('string');
+    expect(svg.props['accessibilityRole']).toBe('progressbar');
   });
 });
 
 describe('the halo breathes when it is asked to, ring or no ring', () => {
   const halo = (props: Partial<Parameters<typeof AvatarHalo>[0]>) =>
-    render(<AvatarHalo accountId="a1" name="Tunde" {...props} />).tree;
+    render(
+      <AvatarHalo
+        accountId="a1"
+        name="Tunde"
+        pulsing={false}
+        ring={false}
+        measure={null}
+        {...props}
+      />,
+    ).tree;
 
   it('breathes on the incoming screen, which passes BOTH pulsing and ring', () => {
     /*
@@ -179,12 +221,22 @@ describe('the halo breathes when it is asked to, ring or no ring', () => {
   });
 
   it('carries the measured arc and its label through to the ring', () => {
-    const tree = halo({ ring: true, remaining: 0.25, remainingLabel: 'Time left for them to answer: 25%' });
+    const tree = halo({
+      ring: true,
+      measure: { remaining: 0.25, label: 'Time left for them to answer: 25%' },
+    });
     const svg = nodesOfType(tree, 'Svg')[0]!;
     expect(svg.props['accessibilityLabel']).toBe('Time left for them to answer: 25%');
     expect(nodesOfType(tree, 'Circle')).toHaveLength(3);
     // No ring asked for, no ring drawn.
-    expect(nodesOfType(halo({ ring: false, remaining: 0.25 }), 'Svg')).toHaveLength(0);
+    expect(
+      nodesOfType(halo({ ring: false, measure: { remaining: 0.25, label: 'x' } }), 'Svg'),
+    ).toHaveLength(0);
+  });
+
+  it('draws the dashed texture and NO arc when it was given no measurement', () => {
+    // `<AvatarHalo ring />` with nothing behind it: one Circle, the texture.
+    expect(nodesOfType(halo({ ring: true }), 'Circle')).toHaveLength(1);
   });
 });
 
@@ -247,6 +299,32 @@ describe('the dock controls', () => {
     expect(tree.props['disabled']).toBe(true);
     expect(tree.props['accessibilityState']).toEqual({ selected: false, disabled: true });
     expect(pressed).toBe(0);
+  });
+
+  it('shrink to the touch FLOOR on a narrow screen, never below it', () => {
+    /*
+     * The deliberate degradation. Below about 350dp of usable width the row
+     * does not fit, and the alternative to this is `flexWrap` making the dock
+     * two rows tall again -- the regression two rounds were spent undoing,
+     * arrived at in silence. 44dp is the floor and this sits exactly on it, on
+     * BOTH axes: the old assertion read width alone, so a 52x36 target passed.
+     */
+    const compact = render(<RoundControl label="Mute" compact onPress={() => {}} mark="M" />).tree;
+    const circle = styleOf(nodesOfType(compact, 'View')[0]!);
+    expect(Number(circle['width'])).toBeGreaterThanOrEqual(44);
+    expect(Number(circle['height'])).toBeGreaterThanOrEqual(44);
+    expect(Number(styleOf(compact)['minWidth'])).toBeGreaterThanOrEqual(44);
+    // And it really is smaller than the ordinary one, or it buys nothing.
+    const ordinary = styleOf(
+      nodesOfType(render(<RoundControl label="Mute" onPress={() => {}} mark="M" />).tree, 'View')[0]!,
+    );
+    expect(Number(circle['width'])).toBeLessThan(Number(ordinary['width']));
+
+    const red = render(<EndCallButton label="End call" compact onPress={() => {}} />).tree;
+    const redCircle = styleOf(nodesOfType(red, 'View')[0]!);
+    expect(Number(redCircle['width'])).toBeGreaterThanOrEqual(44);
+    expect(Number(redCircle['height'])).toBeGreaterThanOrEqual(44);
+    expect(redCircle['backgroundColor']).toBe(CALL_COLORS.red);
   });
 
   it('keep the red button red, and its second press harmless', () => {

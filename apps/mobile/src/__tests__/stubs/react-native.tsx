@@ -42,6 +42,29 @@ export const ActivityIndicator = 'ActivityIndicator';
 
 export type StyleProp = unknown;
 
+/**
+ * THE WINDOW, AS A TEST TELLS IT.
+ *
+ * The stub measures nothing and must not start now, so this does not guess a
+ * screen: it reports whatever `setWindowSize` last said, and the default is the
+ * 360x800 Android phone every layout figure in this app was computed against.
+ * A test that cares about a narrower screen says so before it mounts.
+ */
+let windowSize = { width: 360, height: 800, scale: 2, fontScale: 1 };
+
+export function setWindowSize(next: { readonly width: number; readonly height: number }): void {
+  windowSize = { ...windowSize, width: next.width, height: next.height };
+}
+
+export function useWindowDimensions(): {
+  readonly width: number;
+  readonly height: number;
+  readonly scale: number;
+  readonly fontScale: number;
+} {
+  return windowSize;
+}
+
 /** What a Pressable's `style` callback is handed. RN's own shape, pressed only. */
 interface PressableState {
   readonly pressed: boolean;

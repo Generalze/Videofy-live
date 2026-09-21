@@ -23,6 +23,16 @@ import {
   observeRingWindow,
   ringProgress,
 } from '../call/callTimer';
+import type {
+  EndedTranslationOutcome,
+  EndedTranslationVerdict,
+} from '../call/translationReadiness';
+
+/** The verdict and the share it was derived from, as the line receives them. */
+const outcome = (
+  verdict: EndedTranslationVerdict,
+  playedShare: number | null = null,
+): EndedTranslationOutcome => ({ verdict, playedShare });
 
 describe('which treatment a direct call is in', () => {
   it('is placing while the call has not connected', () => {
@@ -103,8 +113,37 @@ describe('the ended screen states a length, not a clock face', () => {
   });
 
   it('says the call was translated only where that was PROVEN', () => {
-    expect(endedSummaryLine(291_000, 'translated', 'translated')).toBe('4 min 51 s · translated');
-    expect(endedSummaryLine(291_000, 'normal', 'unproven')).toBe('4 min 51 s · original voices');
+    expect(endedSummaryLine(291_000, 'translated', outcome('translated', 0.92))).toBe(
+      '4 min 51 s · translated',
+    );
+    expect(endedSummaryLine(291_000, 'normal', outcome('unproven'))).toBe(
+      '4 min 51 s · original voices',
+    );
+  });
+
+  it('SAYS HOW MUCH when the translation covered only part of the call', () => {
+    /*
+     * The bare word used to be reachable on one played frame. The proportional
+     * verdict gives it a figure instead, and the figure is the whole point:
+     * "translated for about 4% of the call" is honest where either stamp was a
+     * lie, and more useful than both.
+     */
+    expect(endedSummaryLine(291_000, 'translated', outcome('partly', 0.048))).toBe(
+      '4 min 51 s · translated for about 4% of the call',
+    );
+    expect(endedSummaryLine(291_000, 'translated', outcome('partly', 0.5))).toBe(
+      '4 min 51 s · translated for about 50% of the call',
+    );
+  });
+
+  it('rounds the share DOWN, because the direction of the error is settled', () => {
+    // One frame in a four-minute call is not "about 1%".
+    expect(endedSummaryLine(291_000, 'translated', outcome('partly', 0.009))).toBe(
+      '4 min 51 s · translated for less than 1% of the call',
+    );
+    expect(endedSummaryLine(291_000, 'translated', outcome('partly', 0.199))).toBe(
+      '4 min 51 s · translated for about 19% of the call',
+    );
   });
 
   it('will not certify a translated call the phone measured as untranslated', () => {
@@ -116,7 +155,9 @@ describe('the ended screen states a length, not a clock face', () => {
      * thrown away; three elements then agreed on the false half and nothing
      * dissented.
      */
-    expect(endedSummaryLine(291_000, 'translated', 'not-translated')).toBe('4 min 51 s · not translated');
+    expect(endedSummaryLine(291_000, 'translated', outcome('not-translated', 0))).toBe(
+      '4 min 51 s · not translated',
+    );
   });
 
   it('has a weaker word for a call that only ever produced translated TEXT', () => {
@@ -126,32 +167,32 @@ describe('the ended screen states a length, not a clock face', () => {
      * to print the bare word "translated" on a call in which every translated
      * frame was turned away -- the 19 Sep production failure, certified.
      */
-    expect(endedSummaryLine(291_000, 'translated', 'text-only')).toBe(
+    expect(endedSummaryLine(291_000, 'translated', outcome('text-only', 0))).toBe(
       '4 min 51 s · translated text only',
     );
   });
 
-  it('says so when it worked and then stopped', () => {
-    expect(endedSummaryLine(291_000, 'translated', 'interrupted')).toBe(
-      '4 min 51 s · translation stopped partway',
+  it('says so when it worked and then stopped, and how much of it worked', () => {
+    expect(endedSummaryLine(291_000, 'translated', outcome('interrupted', 0.2))).toBe(
+      '4 min 51 s · translated for about 20% of the call, then stopped',
     );
   });
 
   it('claims NOTHING about a translated call in which nothing was measured', () => {
     // Configured translated, nothing played, nothing captioned, no fault
     // reported. The duration is a fact; "· translated" would not be.
-    expect(endedSummaryLine(291_000, 'translated', 'unproven')).toBe('4 min 51 s');
+    expect(endedSummaryLine(291_000, 'translated', outcome('unproven'))).toBe('4 min 51 s');
   });
 
   it('states the duration alone when the server never named a mode', () => {
-    expect(endedSummaryLine(291_000, null, 'unproven')).toBe('4 min 51 s');
-    expect(endedSummaryLine(291_000, null, 'translated')).toBe('4 min 51 s');
+    expect(endedSummaryLine(291_000, null, outcome('unproven'))).toBe('4 min 51 s');
+    expect(endedSummaryLine(291_000, null, outcome('translated', 1))).toBe('4 min 51 s');
   });
 
   it('states NOTHING for a call that never connected', () => {
     // A declined call has no duration. "0 s · translated" would describe a
     // conversation that did not happen.
-    expect(endedSummaryLine(null, 'translated', 'translated')).toBeNull();
+    expect(endedSummaryLine(null, 'translated', outcome('translated', 1))).toBeNull();
   });
 });
 

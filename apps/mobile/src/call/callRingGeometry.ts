@@ -28,6 +28,29 @@
  *   swept. They are concentric now, with the arc inside the dashes.
  */
 
+/**
+ * AN ARC AND THE THING IT MEASURES, AS ONE VALUE -- so that neither can exist
+ * without the other.
+ *
+ * The quarter-arc has been re-cut by a reviewer three separate ways, and every
+ * one of them worked because `remaining` and its spoken label were two optional
+ * props that defaulted to null independently: `remaining ?? 0.25` at a call
+ * site, `remaining = 0.25` as either component's own default. Each drew a
+ * static teal arc in the exact colour and weight of a measurement, announcing
+ * nothing, and each was one token.
+ *
+ * Chasing three call sites with three assertions is losing that argument. With
+ * the figure and its sentence in one required value there is no shape left to
+ * write: an arc costs a label saying what it is a share of, which nobody
+ * invents by accident, and no arc at all is the single word `null`.
+ */
+export interface RingMeasure {
+  /** Share of the ring window still LEFT: 1 at the start, 0 at the deadline. */
+  readonly remaining: number;
+  /** WHAT THAT SHARE IS OF, for somebody who cannot see the arc. */
+  readonly label: string;
+}
+
 export interface RingArc {
   /** Radius of the arc's own circle, inside the dashed ring. */
   readonly radius: number;
