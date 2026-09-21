@@ -340,19 +340,72 @@ describe('the diagnostics are folded into one measured picture', () => {
     expect(second.refusedCoveredMs).toBe(PRESENT_MS + 1_000);
   });
 
-  it('stamps the audible proof, and keeps stamping it as the audio continues', () => {
+  it('counts the AUDIO the heartbeat carries, not the time since the last one', () => {
+    /*
+     * THE NUMBER HAS TO BE THE THING IT CLAIMS TO BE. This credited each
+     * heartbeat with the wall-clock gap back to its predecessor, so
+     * `playedCoveredMs` measured "time spent near a played frame" while the
+     * screen printed it as a share of the call that was translated. Two
+     * reviewers independently showed ten one-second heartbeats spread across a
+     * 291-second call crediting 274 seconds, and the ended screen reporting
+     * 94% of the call translated on nine seconds of sound.
+     *
+     * `playedMs` is the sink's own running total of translated audio the
+     * platform accepted, so the honest credit is how far it MOVED.
+     */
     const played = applyTranslatedAudioDiagnostic(
       NO_TRANSLATION_SIGNALS,
       { kind: 'played', playedMs: 20 },
       T0,
     );
     expect(played.playedAtMs).toBe(T0);
-    const later = applyTranslatedAudioDiagnostic(played, { kind: 'played', playedMs: 1_020 }, T0 + 1_000);
+    expect(played.playedCoveredMs, 'twenty milliseconds of sound is twenty').toBe(20);
+
+    const later = applyTranslatedAudioDiagnostic(
+      played,
+      { kind: 'played', playedMs: 1_020 },
+      T0 + 1_000,
+    );
     expect(later.playedAtMs).toBe(T0 + 1_000);
-    expect(played.playedCoveredMs).toBe(PRESENT_MS);
-    expect(later.playedCoveredMs).toBe(PRESENT_MS + 1_000);
+    expect(later.playedCoveredMs).toBe(1_020);
     // A refusal never adds to the played duration, nor the other way round.
     expect(later.refusedCoveredMs).toBe(0);
+  });
+
+  it('credits audio from a heartbeat too soon to move the stamp', () => {
+    /*
+     * The stamp is throttled so a fifty-a-second diagnostic cannot re-render
+     * the screen; the DURATION must not be, or a working call undercounts
+     * itself and ends up described as partly translated.
+     */
+    const first = applyTranslatedAudioDiagnostic(
+      NO_TRANSLATION_SIGNALS,
+      { kind: 'played', playedMs: 1_000 },
+      T0,
+    );
+    const soon = applyTranslatedAudioDiagnostic(first, { kind: 'played', playedMs: 1_500 }, T0 + 40);
+    expect(soon.playedAtMs, 'the stamp stays quiet').toBe(T0);
+    expect(soon.playedCoveredMs, 'the audio still counts').toBe(1_500);
+  });
+
+  it('ignores a total that stood still or went backwards', () => {
+    const first = applyTranslatedAudioDiagnostic(
+      NO_TRANSLATION_SIGNALS,
+      { kind: 'played', playedMs: 5_000 },
+      T0,
+    );
+    const stalled = applyTranslatedAudioDiagnostic(
+      first,
+      { kind: 'played', playedMs: 5_000 },
+      T0 + 10_000,
+    );
+    expect(stalled.playedCoveredMs).toBe(5_000);
+    const backwards = applyTranslatedAudioDiagnostic(
+      first,
+      { kind: 'played', playedMs: 10 },
+      T0 + 20_000,
+    );
+    expect(backwards.playedCoveredMs).toBe(5_000);
   });
 
   it('keeps the caption evidence in a field of its OWN, never as a rank of audio', () => {
@@ -489,9 +542,14 @@ describe('the ended verdict measures HOW MUCH, not WHETHER', () => {
     expect(outcome.verdict).toBe('translated');
   });
 
-  it('does NOT bridge a silence longer than a turn', () => {
-    // The same two stretches, four minutes apart. That is a subscription that
-    // died, not somebody taking their turn, and the gap is not credited.
+  it('a silence credits NOTHING, however long or short it was', () => {
+    /*
+     * Two twenty-millisecond stretches four minutes apart is a subscription
+     * that died, not somebody taking their turn -- and the old wall-clock
+     * credit gave that call thirty-four seconds of "translated audio" it never
+     * played. Measuring the sound itself makes the bridge unnecessary: silence
+     * cannot be miscounted as coverage because silence moves no total.
+     */
     let state: TranslationSignals = signals({ playback: 'listening' });
     state = {
       ...state,
@@ -499,15 +557,75 @@ describe('the ended verdict measures HOW MUCH, not WHETHER', () => {
     };
     state = {
       ...state,
-      ...applyTranslatedAudioDiagnostic(
-        state,
-        { kind: 'played', playedMs: 40 },
-        T0 + 240_000,
-      ),
+      ...applyTranslatedAudioDiagnostic(state, { kind: 'played', playedMs: 40 }, T0 + 240_000),
     };
-    // Two stamps: four seconds for the first, and the bridge cap for the second.
-    expect(state.playedCoveredMs).toBe(PRESENT_MS + COVERAGE_BRIDGE_MS);
+    expect(state.playedCoveredMs, 'forty milliseconds of sound, and no more').toBe(40);
     expect(endedTranslationOutcome(state, LONG_CALL_MS).verdict).toBe('partly');
+  });
+
+  it('WILL NOT call a call translated on sparse heartbeats spread across it', () => {
+    /*
+     * THE REVIEWERS' PROBE, kept verbatim as the regression it is: ten
+     * one-second heartbeats spaced thirty seconds apart over a 291-second
+     * call. Under the wall-clock credit this reported 94% of the call
+     * translated on nine seconds of audio.
+     */
+    let state: TranslationSignals = signals({ playback: 'listening' });
+    for (let index = 1; index <= 10; index += 1) {
+      state = {
+        ...state,
+        ...applyTranslatedAudioDiagnostic(
+          state,
+          { kind: 'played', playedMs: index * 1_000 },
+          T0 + index * 30_000,
+        ),
+      };
+    }
+    expect(state.playedCoveredMs, 'ten seconds of sound').toBe(10_000);
+    const outcome = endedTranslationOutcome(state, 291_000);
+    expect(outcome.verdict).not.toBe('translated');
+    expect(outcome.playedShare).toBeLessThan(0.05);
+  });
+
+  it('a player that died mid-call does not erase the audio that WAS heard', () => {
+    /*
+     * `unavailable` used to short-circuit to 'not translated' before any
+     * duration was read, so a call that translated for four minutes and then
+     * lost its player was reported as never translated at all. That is false
+     * in the other direction: those minutes happened.
+     */
+    let state: TranslationSignals = signals({ playback: 'listening' });
+    state = {
+      ...state,
+      ...applyTranslatedAudioDiagnostic(state, { kind: 'played', playedMs: 240_000 }, T0),
+    };
+    state = { ...state, playback: 'unavailable' };
+    const outcome = endedTranslationOutcome(state, 291_000);
+    expect(outcome.verdict, 'it stopped; it did not never happen').toBe('interrupted');
+    expect(outcome.playedShare).toBeGreaterThan(0.6);
+    // And with nothing ever played, the latched verdict still decides.
+    expect(
+      endedTranslationOutcome(signals({ playback: 'unavailable' }), 291_000).verdict,
+    ).toBe('not-translated');
+  });
+
+  it('refusals covering more of the call than audio outrank a strong share', () => {
+    /*
+     * Both durations were accumulated and only one was read, so a call that
+     * spent most of itself turning translated frames away could still be
+     * certified translated on a high played share. The person did not get a
+     * translated call.
+     */
+    const state: TranslationSignals = {
+      ...signals({ playback: 'listening' }),
+      playedAtMs: T0,
+      playedCoveredMs: 200_000,
+      refusedAtMs: T0,
+      refusedCoveredMs: 250_000,
+    };
+    const outcome = endedTranslationOutcome(state, 291_000);
+    expect(outcome.verdict).toBe('interrupted');
+    expect(outcome.verdict).not.toBe('translated');
   });
 
   it('puts "most of the call" between two thirds and two fifths, in figures', () => {

@@ -160,8 +160,20 @@ export interface TranslationSignalState {
   readonly refusedAtMs: number | null;
   /** When a caption last arrived carrying a translation. Evidence the ENGINE ran. */
   readonly captionedAtMs: number | null;
-  /** How much of the call translated audio was playing. See {@link COVERAGE_BRIDGE_MS}. */
+  /**
+   * HOW MUCH TRANSLATED AUDIO THIS PHONE HAS ACTUALLY EMITTED, in milliseconds
+   * of sound -- not wall-clock time near a played frame. Taken as the
+   * difference between two `playedMs` heartbeats, which is the sink's own
+   * count of what the platform accepted.
+   */
   readonly playedCoveredMs: number;
+  /**
+   * The `playedMs` total the last heartbeat reported, so the next one can diff
+   * it. Internal bookkeeping for {@link applyTranslatedAudioDiagnostic} and
+   * nothing the verdict reads, so it is optional: a caller describing a state
+   * it wants to reason about should not have to supply a cursor.
+   */
+  readonly playedTotalMs?: number | null;
   /** How much of the call translated frames were arriving and being turned away. */
   readonly refusedCoveredMs: number;
 }
@@ -172,6 +184,7 @@ export const NO_TRANSLATION_SIGNALS: TranslationSignalState = {
   refusedAtMs: null,
   captionedAtMs: null,
   playedCoveredMs: 0,
+  playedTotalMs: null,
   refusedCoveredMs: 0,
 };
 
@@ -182,16 +195,24 @@ function restamp(current: number | null, atMs: number): number | null {
 }
 
 /**
- * HOW MUCH OF THE CALL A NEW STAMP SPEAKS FOR.
+ * HOW MUCH OF THE CALL A NEW REFUSAL STAMP SPEAKS FOR.
  *
- * The first one speaks for {@link PRESENT_MS}, which is exactly the window the
- * live sentence stands on -- a single frame is credited with the few seconds
- * during which the screen would have been entitled to say "playing", and no
- * more. Every later one is credited with the real gap back to its predecessor,
- * bridged at {@link COVERAGE_BRIDGE_MS} so a conversational turn does not count
- * against a translation that is working and a dead subscription does.
+ * Refusals arrive per frame with no duration on them, so wall-clock is the
+ * only measure available: a stamp is credited with the real gap back to its
+ * predecessor, bridged at {@link COVERAGE_BRIDGE_MS} so an ordinary silence
+ * does not read as an hour of refusal.
+ *
+ * PLAYED FRAMES DO NOT USE THIS, and the reason is the defect it caused. Every
+ * `played` heartbeat carries `playedMs`, the running total of translated audio
+ * this phone has actually emitted, so the honest credit is the DIFFERENCE
+ * between two heartbeats -- the audio itself. Crediting wall-clock instead
+ * measured "time spent within thirty seconds of a played frame": two
+ * independent reviewers showed ten one-second heartbeats spread across a
+ * 291-second call crediting 274 seconds, and the screen printing that as 94%
+ * of the call translated. A number that is not the thing it claims to measure
+ * is the same defect as a sentence nothing measured, wearing a percentage.
  */
-function coverageGain(previousStampMs: number | null, atMs: number): number {
+function refusalCoverageGain(previousStampMs: number | null, atMs: number): number {
   if (previousStampMs === null) return PRESENT_MS;
   const gap = atMs - previousStampMs;
   return gap <= 0 ? 0 : Math.min(gap, COVERAGE_BRIDGE_MS);
@@ -224,17 +245,33 @@ export function applyTranslatedAudioDiagnostic(
       return {
         ...state,
         refusedAtMs: stamp,
-        refusedCoveredMs: state.refusedCoveredMs + coverageGain(state.refusedAtMs, atMs),
+        refusedCoveredMs: state.refusedCoveredMs + refusalCoverageGain(state.refusedAtMs, atMs),
       };
     }
     case 'played': {
+      /*
+       * THE AUDIO ITSELF, not the clock. `playedMs` is the sink's running
+       * total of translated sound the platform accepted, so the honest credit
+       * is how much it moved since the last heartbeat. A total that went
+       * backwards or stood still adds nothing.
+       *
+       * The stamp is throttled and the DURATION IS NOT: a heartbeat arriving
+       * inside the granularity window still carries audio that was played, and
+       * dropping it would undercount a working call. Only the "is it happening
+       * now" stamp needs to be quiet.
+       */
+      const grown = Math.max(0, event.playedMs - (state.playedTotalMs ?? 0));
+      const withAudio =
+        grown === 0
+          ? state
+          : {
+              ...state,
+              playedCoveredMs: state.playedCoveredMs + grown,
+              playedTotalMs: event.playedMs,
+            };
       const stamp = restamp(state.playedAtMs, atMs);
-      if (stamp === null) return state;
-      return {
-        ...state,
-        playedAtMs: stamp,
-        playedCoveredMs: state.playedCoveredMs + coverageGain(state.playedAtMs, atMs),
-      };
+      if (stamp === null) return withAudio;
+      return { ...withAudio, playedAtMs: stamp };
     }
     default:
       // `originals` is a policy verdict about the ORIGINAL voices; it says
@@ -428,7 +465,18 @@ export function endedTranslationOutcome(
 ): EndedTranslationOutcome {
   if (signals.mode !== 'translated') return { verdict: 'unproven', playedShare: null };
   if (signals.engine === false) return { verdict: 'not-translated', playedShare: null };
-  if (signals.playback === 'unavailable') return { verdict: 'not-translated', playedShare: null };
+  /*
+   * A LATCHED `unavailable` DOES NOT ERASE WHAT WAS HEARD. It used to
+   * short-circuit before any duration was read, so a call that translated
+   * happily for four minutes and then lost its player ended "not translated" --
+   * which is false in the other direction, and the person heard those four
+   * minutes. It is decisive only when nothing was ever played; otherwise the
+   * proportion below already describes what happened, and the verdict for
+   * audio that stopped is `interrupted`.
+   */
+  if (signals.playback === 'unavailable' && signals.playedCoveredMs <= 0) {
+    return { verdict: 'not-translated', playedShare: null };
+  }
   if (signals.playedCoveredMs <= 0) {
     if (signals.refusedCoveredMs > 0) return { verdict: 'not-translated', playedShare: 0 };
     return signals.captionedAtMs !== null
@@ -442,15 +490,38 @@ export function endedTranslationOutcome(
    */
   if (elapsedMs === null || elapsedMs <= 0) return { verdict: 'unproven', playedShare: null };
   const playedShare = Math.min(1, signals.playedCoveredMs / elapsedMs);
-  if (playedShare >= MOSTLY_OF_THE_CALL) return { verdict: 'translated', playedShare };
+  /*
+   * REFUSALS ARE PART OF THE VERDICT, NOT A TIEBREAK. Both durations were
+   * being accumulated and only one was read, so a call that turned frames away
+   * for most of its length could still be certified translated on a strong
+   * enough played share. If more of this call was spent refusing translated
+   * audio than playing it, the person did not get a translated call, whatever
+   * the other number says -- and `interrupted` is the word for audio that
+   * stopped, which is exactly what a dominant refusal describes.
+   */
+  const refusedDominates = signals.refusedCoveredMs > signals.playedCoveredMs;
+  /*
+   * TWO THINGS DISQUALIFY AN OTHERWISE STRONG SHARE, and both describe a call
+   * that STOPPED rather than one that worked. If more of the call was spent
+   * turning translated audio away than playing it, the person did not get a
+   * translated call whatever the share says. And a player that latched
+   * `unavailable` is not playing now, so "translated", said flatly about the
+   * whole call, would be the present tense doing work the past tense should.
+   */
+  const endedBadly = refusedDominates || signals.playback === 'unavailable';
+  if (playedShare >= MOSTLY_OF_THE_CALL && !endedBadly) {
+    return { verdict: 'translated', playedShare };
+  }
   /*
    * WHICH KIND OF PARTIAL. Played-then-refused is a translation that was cut
    * off, and the screen can say so. Played-then-silence is the commoner
    * failure -- the subscription dies and there is nothing left to refuse -- and
-   * it had no category at all until now.
+   * it had no category at all until now. A player that went away for good is
+   * the same story told by a different signal.
    */
   const stopped =
-    signals.refusedAtMs !== null &&
-    (signals.playedAtMs === null || signals.refusedAtMs > signals.playedAtMs);
+    endedBadly ||
+    (signals.refusedAtMs !== null &&
+      (signals.playedAtMs === null || signals.refusedAtMs > signals.playedAtMs));
   return { verdict: stopped ? 'interrupted' : 'partly', playedShare };
 }
