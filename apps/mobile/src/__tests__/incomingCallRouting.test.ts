@@ -17,6 +17,7 @@
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
+  applyCheckToRinging,
   routeCallPush,
   shouldDismissIncoming,
   type PushRouting,
@@ -30,6 +31,7 @@ function ringing(over: Partial<DirectCallCheck> = {}): DirectCallCheck {
     mode: 'normal',
     callerAccountId: 'acct_caller',
     callerName: 'Ada',
+    callerSpeakLanguage: null,
     ...over,
   };
 }
@@ -150,5 +152,58 @@ describe('the ring screen comes down when the call is over', () => {
      * still ringing. Only the server saying so takes the screen down.
      */
     expect(shouldDismissIncoming(null)).toBe(false);
+  });
+});
+
+/**
+ * THE POLL'S EFFECT ON A SCREEN THAT IS ALREADY UP.
+ *
+ * The caller's spoken language is half of the ringing screen's language pill
+ * and it cannot arrive with the push, which carries a name and a mode and no
+ * language. It arrives with the confirmation poll instead, and this is the
+ * fold that applies it -- kept out of App.tsx deliberately, because nothing
+ * tests App.tsx and a decision made there is a decision nothing can check.
+ */
+describe('applyCheckToRinging', () => {
+  const call: {
+    callId: string;
+    caller: { accountId: string; name: string };
+    callerSpeaks?: string | null;
+  } = { callId: 'ring-1', caller: { accountId: 'a', name: 'Tunde' } };
+
+  it('learns the language the confirmation carried', () => {
+    const next = applyCheckToRinging(call, 'ring-1', ringing({ callerSpeakLanguage: 'yo' }));
+    expect(next?.callerSpeaks).toBe('yo');
+  });
+
+  it('returns the SAME object when nothing moved, so a poll cannot re-render forever', () => {
+    const known = { ...call, callerSpeaks: 'yo' };
+    expect(applyCheckToRinging(known, 'ring-1', ringing({ callerSpeakLanguage: 'yo' }))).toBe(known);
+  });
+
+  it('a FAILED poll is not news that the caller has no language', () => {
+    /*
+     * The same rule shouldDismissIncoming follows. One unanswered poll on a
+     * moving train must not take the pill off a call that is still ringing.
+     */
+    const known = { ...call, callerSpeaks: 'yo' };
+    expect(applyCheckToRinging(known, 'ring-1', null)).toBe(known);
+  });
+
+  it('forgets a language the server has stopped stating', () => {
+    const known = { ...call, callerSpeaks: 'yo' };
+    const next = applyCheckToRinging(known, 'ring-1', ringing({ callerSpeakLanguage: null }));
+    expect(next?.callerSpeaks).toBeNull();
+  });
+
+  it('drops a late answer for a call that has already been replaced', () => {
+    // Two calls in quick succession: the first poll's answer must not land on
+    // the second person's screen.
+    const second = { ...call, callId: 'ring-2' };
+    expect(applyCheckToRinging(second, 'ring-1', ringing({ callerSpeakLanguage: 'ha' }))).toBe(second);
+  });
+
+  it('does nothing when the screen has already gone', () => {
+    expect(applyCheckToRinging(null, 'ring-1', ringing({ callerSpeakLanguage: 'yo' }))).toBeNull();
   });
 });

@@ -26,7 +26,6 @@ import { describe, expect, it } from 'vitest';
 import {
   applyCaptionEvidence,
   applyTranslatedAudioDiagnostic,
-  COVERAGE_BRIDGE_MS,
   endedTranslationOutcome,
   MOSTLY_OF_THE_CALL,
   NO_TRANSLATION_SIGNALS,

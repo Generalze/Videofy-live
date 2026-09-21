@@ -63,7 +63,11 @@ import { PersonProfileScreen } from './src/screens/PersonProfileScreen';
 import { ProgrammeViewerScreen } from './src/screens/ProgrammeViewerScreen';
 import { BootScreen } from './src/screens/BootScreen';
 import { createDirectCallApi } from './src/call/directCallApi';
-import { routeCallPush, shouldDismissIncoming } from './src/call/incomingCallRouting';
+import {
+  applyCheckToRinging,
+  routeCallPush,
+  shouldDismissIncoming,
+} from './src/call/incomingCallRouting';
 import { foregroundPresentationFor } from './src/push/callNotificationPresentation';
 import { videofyCall } from './src/native/videofyCall';
 import { createAppLock } from './src/auth/appLock';
@@ -284,6 +288,13 @@ function AppInner(): JSX.Element {
     callId: string;
     caller: { accountId: string; name: string };
     mode: 'normal' | 'translated';
+    /**
+     * What the caller speaks, once the confirmation poll has told us. Absent
+     * on the first frame, because the push that woke this phone carries a name
+     * and a mode and no language -- so the pill appears a moment after the
+     * screen does, rather than the screen waiting for it.
+     */
+    callerSpeaks?: string | null;
   } | null>(null);
   const [deviceOutcome, setDeviceOutcome] = useState<RegistrationOutcome | null>(null);
   /** A channel a live-reminder push asked us to open; consumed by the Programmes tab. */
@@ -470,8 +481,18 @@ function AppInner(): JSX.Element {
     let live = true;
     const poll = setInterval(() => {
       void directCalls.check(callId).then((check) => {
-        if (!live || !shouldDismissIncoming(check)) return;
-        setIncomingCall((current) => (current?.callId === callId ? null : current));
+        if (!live) return;
+        if (shouldDismissIncoming(check)) {
+          setIncomingCall((current) => (current?.callId === callId ? null : current));
+          return;
+        }
+        /*
+         * THE CALLER'S LANGUAGE ARRIVES WITH THE CONFIRMATION, not with the
+         * push, which carries none. The fold is in ./src/call/incomingCallRouting
+         * and not inline here, because nothing tests this file: a decision made
+         * in the shell is a decision nothing can check.
+         */
+        setIncomingCall((current) => applyCheckToRinging(current, callId, check));
       });
     }, 2000);
     return () => {
@@ -775,6 +796,10 @@ function AppInner(): JSX.Element {
         <IncomingCallScreen
           caller={ringing.caller}
           mode={ringing.mode}
+          // The caller's half comes from the gateway, this phone's half from
+          // its own profile. Either being absent means no pill, not a guess.
+          callerSpeaks={ringing.callerSpeaks ?? null}
+          selfHears={callLanguages.hear ?? null}
           onAnswer={() => {
             setIncomingCall(null);
             videofyCall.reportAnswered(ringing.callId);

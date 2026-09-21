@@ -160,3 +160,70 @@ describe('the two buttons, and the person behind them', () => {
     expect(textsOf(tree)).toContain('is calling you on C7');
   });
 });
+
+/**
+ * THE LANGUAGE PAIR, BEFORE ANYBODY ANSWERS.
+ *
+ * The board puts the pill on every call screen including this one, and for
+ * three rounds it could not be drawn here: the pre-join wire carried ring,
+ * state, mode, caller account and caller name and no language of any kind,
+ * while `call:state` -- the only other record of a seat's languages -- does not
+ * exist until somebody has joined, one moment after the screen that asks you
+ * to decide. The gateway now sends the caller's spoken language with the ring.
+ *
+ * A pair needs BOTH halves, so most of these tests are about its absence.
+ */
+describe('the pill says the most the phone has actually measured', () => {
+  it('draws the pair when the gateway and the profile both answered', () => {
+    const tree = screen({ callerSpeaks: 'yo', selfHears: 'en' });
+    expect(textsOf(tree)).toContain('YO → EN');
+    // Spoken as words, because "Y O arrow E N" is not a sentence -- and
+    // WITHOUT the present tense, since nothing is translating yet.
+    expect(labels(tree)).toContain('Yoruba to English');
+    for (const label of labels(tree)) expect(label).not.toMatch(/Translating/u);
+  });
+
+  it('falls back to the MODE when the caller’s language is not on the wire', () => {
+    /*
+     * Every gateway older than the field, and the first frame of every call,
+     * because the push that wakes this phone carries no language. The honest
+     * weaker fact is that the call will be translated, not which way round.
+     */
+    const tree = screen({ callerSpeaks: null, selfHears: 'en' });
+    expect(textsOf(tree)).toContain('Translated call');
+    expect(textsOf(tree).some((text) => text.includes('→'))).toBe(false);
+  });
+
+  it('falls back to the MODE when this phone has not resolved its own profile', () => {
+    const tree = screen({ callerSpeaks: 'yo', selfHears: null });
+    expect(textsOf(tree)).toContain('Translated call');
+    expect(textsOf(tree).some((text) => text.includes('→'))).toBe(false);
+  });
+
+  it('DRAWS NO PILL AT ALL on a normal call, whatever the languages say', () => {
+    // The pair is a fact about the seats; the claim is about the service. A
+    // normal call has no translation, so it has nothing to state.
+    const tree = screen({ mode: 'normal', callerSpeaks: 'yo', selfHears: 'en' });
+    expect(textsOf(tree).some((text) => text.includes('→'))).toBe(false);
+    expect(textsOf(tree)).not.toContain('Translated call');
+  });
+
+  it('DRAWS NO PAIR when both sides are the same language', () => {
+    /*
+     * "EN → EN" is not a translation, and a screen reader hearing "English to
+     * English" is being told something is happening that is not. The regional
+     * subtag is not a difference: en and en-GB are one language here.
+     */
+    for (const hears of ['en', 'en-GB']) {
+      const tree = screen({ callerSpeaks: 'en', selfHears: hears });
+      expect(textsOf(tree).some((text) => text.includes('→'))).toBe(false);
+      expect(textsOf(tree)).toContain('Translated call');
+    }
+  });
+
+  it('says it ONCE: the pair replaces the mode, never sits beside it', () => {
+    const tree = screen({ callerSpeaks: 'yo', selfHears: 'en' });
+    expect(textsOf(tree)).not.toContain('Translated call');
+    expect(textsOf(tree).filter((text) => text.includes('→'))).toHaveLength(1);
+  });
+});

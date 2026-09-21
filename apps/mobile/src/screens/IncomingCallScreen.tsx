@@ -29,12 +29,33 @@
 import { type JSX } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { useBottomInset } from '../ui/insets';
-import { AvatarHalo, C7Mark, CALL_COLORS, CallBackdrop, Eyebrow } from '../ui/callTheme';
+import {
+  AvatarHalo,
+  C7Mark,
+  CALL_COLORS,
+  CallBackdrop,
+  CallStatePill,
+  Eyebrow,
+} from '../ui/callTheme';
+import {
+  isSameLanguagePair,
+  languagePairLabel,
+  languagePairSpoken,
+} from '../call/callLanguages';
 import { Icon } from '../ui/icons';
 
 export interface IncomingCallScreenProps {
   readonly caller: { readonly accountId: string; readonly name: string };
   readonly mode: 'normal' | 'translated';
+  /**
+   * WHAT THE CALLER SPEAKS, from the pre-join wire, and WHAT THIS PHONE
+   * LISTENS IN, from its own profile. Either may be null, and a pair needs
+   * both, so the pill is absent far more often than it is present -- on every
+   * deployment whose gateway predates the field, and on any handset that has
+   * not resolved its own profile yet.
+   */
+  readonly callerSpeaks?: string | null;
+  readonly selfHears?: string | null;
   readonly onAnswer: () => void;
   readonly onDecline: () => void;
 }
@@ -42,9 +63,22 @@ export interface IncomingCallScreenProps {
 export function IncomingCallScreen({
   caller,
   mode,
+  callerSpeaks = null,
+  selfHears = null,
   onAnswer,
   onDecline,
 }: IncomingCallScreenProps): JSX.Element {
+  /*
+   * THE PAIR, OR NOTHING. Drawn only on a call the server has said is
+   * translated, only when BOTH halves are known, and only when they differ --
+   * `EN -> EN` is not a translation and saying so on a lock screen is the
+   * smallest version of the claim this app spent a night making.
+   */
+  const pair =
+    mode === 'translated' && callerSpeaks !== null && selfHears !== null
+      ? { from: callerSpeaks, to: selfHears }
+      : null;
+  const languages = pair !== null && !isSameLanguagePair(pair) ? pair : null;
   const bottomInset = useBottomInset();
   return (
     <View style={styles.screen}>
@@ -82,14 +116,36 @@ export function IncomingCallScreen({
         </Text>
         <Text style={styles.kicker}>is calling you on C7</Text>
         {/*
-          * The MODE, which the pre-join wire does carry. It is not the board's
-          * language pill and does not pretend to be: it says the call will be
-          * translated, not which way round.
+          * ONE PILL, AND IT SAYS THE MOST THE PHONE HAS MEASURED.
+          *
+          * The board asks for the language pair here, and for a long time this
+          * screen could not draw it: the pre-join wire carried ring, state,
+          * mode, caller account and caller name, and no language at all, while
+          * `call:state` -- the only other record of a seat's languages -- does
+          * not exist until somebody has joined, which is one moment after the
+          * screen that asks you to decide. The gateway now sends the caller's
+          * spoken language with the ring, and this handset's listening
+          * language is its own setting, so the pair is finally representable.
+          *
+          * When it is not -- an older gateway, a profile that has not
+          * resolved, a pair that turns out to be the same language -- the
+          * screen falls back to the MODE, which is the honest weaker fact: the
+          * call will be translated, but not which way round.
           */}
-        {mode === 'translated' && (
-          <View style={styles.modePill}>
-            <Text style={styles.modePillLabel}>Translated call</Text>
-          </View>
+        {languages !== null ? (
+          <CallStatePill
+            kind="languages"
+            label={languagePairLabel(languages)}
+            accessibilityLabel={languagePairSpoken(languages)}
+          />
+        ) : (
+          mode === 'translated' && (
+            <CallStatePill
+              kind="mode"
+              label="Translated call"
+              accessibilityLabel="Translated call"
+            />
+          )
         )}
       </View>
       <View style={[styles.actions, { paddingBottom: bottomInset + 40 }]}>
