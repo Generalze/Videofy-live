@@ -5,7 +5,14 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { MEASURED, PERMISSIVE_LICENCE, documentOf, route, scopes } from './document.fixtures.js';
+import {
+  MEASURED,
+  PERMISSIVE_LICENCE,
+  approvedBy,
+  documentOf,
+  route,
+  scopes,
+} from './document.fixtures.js';
 import { parseRouteDocument } from './validate.js';
 
 function problemsFor(document: unknown, options = {}): readonly { path: string; message: string }[] {
@@ -33,6 +40,7 @@ describe('approval must be backed by something', () => {
       documentOf(
         route({
           productionApproved: true,
+          approval: approvedBy('messaging'),
           technicalEvidence: { ...MEASURED },
           humanReviewStatus: 'passed',
           licenceStatus: { ...PERMISSIVE_LICENCE },
@@ -126,6 +134,7 @@ describe('a human must clear the review-required languages', () => {
         sourceLanguage: 'en',
         targetLanguage: 'fr',
         productionApproved: true,
+        approval: approvedBy('messaging'),
         technicalEvidence: { ...MEASURED },
         humanReviewStatus: 'required-not-done',
         serviceScopes: scopes({ messaging: 'approved' }),
@@ -287,6 +296,8 @@ describe('"not-required" is not a way to clear a review-required language', () =
     method: 'read all eight lines against the source',
     score: 8,
     scale: 'sentences materially correct out of 8',
+    scaleMaximum: 8,
+    passThreshold: 7,
     evidenceReference: 'docs/reviews/en-yo.md',
   };
 
@@ -345,6 +356,7 @@ describe('"not-required" is not a way to clear a review-required language', () =
             sourceLanguage: 'en',
             targetLanguage: 'fr',
             productionApproved: true,
+            approval: approvedBy('messaging'),
             technicalEvidence: { ...MEASURED },
             humanReviewStatus: 'not-required',
             licenceStatus: { ...PERMISSIVE_LICENCE },
@@ -362,7 +374,9 @@ describe('"not-required" is not a way to clear a review-required language', () =
           route({
             sourceLanguage: 'en',
             targetLanguage: 'yo',
+            modelId: FULL_REVIEW.model,
             productionApproved: true,
+            approval: approvedBy('messaging'),
             technicalEvidence: { ...MEASURED },
             humanReviewStatus: 'passed',
             reviewEvidence: { ...FULL_REVIEW },
@@ -387,12 +401,20 @@ describe('the review evidence block, which the record type has always declared',
     method: 'read all eight lines against the source',
     score: 8,
     scale: 'sentences materially correct out of 8',
+    scaleMaximum: 8,
+    passThreshold: 7,
     evidenceReference: 'docs/reviews/en-fr.md',
   };
 
   it('is carried onto the loaded record rather than refused as an unknown field', () => {
     const parsed = parseRouteDocument(
-      documentOf(route({ humanReviewStatus: 'passed', reviewEvidence: { ...FULL_REVIEW } })),
+      documentOf(
+        route({
+          modelId: FULL_REVIEW.model,
+          humanReviewStatus: 'passed',
+          reviewEvidence: { ...FULL_REVIEW },
+        }),
+      ),
     );
     expect(parsed.ok).toBe(true);
     expect(parsed.ok === true && parsed.document.routes[0]?.reviewEvidence).toEqual(FULL_REVIEW);

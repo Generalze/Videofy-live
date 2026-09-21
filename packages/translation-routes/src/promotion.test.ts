@@ -33,6 +33,8 @@ const REVIEW: RouteReviewEvidence = {
   method: 'read all eight chat lines end to end against the source',
   score: 8,
   scale: 'sentences materially correct out of 8',
+  scaleMaximum: 8,
+  passThreshold: 7,
   evidenceReference: 'docs/reviews/en-fr-2026-09-19.md',
 };
 
@@ -517,5 +519,215 @@ describe('MECHANISM, NOT POLICY: the shipped seed is still refused by this tool'
         ).toBe(false);
       }
     }
+  });
+});
+
+/**
+ * THE ONE CONTROL BETWEEN OPUS-MT'S CONFIDENT WRONG HAUSA AND SOMEBODY'S EAR.
+ *
+ * A recorded `failed` is a named speaker of the language having read the output
+ * and said it is wrong. It was the strongest thing this document could carry
+ * and the cheapest thing in it to erase: a scope marked `refused` demanded an
+ * explicit flag and a written reason, and overturning a failed review demanded
+ * nothing, while the promotion replaced the failing evidence block wholesale.
+ */
+describe('overturning a failed human review costs at least what a refused scope costs', () => {
+  const FAILED_REVIEW: RouteReviewEvidence = {
+    ...REVIEW,
+    evaluator: 'a Hausa speaker, 9jaLingo',
+    method: 'read eight business sentences aloud',
+    score: 2,
+    evidenceReference: 'docs/reviews/en-ha-FAILED.md',
+  };
+
+  function failedRoute(): Record<string, unknown> {
+    return promotable({
+      humanReviewStatus: 'failed',
+      reviewEvidence: { ...FAILED_REVIEW },
+    });
+  }
+
+  it('refuses an ordinary approve that carries a fresh review and no acknowledgement', () => {
+    const decision = promoteRoute(documentOf(failedRoute()), request());
+    expect(decision.ok).toBe(false);
+    expect(paths(decision)).toContain('routes[0].humanReviewStatus');
+    expect(
+      decision.ok === false &&
+        decision.problems.some((problem) => problem.message.includes('said it is wrong')),
+    ).toBe(true);
+  });
+
+  it('allows it when the reason is given, and KEEPS the review it supersedes', () => {
+    const decision = promoteRoute(
+      documentOf(failedRoute()),
+      request({
+        overturnFailedReviewReason: 'a second named speaker re-read all eight and passed them',
+      }),
+    );
+    expect(decision.ok).toBe(true);
+    const after = routeIn(decision.ok === true ? decision.document : null);
+
+    expect(after['humanReviewStatus']).toBe('passed');
+    expect(after['reviewEvidence']).toEqual({ ...REVIEW });
+
+    const history = after['reviewHistory'] as Record<string, unknown>[];
+    expect(history).toHaveLength(1);
+    expect(history[0]?.['status']).toBe('failed');
+    expect(history[0]?.['supersededBy']).toBe('Zoe');
+    expect(history[0]?.['reason']).toContain('re-read all eight');
+    // The finding itself, not a note that there was one: the speaker, the
+    // score they gave, and where their working is kept.
+    expect(history[0]?.['evidence']).toEqual({ ...FAILED_REVIEW });
+  });
+
+  it('says in the note that a failed review was overturned, and by whom', () => {
+    const decision = promoteRoute(
+      documentOf(failedRoute()),
+      request({ overturnFailedReviewReason: 'a second named speaker re-read all eight' }),
+    );
+    expect(decision.ok).toBe(true);
+    const note = String((decision.ok === true ? (decision.document as { note?: string }) : {}).note);
+    expect(note).toContain('OVERTURNS A FAILED HUMAN REVIEW');
+    expect(note).toContain('a second named speaker re-read all eight');
+    expect(note).toContain('by Zoe');
+  });
+
+  it('produces a document that still validates, with the history in it', () => {
+    const decision = promoteRoute(
+      documentOf(failedRoute()),
+      request({ overturnFailedReviewReason: 'read again by somebody accountable' }),
+    );
+    expect(decision.ok).toBe(true);
+    expect(
+      TranslationRouteRegistry.fromDocument(decision.ok === true ? decision.document : null).ok,
+    ).toBe(true);
+  });
+
+  it('keeps an earlier passed review too, rather than dropping it on the way past', () => {
+    const first = promoteRoute(documentOf(promotable()), request());
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+
+    const second = promoteRoute(
+      first.document,
+      request({
+        reviewEvidence: { ...REVIEW, evaluator: 'B. Reader', assessedAt: '2026-09-25T09:00:00.000Z' },
+      }),
+    );
+    expect(second.ok).toBe(true);
+    const after = routeIn(second.ok === true ? second.document : null);
+    const history = after['reviewHistory'] as Record<string, unknown>[];
+    expect(history).toHaveLength(1);
+    expect((history[0]?.['evidence'] as Record<string, unknown>)['evaluator']).toBe('A. Reader');
+  });
+});
+
+/**
+ * WHO APPROVED IT, AS A FIELD.
+ *
+ * The approver's name used to live only in the free-text `note`, which is
+ * optional: a reviewer deleted it and the approval stayed live, signed by
+ * nobody, with every gate and report silent. `reviewEvidence` names the
+ * REVIEWER, who is a different person.
+ */
+describe('an approval cannot survive its own provenance', () => {
+  it('records who approved it, when, and which scopes', () => {
+    const decision = promoteRoute(documentOf(promotable()), request({ scopes: ['messaging'] }));
+    expect(decision.ok).toBe(true);
+    const after = routeIn(decision.ok === true ? decision.document : null);
+    expect(after['approval']).toEqual({
+      approvedBy: 'Zoe',
+      approvedAt: '2026-09-20T12:00:00.000Z',
+      scopes: ['messaging'],
+    });
+  });
+
+  it('covers a scope added by a later act as well as the one that came first', () => {
+    const first = promoteRoute(documentOf(promotable()), request({ scopes: ['messaging'] }));
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const second = promoteRoute(
+      first.document,
+      request({ scopes: ['programme-live'], approver: 'Someone Else' }),
+    );
+    expect(second.ok).toBe(true);
+    const after = routeIn(second.ok === true ? second.document : null);
+    expect(after['approval']).toEqual({
+      approvedBy: 'Someone Else',
+      approvedAt: '2026-09-20T12:00:00.000Z',
+      scopes: ['messaging', 'programme-live'],
+    });
+  });
+
+  it('will not load a document whose approved route has had its provenance deleted', () => {
+    const decision = promoteRoute(documentOf(promotable()), request());
+    expect(decision.ok).toBe(true);
+    if (!decision.ok) return;
+
+    const stripped = structuredClone(decision.document) as { routes: Record<string, unknown>[] };
+    delete (stripped.routes[0] as Record<string, unknown>)['approval'];
+    delete (stripped as Record<string, unknown>)['note'];
+
+    const created = TranslationRouteRegistry.fromDocument(stripped);
+    expect(created.ok).toBe(false);
+    expect(
+      created.ok === false && created.problems.some((problem) => problem.path.endsWith('.approval')),
+    ).toBe(true);
+  });
+});
+
+/**
+ * EVIDENCE THAT IS COLLECTED HAS TO BE CHECKED.
+ *
+ * `model` was demanded, stored and compared to nothing, so a block naming
+ * opus-mt-en-fr could approve en->yo. `score` was unconstrained, so a review
+ * that scored 0 out of 8 approved a route. Both refusals live in validate.ts,
+ * which is what production reads, so they hold for a hand-edited document as
+ * well as for one this tool wrote -- these tests drive them through the tool.
+ */
+describe('a review must be a review of THIS model, and must have passed its own bar', () => {
+  it('refuses a review that names a different model from the record', () => {
+    const decision = promoteRoute(
+      documentOf(promotable({ sourceLanguage: 'en', targetLanguage: 'yo', modelId: 'Helsinki-NLP/opus-mt-en-alv' })),
+      request({ targetLanguage: 'yo' }),
+    );
+    expect(decision.ok).toBe(false);
+    expect(paths(decision)).toContain('routes[0].reviewEvidence.model');
+  });
+
+  it('refuses a score of zero against a scale that tops out at eight', () => {
+    const decision = promoteRoute(
+      documentOf(promotable()),
+      request({ reviewEvidence: { ...REVIEW, score: 0 } }),
+    );
+    expect(decision.ok).toBe(false);
+    expect(paths(decision)).toContain('routes[0].reviewEvidence.score');
+  });
+
+  it('refuses a score that did not reach the threshold its own method sets', () => {
+    const decision = promoteRoute(
+      documentOf(promotable()),
+      request({ reviewEvidence: { ...REVIEW, score: 6, passThreshold: 7 } }),
+    );
+    expect(decision.ok).toBe(false);
+    expect(paths(decision)).toContain('routes[0].reviewEvidence.score');
+  });
+
+  it('refuses a score above the scale it claims to be on', () => {
+    const decision = promoteRoute(
+      documentOf(promotable()),
+      request({ reviewEvidence: { ...REVIEW, score: 9 } }),
+    );
+    expect(decision.ok).toBe(false);
+    expect(paths(decision)).toContain('routes[0].reviewEvidence.score');
+  });
+
+  it('refuses a threshold that passes everything', () => {
+    const decision = promoteRoute(
+      documentOf(promotable()),
+      request({ reviewEvidence: { ...REVIEW, passThreshold: 0 } }),
+    );
+    expect(decision.ok).toBe(false);
+    expect(paths(decision)).toContain('routes[0].reviewEvidence.passThreshold');
   });
 });

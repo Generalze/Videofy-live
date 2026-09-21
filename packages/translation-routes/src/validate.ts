@@ -47,8 +47,10 @@ import {
   type ExecutionClass,
   type HumanReviewStatus,
   type LicenceStatus,
+  type RouteApprovalRecord,
   type RouteReviewEvidence,
   type ScopeApproval,
+  type SupersededReview,
   type ServiceScope,
   type TechnicalEvidence,
   type TranslationRouteRecord,
@@ -92,6 +94,8 @@ const RECORD_FIELDS = [
   'technicalEvidence',
   'humanReviewStatus',
   'reviewEvidence',
+  'reviewHistory',
+  'approval',
   'licenceStatus',
   'serviceScopes',
 ] as const;
@@ -122,11 +126,22 @@ const REVIEW_EVIDENCE_FIELDS = [
   'method',
   'score',
   'scale',
+  'scaleMaximum',
+  'passThreshold',
   'evidenceReference',
 ];
+const REVIEW_EVIDENCE_NUMBER_FIELDS = ['score', 'scaleMaximum', 'passThreshold'];
 const REVIEW_EVIDENCE_TEXT_FIELDS = REVIEW_EVIDENCE_FIELDS.filter(
-  (field) => field !== 'score' && field !== 'assessedAt',
+  (field) => !REVIEW_EVIDENCE_NUMBER_FIELDS.includes(field) && field !== 'assessedAt',
 );
+const APPROVAL_FIELDS = ['approvedBy', 'approvedAt', 'scopes'];
+const SUPERSEDED_REVIEW_FIELDS = [
+  'status',
+  'supersededAt',
+  'supersededBy',
+  'reason',
+  'evidence',
+];
 const LATENCY_FIELDS = ['min', 'median', 'mean', 'max'];
 const LICENCE_FIELDS = ['licence', 'commercialUse', 'evidence'];
 
@@ -313,10 +328,48 @@ function parseReviewEvidence(
     log.add(`${path}.assessedAt`, 'must be an ISO-8601 timestamp');
     sound = false;
   }
+  /*
+   * THE NUMBERS HAVE TO MEAN SOMETHING.
+   *
+   * `score` used to be any finite number against a free-text `scale`, so `0`
+   * against "materially correct out of 8" recorded a review that found the
+   * output wrong and read as a pass. A number with no stated range cannot be
+   * checked by anything, so the range is stated as numbers too: floor 0,
+   * `scaleMaximum` the best attainable, `passThreshold` the bar this method
+   * sets. Whether the score CLEARS that bar is an approval rule rather than a
+   * shape rule -- a FAILED review is a real review and must stay recordable,
+   * with the low score that makes it one -- so it lives in applyApprovalRules.
+   */
   const score = value['score'];
-  if (!isFiniteNumber(score)) {
-    log.add(`${path}.score`, 'must be a finite number, on the scale `scale` names');
+  const scaleMaximum = value['scaleMaximum'];
+  const passThreshold = value['passThreshold'];
+  for (const field of REVIEW_EVIDENCE_NUMBER_FIELDS) {
+    if (!isFiniteNumber(value[field])) {
+      log.add(`${path}.${field}`, 'must be a finite number');
+      sound = false;
+    }
+  }
+  if (isFiniteNumber(scaleMaximum) && !(scaleMaximum > 0)) {
+    log.add(`${path}.scaleMaximum`, 'must be above zero; a scale with no top cannot be scored against');
     sound = false;
+  }
+  if (isFiniteNumber(scaleMaximum) && scaleMaximum > 0) {
+    if (isFiniteNumber(score) && (score < 0 || score > scaleMaximum)) {
+      log.add(
+        `${path}.score`,
+        `is ${score}, which is outside its own scale of 0 to ${scaleMaximum}; higher is better ` +
+          'and a method that runs the other way records its complement',
+      );
+      sound = false;
+    }
+    if (isFiniteNumber(passThreshold) && (!(passThreshold > 0) || passThreshold > scaleMaximum)) {
+      log.add(
+        `${path}.passThreshold`,
+        `is ${passThreshold}, which is not a bar on a scale of 0 to ${scaleMaximum}; a threshold ` +
+          'of zero or less passes everything, which is not a threshold',
+      );
+      sound = false;
+    }
   }
   if (!sound) return null;
   return {
@@ -330,8 +383,124 @@ function parseReviewEvidence(
     method: value['method'] as string,
     score: score as number,
     scale: value['scale'] as string,
+    scaleMaximum: scaleMaximum as number,
+    passThreshold: passThreshold as number,
     evidenceReference: value['evidenceReference'] as string,
   };
+}
+
+/**
+ * WHO APPROVED IT. Parsed the same way as everything else: present and wrong is
+ * `null` and already logged, absent is `undefined`, and whether it is ALLOWED to
+ * be absent is an approval rule rather than a shape rule.
+ */
+function parseApproval(
+  log: ProblemLog,
+  path: string,
+  value: unknown,
+): RouteApprovalRecord | null | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecordObject(value)) {
+    log.add(path, 'when present must be an object naming approvedBy, approvedAt and scopes');
+    return null;
+  }
+  log.rejectBillingFields(path, value);
+  let sound = true;
+  for (const key of Object.keys(value)) {
+    if (!APPROVAL_FIELDS.includes(key)) {
+      log.add(`${path}.${key}`, 'unknown field');
+      sound = false;
+    }
+  }
+  const approvedBy = value['approvedBy'];
+  const approvedAt = value['approvedAt'];
+  const scopes = value['scopes'];
+  if (!isNonEmptyString(approvedBy)) {
+    log.add(`${path}.approvedBy`, 'must name who performed the approval; an unattributed decision is not auditable');
+    sound = false;
+  }
+  if (!isNonEmptyString(approvedAt) || Number.isNaN(Date.parse(approvedAt))) {
+    log.add(`${path}.approvedAt`, 'must be an ISO-8601 timestamp');
+    sound = false;
+  }
+  if (
+    !Array.isArray(scopes) ||
+    scopes.length === 0 ||
+    !scopes.every((scope) => (SERVICE_SCOPES as readonly unknown[]).includes(scope))
+  ) {
+    log.add(`${path}.scopes`, `must name at least one of ${SERVICE_SCOPES.join(', ')}`);
+    sound = false;
+  }
+  if (!sound) return null;
+  return {
+    approvedBy: approvedBy as string,
+    approvedAt: approvedAt as string,
+    scopes: scopes as readonly ServiceScope[],
+  };
+}
+
+/** Reviews this record used to carry. Kept because a `failed` one is evidence. */
+function parseReviewHistory(
+  log: ProblemLog,
+  path: string,
+  value: unknown,
+): readonly SupersededReview[] | null | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    log.add(path, 'when present must be an array of superseded reviews');
+    return null;
+  }
+  const entries: SupersededReview[] = [];
+  let sound = true;
+  value.forEach((raw, index) => {
+    const where = `${path}[${index}]`;
+    if (!isRecordObject(raw)) {
+      log.add(where, 'must be an object');
+      sound = false;
+      return;
+    }
+    log.rejectBillingFields(where, raw);
+    for (const key of Object.keys(raw)) {
+      if (!SUPERSEDED_REVIEW_FIELDS.includes(key)) {
+        log.add(`${where}.${key}`, 'unknown field');
+        sound = false;
+      }
+    }
+    const status = raw['status'];
+    const supersededAt = raw['supersededAt'];
+    const supersededBy = raw['supersededBy'];
+    const reason = raw['reason'];
+    if (!HUMAN_REVIEW_STATUSES.includes(status as HumanReviewStatus)) {
+      log.add(`${where}.status`, `must be one of ${HUMAN_REVIEW_STATUSES.join(', ')}`);
+      sound = false;
+    }
+    if (!isNonEmptyString(supersededAt) || Number.isNaN(Date.parse(supersededAt))) {
+      log.add(`${where}.supersededAt`, 'must be an ISO-8601 timestamp');
+      sound = false;
+    }
+    if (!isNonEmptyString(supersededBy)) {
+      log.add(`${where}.supersededBy`, 'must name who superseded it');
+      sound = false;
+    }
+    if (!isNonEmptyString(reason)) {
+      log.add(`${where}.reason`, 'must say why the earlier review no longer stands');
+      sound = false;
+    }
+    const evidence = parseReviewEvidence(log, `${where}.evidence`, raw['evidence']);
+    if (evidence === null) {
+      sound = false;
+      return;
+    }
+    if (!sound) return;
+    const entry: SupersededReview = {
+      status: status as HumanReviewStatus,
+      supersededAt: supersededAt as string,
+      supersededBy: supersededBy as string,
+      reason: reason as string,
+    };
+    entries.push(evidence === undefined ? entry : { ...entry, evidence });
+  });
+  return sound ? entries : null;
 }
 
 function parseLicence(log: ProblemLog, path: string, value: unknown): LicenceStatus | null {
@@ -443,6 +612,78 @@ function applyApprovalRules(
       `${path}.provider`,
       `is "${UNASSIGNED_PROVIDER}"; a direction with no model behind it cannot be approved`,
     );
+  }
+
+  /*
+   * A REVIEW OF ANOTHER MODEL IS NOT A REVIEW OF THIS ONE.
+   *
+   * `model`, `modelVersion` and `corpusVersion` were demanded, stored and
+   * compared to nothing, so a block naming Helsinki-NLP/opus-mt-en-fr could
+   * approve en->yo -- the exact conflation this package exists to prevent, at
+   * field level. `model` is the one of the three the record can check for
+   * itself, so it is checked here rather than described in a docblock. The
+   * other two are what makes a review checkable later, and staleness against
+   * what is RUNNING is answered where the running version is known
+   * (`reviewedQualityFor` in @videofy-live/programme-quality).
+   */
+  if (record.reviewEvidence !== undefined && record.reviewEvidence.model !== record.modelId) {
+    log.add(
+      `${path}.reviewEvidence.model`,
+      `is "${record.reviewEvidence.model}" on a record whose modelId is "${record.modelId}". ` +
+        'A review of one model establishes nothing about another; read the output of the model ' +
+        'this record names, or correct the record.',
+    );
+  }
+
+  /*
+   * A REVIEW THAT DID NOT MEET ITS OWN BAR IS NOT A PASS. The block states the
+   * scale and the threshold in numbers precisely so this can be checked; a
+   * score of 0 out of 8 recorded as `passed` used to switch a route on.
+   */
+  if (
+    record.humanReviewStatus === 'passed' &&
+    record.reviewEvidence !== undefined &&
+    record.reviewEvidence.score < record.reviewEvidence.passThreshold
+  ) {
+    log.add(
+      `${path}.reviewEvidence.score`,
+      `is ${record.reviewEvidence.score} against a passThreshold of ` +
+        `${record.reviewEvidence.passThreshold} on a review recorded as "passed". A review that ` +
+        'did not meet the bar its own method sets is a failure, whatever the status says.',
+    );
+  }
+
+  /*
+   * WHO SIGNED IT. The audit line in `note` is prose and optional: a reviewer
+   * deleted it and the approval stayed live, signed by nobody. An approval that
+   * survives its own provenance is an anonymous approval with extra steps, so
+   * the provenance is a field and this is what makes it mandatory.
+   *
+   * Keyed on an APPROVED SCOPE rather than on `productionApproved`, because a
+   * scope is what actually lets a translation run: `productionApproved` with
+   * nothing approved grants nothing, and the rule above already refuses an
+   * approved scope on a record that is not production-approved. So every
+   * record that can serve a single translation is covered, and a record that
+   * cannot is not made to name somebody for a permission it does not hold.
+   */
+  if (approvedScopes.length > 0) {
+    if (record.approval === undefined) {
+      log.add(
+        `${path}.approval`,
+        'is missing on an approved route: record who approved it, when, and which scopes. ' +
+          'An approval nobody signed is not auditable, and a note can be deleted.',
+      );
+    } else {
+      for (const scope of approvedScopes) {
+        if (!record.approval.scopes.includes(scope)) {
+          log.add(
+            `${path}.approval.scopes`,
+            `does not name "${scope}", which is approved. The record of the act has to cover ` +
+              'every scope the act opened.',
+          );
+        }
+      }
+    }
   }
 
   for (const scope of approvedScopes) {
@@ -571,8 +812,19 @@ function parseRoute(
   const licence = parseLicence(log, `${path}.licenceStatus`, value['licenceStatus']);
   const scopes = parseScopes(log, `${path}.serviceScopes`, value['serviceScopes']);
   const review = parseReviewEvidence(log, `${path}.reviewEvidence`, value['reviewEvidence']);
+  const history = parseReviewHistory(log, `${path}.reviewHistory`, value['reviewHistory']);
+  const approval = parseApproval(log, `${path}.approval`, value['approval']);
 
-  if (!sound || licence === null || scopes === null || review === null) return null;
+  if (
+    !sound ||
+    licence === null ||
+    scopes === null ||
+    review === null ||
+    history === null ||
+    approval === null
+  ) {
+    return null;
+  }
 
   const record: TranslationRouteRecord = {
     sourceLanguage: normaliseLanguageTag(sourceLanguage as string),
@@ -589,6 +841,8 @@ function parseRoute(
   // exactOptionalPropertyTypes: ABSENT, never present-and-undefined, so an
   // unreviewed record does not carry a key that reads as an empty review.
   if (review !== undefined) record.reviewEvidence = review;
+  if (history !== undefined) record.reviewHistory = history;
+  if (approval !== undefined) record.approval = approval;
 
   applyApprovalRules(log, path, record, reviewRequired);
   return record;

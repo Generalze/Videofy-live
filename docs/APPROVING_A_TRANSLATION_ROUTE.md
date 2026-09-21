@@ -23,29 +23,66 @@ replaced that.
 
 ## The command
 
+This one works, verbatim, against `en->fr` as the shipped seed records it
+today. It carries the licence flags because every route in the seed records
+`commercialUse: "unknown"` deliberately — nobody has read the Apache-2.0
+*obligations* — so a command without them cannot approve anything that exists.
+
 ```sh
 npm run routes:approve -- approve \
+  --document "$TRANSLATION_ROUTES_DOCUMENT" \
   --source en --target fr \
   --scope messaging \
   --approver "Zoe Meak" \
+  --licence-commercial-use permitted \
+  --licence-evidence "Apache-2.0 obligations read in full, 2026-09-21: LICENSE and NOTICE carried in docs/licences/opus-mt.md" \
   --review-engine opus-mt \
   --review-model Helsinki-NLP/opus-mt-en-fr \
-  --review-model-version 3f9a1c2 \
-  --review-corpus-hash sha256:9f2c… \
+  --review-model-version dd7f654 \
+  --review-corpus-hash sha256:9f2c1b \
   --review-corpus-version 2026-09-01 \
-  --review-evaluator "name of the person who read it" \
+  --review-evaluator "Marie D., French speaker" \
   --review-assessed-at 2026-09-19T09:00:00Z \
-  --review-method "read all eight chat lines against the source" \
+  --review-method "read all eight certification chat lines against their source" \
   --review-score 8 \
   --review-scale "sentences materially correct out of 8" \
+  --review-scale-maximum 8 \
+  --review-pass-threshold 7 \
   --review-reference docs/reviews/en-fr-2026-09-19.md
 ```
 
-`--dry-run` prints the answer and writes nothing. `--document <path>` acts on a
-document other than the one in force. With neither, the command reads whatever
-`TRANSLATION_ROUTES_DOCUMENT` names, and the shipped seed when that is unset —
-the same resolution every service uses, so you are always editing the file
-production reads.
+`--review-model` must name the record's own `modelId`. A review of one model
+establishes nothing about another, and until 2026-09-21 that field was
+collected and compared to nothing, so a block naming `opus-mt-en-fr` could
+approve `en->yo`.
+
+### Which file it edits
+
+**Reading** falls back the way every service resolves the document: `--document`,
+then `TRANSLATION_ROUTES_DOCUMENT`, then the shipped seed. `show` uses it as it
+stands.
+
+**Writing never falls back.** A write names its target in the command that makes
+it: `--document <path>`, or `--write-shipped-seed` to edit
+`packages/translation-routes/routes/translation-routes.seed.json` on purpose.
+Leaving it out used to mean an approval meant for one deployment was written
+into source control, with no confirmation and no distinction between the file
+being read and the file being written — and on a box with the variable unset,
+that same file *is* the live document.
+
+Every run that writes, or would write, prints the **absolute path** first,
+including under `--dry-run`:
+
+```
+Document: /srv/videofy/config/translation-routes.json (explicit)
+en->fr is now approved for messaging.
+Written and re-validated (48550 bytes) to /srv/videofy/config/translation-routes.json.
+```
+
+`--dry-run` takes **every decision the real run takes** — the evidence bar, the
+whole-document check, the target check and the compare-and-swap — and stops
+before the first byte. It cannot report success for something the real command
+refuses.
 
 **A restart is required.** The document is read once, at boot, by the account
 service, media-ingest and the realtime gateway. The command says so when it
@@ -64,8 +101,9 @@ once rather than one per attempt. The refusal is the specification.
 | A **licence** whose commercial use is `permitted` | NLLB-200 is CC-BY-NC-4.0 and covers more languages than anything else here. Reach we may not sell is not reach. |
 | A **human review that PASSED**, with the block filled in | Yoruba, Hausa and Igbo came back HTTP 200 with fluent, confident, wrong output and every server-side signal said fine. Availability and latency cannot tell you whether the output is right. |
 | A **named evaluator** | So a judgement can be checked later, and so a stale one is visible instead of inherited when the model or corpus moves on. |
-| A **model version and corpus hash** | A renamed corpus is not a new one. |
-| An **approver** | A decision nobody signed is not auditable. |
+| A **model version and corpus hash**, and a `--review-model` that matches the record | A renamed corpus is not a new one, and a review of another model is not a review of this one. |
+| A **score, a scale maximum and a pass threshold**, as numbers | Prose cannot be checked. `--review-score 0 --review-scale "materially correct out of 8"` used to record a review that scored **zero** as `passed` and switch translation on. The convention is fixed: floor 0, higher is better, and a method whose natural scale runs the other way records its complement. |
+| An **approver** | A decision nobody signed is not auditable — and it is now a field, not a sentence. |
 
 **Human review is demanded for every language, not only for `yo`, `ha`, `ig`
 and `pcm`.** Those four are the ones the *document* will not load without; the
@@ -76,13 +114,26 @@ certification lane found `fr->en` returning *"On se voit demain matin."* as
 *"I'll see you in the morning."* The day is gone. A language nobody has checked
 is not a language known to be fine.
 
-If the promoter is also the person who read the licence obligations, the same
-act can record that:
+---
 
-```sh
-  --licence-commercial-use permitted \
-  --licence-evidence "LICENSE read in full, 2026-09-19, model card §4"
+## Who approved it is a field, not a sentence
+
+Every approval writes `approval` onto the record: `approvedBy`, `approvedAt`,
+and the scopes it covers. The validator refuses an approved scope that is not
+covered by one, so an approval cannot outlive its own provenance.
+
+```json
+"approval": {
+  "approvedBy": "Zoe Meak",
+  "approvedAt": "2026-09-21T09:00:00Z",
+  "scopes": ["messaging"]
+}
 ```
+
+The dated line in the document's `note` is still written, and is still the
+thing to read top to bottom. It is no longer the only trace: `note` is optional
+and free text, and deleting it used to leave a live approval signed by nobody,
+with every gate and report silent.
 
 ---
 
@@ -108,18 +159,47 @@ messaging would record an approval it can never act on.
 
 ---
 
+## Overturning a review that FAILED
+
+A recorded `humanReviewStatus: "failed"` is a named speaker of the language
+having read the output and said it is wrong. It is the strongest thing this
+document can carry, and it used to be the cheapest thing in it to erase: an
+ordinary `approve` overwrote the verdict, the score and the reference to the
+reviewer's working, and the audit line did not say a review had failed.
+
+It now costs at least what a refused scope costs, and the finding is kept:
+
+```sh
+  --overturn-failed-review "a second named speaker re-read all eight and passed them"
+```
+
+The superseded review moves to `reviewHistory` on the record — its status, its
+evidence block, who superseded it, when, and why — and the note says
+`OVERTURNS A FAILED HUMAN REVIEW`. Somebody reading this file in six months can
+see that a speaker said no, and who decided otherwise.
+
+---
+
 ## Turning one off
 
 ```sh
-npm run routes:approve -- revoke --source en --target fr --all --approver "you"
+npm run routes:approve -- revoke \
+  --document "$TRANSLATION_ROUTES_DOCUMENT" \
+  --source en --target fr --all \
+  --approver "you" --reason "it is corrupting phone numbers"
 ```
 
 **Revocation demands nothing.** No evidence, no review, no reason, no
-`--dry-run` first. It works on a document that is currently invalid. An
-approval you cannot withdraw is worse than no approval: the first time a live
-route is found corrupting phone numbers, the person turning it off is doing it
-under pressure and possibly at two in the morning, and a bar on taking
-something *away* would be the bar working backwards.
+`--dry-run` first. **And it works on a document that is currently invalid**, end
+to end — not merely in the decision, which is where that promise used to stop.
+Every write went through a bar that re-validated the whole document, so a stray
+field in an unrelated record made a live approval impossible to withdraw, while
+the running service — which read the registry once, at boot — kept translating.
+An invalid file never stopped a live route. It only stopped you turning one off.
+
+A withdrawal is held to **no worse than it already was**: it may leave the
+problems the document already had, and may not introduce one. A promotion is
+still held to the whole document loading, whole.
 
 `--scope <scope>` withdraws one service and leaves the others. `--refuse`
 records "decided against" rather than "not yet", so the next person does not
@@ -135,28 +215,34 @@ When the last scope goes, `productionApproved` goes with it.
 - **It refuses before it writes.** An unknown flag, a missing value, an
   unreadable document, missing evidence, a direction nobody has written down —
   all stop with a non-zero exit code and nothing touched.
-- **It will not edit a document that is already invalid.** You would otherwise
-  read the resulting failure as something your edit caused.
-- **It validates the whole document after the change, before any byte is
-  written.** A promotion that would stop the registry loading is refused with
-  the field named, rather than discovered at the next boot.
+- **It will not edit a document that is already invalid** *to promote* into it.
+  You would otherwise read the resulting failure as something your edit caused.
+  A withdrawal is the deliberate exception, above.
+- **It checks the whole document after the change, before any byte is
+  written**, at the bar the act calls for.
+- **It refuses to write over somebody else's decision.** The bytes on disk are
+  compared with the bytes the decision was read from, and a write that would go
+  over a change made in between is refused, naming what changed. Without that,
+  an emergency revocation could be erased minutes later by a slower routine
+  approval, with both commands reporting success.
 - **It writes atomically**: a temporary file in the same directory, fsync,
   rename. Interruption at any point before the rename leaves the original
   exactly as it was.
-- **It reads the file back off disk and validates it again**, and restores the
-  previous document if that fails. A short write and a full disk both look like
-  success to the call that made them.
+- **It reads the file back off disk and checks it again**, and restores the
+  previous document if that fails — by the same temp-fsync-rename route, and
+  **reading the restored bytes back before saying so**. A success message is a
+  claim; this one is verified before it is printed.
 - **It is idempotent** and says plainly when it changed nothing.
-- **It records the act in the document**, as a dated line naming the approver,
-  the direction, the scopes and who performed the review.
+- **It records the act in the record and in the document's note.**
 
 ---
 
 ## Where the decision lives afterwards
 
-In `packages/translation-routes/routes/translation-routes.seed.json` (or
-whatever `TRANSLATION_ROUTES_DOCUMENT` names), in the record itself and in the
-document's `note`.
+In whatever `--document` named (or the shipped seed, if you said
+`--write-shipped-seed`): in the record's `approval`, `humanReviewStatus`,
+`reviewEvidence`, `reviewHistory` and `serviceScopes`, and in the document's
+`note`.
 
 **One caution.** Re-running `scripts/certify/build-route-document.mjs`
 regenerates the shipped seed from measurements and will overwrite approvals and

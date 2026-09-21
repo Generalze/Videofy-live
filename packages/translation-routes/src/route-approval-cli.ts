@@ -25,12 +25,31 @@
  * document, a promotion that would produce a document the validator rejects --
  * all of them stop before a byte is written, with a non-zero exit code and the
  * field named.
+ *
+ * A WRITE NAMES ITS TARGET. Reading resolves the way every service resolves
+ * it; writing does not fall back, because the tail of that fallback is the
+ * document this repository SHIPS. `--document <path>`, or
+ * `--write-shipped-seed` said on purpose, and the absolute path is printed
+ * before anything else happens.
+ *
+ * APPROVING AND WITHDRAWING ARE NOT SYMMETRICAL, DELIBERATELY. An approval must
+ * leave a document that loads, whole. A withdrawal must leave one no worse than
+ * it found it -- a stray field in an unrelated record must never be what stops
+ * somebody turning a live route off at two in the morning. `--dry-run` goes
+ * through the same writer with the same bar, so a rehearsal cannot promise an
+ * outcome the real command refuses.
  */
 import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { resolveDocumentSource, type LoadOptions } from './document-file.js';
-import { writeRouteDocumentAtomically } from './document-write.js';
+import {
+  ROUTE_DOCUMENT_PATH_ENV_VAR,
+  SEED_DOCUMENT_PATH,
+  resolveDocumentSource,
+  type LoadOptions,
+} from './document-file.js';
+import { writeRouteDocumentAtomically, type WriteBar } from './document-write.js';
 import {
   promoteRoute,
   revokeRoute,
@@ -59,7 +78,16 @@ const REVIEW_FLAGS: Readonly<Record<string, keyof RouteReviewEvidence>> = {
   '--review-method': 'method',
   '--review-score': 'score',
   '--review-scale': 'scale',
+  '--review-scale-maximum': 'scaleMaximum',
+  '--review-pass-threshold': 'passThreshold',
   '--review-reference': 'evidenceReference',
+};
+
+/** The three the review block states as numbers, so they can be checked. */
+const NUMERIC_REVIEW_FLAGS: Readonly<Record<string, keyof RouteReviewEvidence>> = {
+  '--review-score': 'score',
+  '--review-scale-maximum': 'scaleMaximum',
+  '--review-pass-threshold': 'passThreshold',
 };
 
 const VALUE_FLAGS = new Set([
@@ -73,11 +101,19 @@ const VALUE_FLAGS = new Set([
   '--licence-commercial-use',
   '--licence-evidence',
   '--overturn-refusal',
+  '--overturn-failed-review',
   '--reason',
   ...Object.keys(REVIEW_FLAGS),
 ]);
 
-const BARE_FLAGS = new Set(['--all', '--refuse', '--dry-run', '--help', '-h']);
+const BARE_FLAGS = new Set([
+  '--all',
+  '--refuse',
+  '--dry-run',
+  '--write-shipped-seed',
+  '--help',
+  '-h',
+]);
 
 interface Parsed {
   readonly command: string;
@@ -139,10 +175,19 @@ function collectScopes(parsed: Parsed): ServiceScope[] | string {
 function collectReviewEvidence(parsed: Parsed): RouteReviewEvidence | undefined | string {
   const supplied = Object.keys(REVIEW_FLAGS).filter((flag) => parsed.values.has(flag));
   if (supplied.length === 0) return undefined;
-  const score = single(parsed, '--review-score');
-  const parsedScore = score === undefined ? Number.NaN : Number(score);
-  if (!Number.isFinite(parsedScore)) {
-    return '--review-score must be a number, on the scale --review-scale names.';
+  const numbers = new Map<string, number>();
+  for (const flag of Object.keys(NUMERIC_REVIEW_FLAGS)) {
+    const raw = single(parsed, flag);
+    const value = raw === undefined ? Number.NaN : Number(raw);
+    if (!Number.isFinite(value)) {
+      return (
+        `${flag} must be a number. A review states its scale as numbers -- the score, the best ` +
+        'attainable score (--review-scale-maximum) and the bar its method sets ' +
+        '(--review-pass-threshold) -- because prose cannot be checked, and a score of 0 out of 8 ' +
+        'used to read as a pass.'
+      );
+    }
+    numbers.set(flag, value);
   }
   const text = (flag: string): string => single(parsed, flag) ?? '';
   return {
@@ -154,8 +199,10 @@ function collectReviewEvidence(parsed: Parsed): RouteReviewEvidence | undefined 
     evaluator: text('--review-evaluator'),
     assessedAt: text('--review-assessed-at'),
     method: text('--review-method'),
-    score: parsedScore,
+    score: numbers.get('--review-score') as number,
     scale: text('--review-scale'),
+    scaleMaximum: numbers.get('--review-scale-maximum') as number,
+    passThreshold: numbers.get('--review-pass-threshold') as number,
     evidenceReference: text('--review-reference'),
   };
 }
@@ -188,23 +235,33 @@ const USAGE = `translation route approval
 
   approve  --source <tag> --target <tag> --scope <scope> [--scope <scope>]
            --approver <name> [--at <iso>]
-           [--review-engine ... --review-model ... --review-model-version ...
-            --review-corpus-hash ... --review-corpus-version ...
-            --review-evaluator ... --review-assessed-at <iso>
-            --review-method ... --review-score <n> --review-scale ...
+           [--review-engine ... --review-model <the record's modelId>
+            --review-model-version ... --review-corpus-hash ...
+            --review-corpus-version ... --review-evaluator ...
+            --review-assessed-at <iso> --review-method ...
+            --review-score <n> --review-scale <what was counted>
+            --review-scale-maximum <n> --review-pass-threshold <n>
             --review-reference ...]
            [--licence <id>] [--licence-commercial-use permitted|restricted|unknown]
            [--licence-evidence <where it was read>]
-           [--overturn-refusal <reason>] [--document <path>] [--dry-run]
+           [--overturn-refusal <reason>] [--overturn-failed-review <reason>]
+           (--document <path> | --write-shipped-seed) [--dry-run]
 
   revoke   --source <tag> --target <tag> (--scope <scope> ... | --all)
            --approver <name> [--at <iso>] [--reason <why>] [--refuse]
-           [--document <path>] [--dry-run]
+           (--document <path> | --write-shipped-seed) [--dry-run]
 
   show     [--document <path>]
 
 Scopes: ${SERVICE_SCOPES.join(', ')}. Approval for one is never approval for
-another. Revocation demands no evidence and is always allowed.
+another. Revocation demands no evidence, tolerates a document that is already
+invalid, and is always allowed.
+
+READING falls back to ${ROUTE_DOCUMENT_PATH_ENV_VAR} and then to the shipped
+seed. WRITING never does: a write names its target in the command that makes
+it -- --document <path>, or --write-shipped-seed to edit the file this
+repository ships. Every run that writes, or would write, prints the absolute
+path first.
 `;
 
 function showDocument(document: unknown): number {
@@ -245,6 +302,41 @@ export function runRouteApprovalCli(argv: readonly string[]): number {
   const explicit = single(parsed, '--document');
   const loadOptions: LoadOptions = explicit === undefined ? {} : { path: explicit };
   const source = resolveDocumentSource(loadOptions);
+  const writes = parsed.command !== 'show';
+
+  /*
+   * THE DEFAULT WRITE TARGET IS NOT THE FILE THIS REPOSITORY SHIPS.
+   *
+   * Reading keeps the resolution order every service uses, which is right:
+   * `show` should tell you about the document in force. Writing does not,
+   * because the tail of that order is the git-tracked seed. With one flag
+   * forgotten, an approval meant for one deployment landed in source control
+   * and shipped to every deployment -- no confirmation, no distinction between
+   * the file being read and the file being written. A dry run is refused here
+   * too: a rehearsal that answers a different question from the real command is
+   * how an operator learns the wrong thing.
+   */
+  const seedOnPurpose = source.origin === 'seed' && parsed.flags.has('--write-shipped-seed');
+  if (writes && source.origin !== 'explicit' && !seedOnPurpose) {
+    process.stderr.write(
+      source.origin === 'seed'
+        ? 'REFUSED. Nothing was written. With no --document and no ' +
+            `${ROUTE_DOCUMENT_PATH_ENV_VAR}, this would write to the document this repository ` +
+            `SHIPS:\n\n  ${resolve(SEED_DOCUMENT_PATH)}\n\n` +
+            'That file is source-controlled and every deployment that configures nothing falls ' +
+            'back to it, so an approval meant for one box would ship to all of them. Name the ' +
+            'document with --document <path>, or say --write-shipped-seed if editing the ' +
+            'shipped seed is genuinely what you mean.\n'
+        : // The variable NAME, never its value: that rule is document-file.ts's
+          // and it holds here, because this command was not told the path.
+          `REFUSED. Nothing was written. ${ROUTE_DOCUMENT_PATH_ENV_VAR} names the document in ` +
+            'force, and reading falls back to it, but a write names its target in the command ' +
+            'that makes it. Say which file you mean:\n\n' +
+            `  --document "$${ROUTE_DOCUMENT_PATH_ENV_VAR}"\n`,
+    );
+    return 1;
+  }
+
   let originalText: string;
   try {
     originalText = readFileSync(source.path, 'utf8');
@@ -266,6 +358,19 @@ export function runRouteApprovalCli(argv: readonly string[]): number {
   }
 
   if (parsed.command === 'show') return showDocument(document);
+
+  /*
+   * THE PATH, ABSOLUTE, BEFORE ANYTHING ELSE IS SAID.
+   *
+   * `document-file.ts` prints the ENV VALUE nowhere, on principle. This is the
+   * deliberate exception and it is narrow: an act that edits a file has to name
+   * the file it edits, or "Written and re-validated" can be true of a document
+   * nothing is reading -- the packaged seed inside a deployment while the
+   * service reads the one the environment names. The operator restarts, nothing
+   * changes, and neither the command nor the boot log distinguishes the two.
+   */
+  const documentPath = resolve(source.path);
+  process.stdout.write(`Document: ${documentPath} (${source.origin})\n`);
 
   const sourceLanguage = single(parsed, '--source');
   const targetLanguage = single(parsed, '--target');
@@ -297,6 +402,7 @@ export function runRouteApprovalCli(argv: readonly string[]): number {
       return 1;
     }
     const overturn = single(parsed, '--overturn-refusal');
+    const overturnFailed = single(parsed, '--overturn-failed-review');
     let request: PromotionRequest = {
       sourceLanguage,
       targetLanguage,
@@ -307,6 +413,9 @@ export function runRouteApprovalCli(argv: readonly string[]): number {
     if (review !== undefined) request = { ...request, reviewEvidence: review };
     if (licence !== undefined) request = { ...request, licence };
     if (overturn !== undefined) request = { ...request, overturnRefusalReason: overturn };
+    if (overturnFailed !== undefined) {
+      request = { ...request, overturnFailedReviewReason: overturnFailed };
+    }
     decision = promoteRoute(document, request);
   } else {
     if (scopes.length === 0 && !parsed.flags.has('--all')) {
@@ -337,18 +446,38 @@ export function runRouteApprovalCli(argv: readonly string[]): number {
     process.stdout.write(`${decision.summary}\n`);
     return 0;
   }
-  if (parsed.flags.has('--dry-run')) {
-    process.stdout.write(`DRY RUN, nothing written. Would be true: ${decision.summary}\n`);
-    return 0;
-  }
 
-  const written = writeRouteDocumentAtomically(source.path, decision.document, originalText);
+  /*
+   * THE BAR IS THE OPPOSITE WAY ROUND FOR THE TWO COMMANDS, AND THAT IS THE
+   * POINT. A promotion must produce a document that loads, whole. A withdrawal
+   * must only leave one no worse than it found it -- otherwise a stray field in
+   * an unrelated record makes a live approval impossible to turn off, while the
+   * service keeps translating from the registry it loaded at boot.
+   *
+   * The dry run goes through the SAME call with the same bar, so it cannot
+   * promise an outcome the real command refuses. That was not true before: a
+   * rehearsed revocation reported success and the real one was refused.
+   */
+  const bar: WriteBar = parsed.command === 'revoke' ? 'no-worse-than-before' : 'valid-document';
+  const dryRun = parsed.flags.has('--dry-run');
+  const written = writeRouteDocumentAtomically(source.path, decision.document, originalText, {
+    bar,
+    dryRun,
+  });
   if (!written.ok) {
     report({ ok: false, problems: written.problems });
     return 1;
   }
+  if (!written.written) {
+    process.stdout.write(
+      `DRY RUN, nothing written. Would be true: ${decision.summary}\n` +
+        `Would write ${String(written.bytesWritten)} bytes to ${documentPath}.\n`,
+    );
+    return 0;
+  }
   process.stdout.write(
-    `${decision.summary}\nWritten and re-validated (${String(written.bytesWritten)} bytes). ` +
+    `${decision.summary}\nWritten and re-validated (${String(written.bytesWritten)} bytes) to ` +
+      `${documentPath}. ` +
       'Every service that reads this document must be restarted before it takes effect.\n',
   );
   return 0;

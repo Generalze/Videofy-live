@@ -15,8 +15,21 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { MEASURED, PERMISSIVE_LICENCE, documentOf, route, scopes } from './document.fixtures.js';
-import { serialiseRouteDocument, writeRouteDocumentAtomically } from './document-write.js';
+import {
+  MEASURED,
+  PERMISSIVE_LICENCE,
+  REVIEWED,
+  approvedBy,
+  documentOf,
+  route,
+  scopes,
+} from './document.fixtures.js';
+import {
+  NODE_WRITE_IO,
+  serialiseRouteDocument,
+  writeRouteDocumentAtomically,
+  type WriteIo,
+} from './document-write.js';
 import { parseRouteDocument } from './validate.js';
 
 let directory: string;
@@ -135,5 +148,245 @@ describe('a write that cannot happen leaves the target untouched', () => {
     expect(written.ok).toBe(false);
     expect(contents()).toEqual(['occupied', 'translation-routes.json']);
     expect(readdirSync(occupied)).toEqual([]);
+  });
+});
+
+/**
+ * A ROUTE THAT IS LIVE, IN A DOCUMENT THAT IS BROKEN SOMEWHERE ELSE.
+ *
+ * The situation the withdrawal bar exists for: en->fr approved and serving
+ * users, and an unrelated record carrying a field this package does not know.
+ * The registry loaded at boot, so the service keeps translating; the file no
+ * longer validates, so under one bar for both acts the approval could not be
+ * turned off.
+ */
+function approvedRoute(): Record<string, unknown> {
+  return route({
+    sourceLanguage: 'en',
+    targetLanguage: 'fr',
+    provider: 'opus-mt',
+    productionApproved: true,
+    approval: approvedBy('messaging'),
+    technicalEvidence: { ...MEASURED },
+    humanReviewStatus: 'passed',
+    reviewEvidence: { ...REVIEWED },
+    licenceStatus: { ...PERMISSIVE_LICENCE },
+    serviceScopes: scopes({ messaging: 'approved' }),
+  });
+}
+
+function withdrawn(record: Record<string, unknown>): Record<string, unknown> {
+  return { ...record, productionApproved: false, serviceScopes: scopes() };
+}
+
+/** An unrelated record with a field no version of this package recognises. */
+function strayFielded(): Record<string, unknown> {
+  return route({ sourceLanguage: 'en', targetLanguage: 'es', strayField: 'left by a hand edit' });
+}
+
+describe('a withdrawal is held to "no worse than it already was"', () => {
+  it('writes one into a document that is already invalid elsewhere', () => {
+    const before = serialiseRouteDocument(documentOf(approvedRoute(), strayFielded()));
+    writeFileSync(target, before, 'utf8');
+    const after = documentOf(withdrawn(approvedRoute()), strayFielded());
+
+    // The strict bar -- the one every write used to take -- refuses this, and
+    // that refusal is what left an emergency revocation impossible to perform.
+    expect(writeRouteDocumentAtomically(target, after, before).ok).toBe(false);
+
+    const written = writeRouteDocumentAtomically(target, after, before, {
+      bar: 'no-worse-than-before',
+    });
+    expect(written.ok).toBe(true);
+    const onDisk = JSON.parse(readFileSync(target, 'utf8')) as {
+      routes: { serviceScopes: Record<string, string> }[];
+    };
+    expect(onDisk.routes[0]?.serviceScopes['messaging']).toBe('unapproved');
+  });
+
+  it('still refuses one that would introduce a problem the document did not have', () => {
+    const before = serialiseRouteDocument(documentOf(approvedRoute(), strayFielded()));
+    writeFileSync(target, before, 'utf8');
+    const worse = documentOf(withdrawn(approvedRoute()), {
+      ...strayFielded(),
+      anotherStrayField: true,
+    });
+
+    const written = writeRouteDocumentAtomically(target, worse, before, {
+      bar: 'no-worse-than-before',
+    });
+    expect(written.ok).toBe(false);
+    expect(written.ok === false && written.problems[0]?.message).toContain(
+      'introduce a problem the document did not already have',
+    );
+    expect(
+      written.ok === false &&
+        written.problems.some((entry) => entry.path.includes('anotherStrayField')),
+    ).toBe(true);
+    expect(readFileSync(target, 'utf8')).toBe(before);
+  });
+
+  it('accepts a withdrawal from a document that is not even JSON any more', () => {
+    const rubble = '{ this was hand-edited at 2am';
+    writeFileSync(target, rubble, 'utf8');
+    const written = writeRouteDocumentAtomically(
+      target,
+      documentOf(withdrawn(approvedRoute())),
+      rubble,
+      { bar: 'no-worse-than-before' },
+    );
+    expect(written.ok).toBe(true);
+    expect(parseRouteDocument(JSON.parse(readFileSync(target, 'utf8')) as unknown).ok).toBe(true);
+  });
+});
+
+describe('a write that would go over somebody else’s decision is refused', () => {
+  it('refuses when the file changed after it was read, and says what changed', () => {
+    const read = readFileSync(target, 'utf8');
+    // Somebody else -- the person on call -- wrote in the meantime.
+    const theirs = serialiseRouteDocument(documentOf(approvedRoute()));
+    writeFileSync(target, theirs, 'utf8');
+
+    const written = writeRouteDocumentAtomically(
+      target,
+      documentOf(route({ sourceLanguage: 'en', targetLanguage: 'es' })),
+      read,
+    );
+
+    expect(written.ok).toBe(false);
+    const said =
+      written.ok === false ? written.problems.map((entry) => entry.message).join(' ') : '';
+    expect(said).toContain('changed after this command read it');
+    expect(said).toContain('en->fr');
+    expect(readFileSync(target, 'utf8')).toBe(theirs);
+  });
+});
+
+describe('a dry run takes every decision and writes nothing', () => {
+  it('reports what would be written without touching the file', () => {
+    const before = readFileSync(target, 'utf8');
+    const next = documentOf(route({ sourceLanguage: 'en', targetLanguage: 'es' }));
+    const written = writeRouteDocumentAtomically(target, next, before, { dryRun: true });
+
+    expect(written.ok).toBe(true);
+    expect(written.ok === true && written.written).toBe(false);
+    expect(written.ok === true && written.bytesWritten).toBe(
+      Buffer.byteLength(serialiseRouteDocument(next), 'utf8'),
+    );
+    expect(readFileSync(target, 'utf8')).toBe(before);
+    expect(contents()).toEqual(['translation-routes.json']);
+  });
+
+  it('refuses exactly what the real write refuses, at both bars', () => {
+    const before = serialiseRouteDocument(documentOf(approvedRoute(), strayFielded()));
+    const after = documentOf(withdrawn(approvedRoute()), strayFielded());
+
+    for (const dryRun of [true, false]) {
+      writeFileSync(target, before, 'utf8');
+      expect(
+        writeRouteDocumentAtomically(target, after, before, { dryRun, bar: 'valid-document' }).ok,
+        `strict, dryRun=${String(dryRun)}`,
+      ).toBe(false);
+    }
+    for (const dryRun of [true, false]) {
+      writeFileSync(target, before, 'utf8');
+      expect(
+        writeRouteDocumentAtomically(target, after, before, {
+          dryRun,
+          bar: 'no-worse-than-before',
+        }).ok,
+        `withdrawal, dryRun=${String(dryRun)}`,
+      ).toBe(true);
+    }
+  });
+});
+
+/**
+ * THE PATH THAT ONLY RUNS AFTER SOMETHING HAS ALREADY GONE WRONG.
+ *
+ * Simulated at the filesystem seam rather than by hoping for a full disk: the
+ * bytes land, and then something else truncates them -- which is what a short
+ * write, a full disk and a reordered fsync all look like from here.
+ */
+function truncatingIo(times: number, keep = 40): WriteIo {
+  let remaining = times;
+  return {
+    ...NODE_WRITE_IO,
+    renameSync: (from, to) => {
+      NODE_WRITE_IO.renameSync(from, to);
+      if (remaining > 0) {
+        remaining -= 1;
+        writeFileSync(to, readFileSync(to, 'utf8').slice(0, keep), 'utf8');
+      }
+    },
+  };
+}
+
+describe('when the bytes on disk are not the bytes that were written', () => {
+  it('puts the previous document back, and only then says so', () => {
+    const before = readFileSync(target, 'utf8');
+    const next = documentOf(route({ sourceLanguage: 'en', targetLanguage: 'es' }));
+
+    const written = writeRouteDocumentAtomically(target, next, before, { io: truncatingIo(1) });
+
+    expect(written.ok).toBe(false);
+    const said = written.ok === false ? (written.problems[0]?.message ?? '') : '';
+    expect(said).toContain('does not match what was written');
+    expect(said).toContain('restored, read back and confirmed');
+    // The claim, checked: byte-identical, loadable, and no debris.
+    expect(readFileSync(target, 'utf8')).toBe(before);
+    expect(parseRouteDocument(JSON.parse(readFileSync(target, 'utf8')) as unknown).ok).toBe(true);
+    expect(contents()).toEqual(['translation-routes.json']);
+  });
+
+  it('never reports a restore it has not read back', () => {
+    // The reviewer's finding, exactly: "the previous document has been
+    // restored; nothing has changed" printed over forty bytes of JSON that no
+    // service can load. The restore fails loudly instead.
+    const before = readFileSync(target, 'utf8');
+    const written = writeRouteDocumentAtomically(
+      target,
+      documentOf(route({ sourceLanguage: 'en', targetLanguage: 'es' })),
+      before,
+      { io: truncatingIo(2) },
+    );
+
+    expect(written.ok).toBe(false);
+    const said = written.ok === false ? (written.problems[0]?.message ?? '') : '';
+    expect(said).toContain('COULD NOT BE RESTORED');
+    expect(said).toContain('repaired by hand');
+    expect(said).not.toContain('nothing has changed');
+    expect(readFileSync(target, 'utf8')).not.toBe(before);
+  });
+
+  it('says so when the restore itself cannot be written', () => {
+    const before = readFileSync(target, 'utf8');
+    let renames = 0;
+    const io: WriteIo = {
+      ...NODE_WRITE_IO,
+      renameSync: (from, to) => {
+        renames += 1;
+        if (renames === 1) {
+          NODE_WRITE_IO.renameSync(from, to);
+          writeFileSync(to, 'not the document', 'utf8');
+          return;
+        }
+        throw new Error('the disk is full');
+      },
+    };
+
+    const written = writeRouteDocumentAtomically(
+      target,
+      documentOf(route({ sourceLanguage: 'en', targetLanguage: 'es' })),
+      before,
+      { io },
+    );
+
+    expect(written.ok).toBe(false);
+    expect(written.ok === false && written.problems[0]?.message).toContain('COULD NOT BE RESTORED');
+    expect(written.ok === false && written.problems[0]?.message).toContain('the disk is full');
+    // No half-written temporary file left next to the document for somebody to
+    // find later and mistake for a backup.
+    expect(contents()).toEqual(['translation-routes.json']);
   });
 });

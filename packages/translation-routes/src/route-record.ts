@@ -109,6 +109,13 @@ export interface LicenceStatus {
  */
 export interface RouteReviewEvidence {
   engine: string;
+  /**
+   * The model the reviewer actually read the output of. Must equal the record's
+   * `modelId`: a review of one model says nothing about another, and until
+   * 2026-09-21 this field was collected, stored and compared to nothing, so a
+   * block naming `opus-mt-en-fr` could approve `en->yo`. validate.ts refuses
+   * the mismatch now.
+   */
   model: string;
   modelVersion: string;
   /** Which corpus, by content hash. A renamed corpus is not a new one. */
@@ -121,8 +128,64 @@ export interface RouteReviewEvidence {
   /** The score, on the scale its method defines. */
   score: number;
   scale: string;
+  /**
+   * THE SCALE AS NUMBERS, because prose cannot be checked.
+   *
+   * `scale` says what was counted; these two say what the count means, so a
+   * validator can tell a pass from a failure without reading English. The
+   * convention is fixed and one-directional: the floor is 0, HIGHER IS BETTER,
+   * and `scaleMaximum` is the best attainable score. A method whose natural
+   * scale runs the other way (errors per hundred words) records its complement
+   * and says so in `method`.
+   *
+   * Before these existed, `--review-score 0 --review-scale "materially correct
+   * out of 8"` recorded a review that scored ZERO as PASSED and switched
+   * translation on for real users.
+   */
+  scaleMaximum: number;
+  /** The score at or above which THIS method calls the output usable. */
+  passThreshold: number;
   /** Where the working is kept: a document, a run id, a ticket. */
   evidenceReference: string;
+}
+
+/**
+ * WHO APPROVED THIS ROUTE, AS A FIELD.
+ *
+ * The audit line in `document.note` is prose: optional, free-text, and one
+ * `delete` away from an approval nobody signed. A reviewer demonstrated exactly
+ * that -- the approver's name removed, the approval still live, every gate and
+ * report silent. So provenance is recorded here as well, structurally, and
+ * validate.ts refuses a record that has an approved scope and no `approval`.
+ *
+ * `scopes` is what the recorded act opened. It is allowed to name scopes that
+ * have since been withdrawn: this is the record of a decision, not a grant, and
+ * the grant is `serviceScopes`.
+ */
+export interface RouteApprovalRecord {
+  approvedBy: string;
+  approvedAt: string;
+  scopes: readonly ServiceScope[];
+}
+
+/**
+ * A REVIEW THAT WAS SUPERSEDED, KEPT RATHER THAN OVERWRITTEN.
+ *
+ * `humanReviewStatus` and `reviewEvidence` are one slot, and a promotion used
+ * to overwrite both, so a named speaker of the language recording `failed`
+ * could be erased by the next person to run the command -- verdict, score,
+ * evidence reference and all. Somebody has to be able to read later that a
+ * speaker said no and who decided otherwise, so the old block moves here
+ * instead of being replaced.
+ */
+export interface SupersededReview {
+  /** The status this evidence was recorded under: usually `failed`. */
+  status: HumanReviewStatus;
+  supersededAt: string;
+  supersededBy: string;
+  reason: string;
+  /** The block itself, when the record carried one. */
+  evidence?: RouteReviewEvidence;
 }
 
 /** One direction, one model, one set of per-service decisions. */
@@ -144,6 +207,13 @@ export interface TranslationRouteRecord {
    * unreviewed language to air.
    */
   reviewEvidence?: RouteReviewEvidence;
+  /**
+   * Reviews this record used to carry, oldest first. Append-only in practice:
+   * nothing in this package removes an entry.
+   */
+  reviewHistory?: readonly SupersededReview[];
+  /** Who approved this route, when, and for what. Required once a scope is. */
+  approval?: RouteApprovalRecord;
   licenceStatus: LicenceStatus;
   serviceScopes: Record<ServiceScope, ScopeApproval>;
 }

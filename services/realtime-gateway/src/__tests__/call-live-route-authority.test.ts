@@ -51,6 +51,14 @@ function route(over: Record<string, unknown> = {}): Record<string, unknown> {
     modelId: 'Helsinki-NLP/opus-mt-en-fr',
     executionClass: 'local',
     productionApproved: true,
+    // Who signed it. The document validator refuses an approved scope that
+    // does not say, because a note naming the approver can be deleted and the
+    // approval left standing.
+    approval: {
+      approvedBy: 'a fixture approver',
+      approvedAt: '2026-09-20T12:00:00.000Z',
+      scopes: ['messaging', 'programme-live', 'call-live'],
+    },
     technicalEvidence: MEASURED,
     humanReviewStatus: 'passed',
     licenceStatus: { licence: 'Apache-2.0', commercialUse: 'permitted', evidence: 'fixture' },

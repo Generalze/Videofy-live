@@ -85,6 +85,14 @@ export interface PromotionRequest {
    * say so in as many words -- and overturning one silently would erase it.
    */
   readonly overturnRefusalReason?: string;
+  /**
+   * Required to promote a route whose `humanReviewStatus` is `failed`. At least
+   * the ceremony a refused scope costs, because the signal is stronger: a
+   * refused scope is a policy note, a failed review is a speaker of the
+   * language having read the output. The reason is written into the document
+   * next to the review it supersedes.
+   */
+  readonly overturnFailedReviewReason?: string;
 }
 
 export interface RevocationRequest {
@@ -126,6 +134,8 @@ const REVIEW_EVIDENCE_KEYS = [
   'method',
   'score',
   'scale',
+  'scaleMaximum',
+  'passThreshold',
   'evidenceReference',
 ] as const;
 
@@ -207,14 +217,17 @@ function checkPromotionEvidence(
         'what it recorded.',
     });
   } else {
-    const sampleCount = evidence['sampleCount'];
+    /*
+     * NOT CHECKED HERE: sampleCount. validate.ts:parseEvidence already demands
+     * an integer of at least 1 for ANY evidence block, and promoteRoute refuses
+     * a document that fails validation before it edits anything, so a record
+     * reaching this line with no samples does not exist. The rail was removed
+     * rather than defended with a test that cannot fail -- see the note on the
+     * yo/ha/ig/pcm evaluator rail below. successRate IS checked, because
+     * validate.ts permits 0 (a real measurement of a route that answered
+     * nothing) and approving that is a different question from loading it.
+     */
     const successRate = evidence['successRate'];
-    if (typeof sampleCount !== 'number' || !(sampleCount > 0)) {
-      problems.push({
-        path: `${path}.technicalEvidence.sampleCount`,
-        message: 'must record at least one sample; an empty measurement is not evidence',
-      });
-    }
     if (typeof successRate !== 'number' || !(successRate > 0)) {
       problems.push({
         path: `${path}.technicalEvidence.successRate`,
@@ -241,12 +254,12 @@ function checkPromotionEvidence(
         'licence reading (commercialUse and the source it was read from).',
     });
   }
-  if (licenceAfter !== null && !isNonEmptyString(licenceAfter.evidence)) {
-    problems.push({
-      path: `${path}.licenceStatus.evidence`,
-      message: 'a licence finding must cite where the obligations were read',
-    });
-  }
+  /*
+   * NOT CHECKED HERE: that a licence finding cites its source. The finding is
+   * written into `licenceStatus.evidence`, and validate.ts:parseLicence refuses
+   * a document whose licence does not say where it was read, on the whole
+   * document, before a byte is written. Two rails, one wall.
+   */
 
   /*
    * THE REVIEW. `passed` is the only status that opens a scope here, for every
@@ -270,23 +283,39 @@ function checkPromotionEvidence(
           'latency cannot tell you whether the output is right.',
       });
     }
-  } else {
-    for (const key of REVIEW_EVIDENCE_KEYS) {
-      const value = supplied[key];
-      const bad = key === 'score' ? typeof value !== 'number' : !isNonEmptyString(value);
-      if (bad) {
-        problems.push({
-          path: `${path}.reviewEvidence.${key}`,
-          message: 'is missing; a review that cannot say this is not checkable later',
-        });
-      }
-    }
-    if (isNonEmptyString(supplied.assessedAt) && Number.isNaN(Date.parse(supplied.assessedAt))) {
-      problems.push({
-        path: `${path}.reviewEvidence.assessedAt`,
-        message: 'must be an ISO-8601 timestamp',
-      });
-    }
+  }
+  /*
+   * NOT CHECKED HERE: that a supplied review block is complete, that its
+   * timestamp is a date, that its model matches the record's, or that its score
+   * cleared its own threshold. All four are validate.ts rules
+   * (`parseReviewEvidence` and `applyApprovalRules`), applied to the WHOLE
+   * document after the edit and before any byte is written, and every one of
+   * them names the same `routes[n].reviewEvidence.<field>` path a duplicate
+   * here would. Duplicating them bought a second refusal that no mutation could
+   * make fire.
+   */
+
+  /*
+   * A FAILED REVIEW IS THE STRONGEST THING THIS DOCUMENT CAN CARRY, AND WAS THE
+   * CHEAPEST THING IN IT TO ERASE.
+   *
+   * Moving a scope out of `refused` demands an explicit flag and a written
+   * reason. Overturning `failed` -- a named speaker of the language having read
+   * the output and said it is wrong -- demanded nothing at all, and the
+   * promotion replaced the failing evidence block wholesale, so the finding was
+   * destroyed rather than superseded. The ceremony is now at least equal, and
+   * the superseded block is kept (see `supersedeReview`).
+   */
+  if (status === 'failed' && !isNonEmptyString(request.overturnFailedReviewReason)) {
+    problems.push({
+      path: `${path}.humanReviewStatus`,
+      message:
+        'is "failed": somebody who reads the language read this output and said it is wrong. ' +
+        'Overturning that requires saying so explicitly and giving the reason, which is ' +
+        'recorded in the document alongside the review being superseded. A fresh review block ' +
+        'on its own is not enough -- the next person has to be able to read that a speaker ' +
+        'said no, and who decided otherwise.',
+    });
   }
 
   /*
@@ -318,6 +347,61 @@ function checkPromotionEvidence(
         'never act on.',
     });
   }
+}
+
+/**
+ * Does the approval already on the record account for every approved scope?
+ *
+ * Deliberately shallow: whether the block is WELL FORMED is validate.ts's
+ * question, asked of the whole document before anything is written. This only
+ * answers whether re-stamping it would say anything new.
+ */
+function approvalCovers(approval: unknown, approvedScopes: readonly ServiceScope[]): boolean {
+  if (!isRecordObject(approval)) return false;
+  const scopes = approval['scopes'];
+  if (!Array.isArray(scopes)) return false;
+  return approvedScopes.every((scope) => scopes.includes(scope));
+}
+
+/**
+ * MOVE THE REVIEW BEING REPLACED INTO THE HISTORY, NEVER OVER IT.
+ *
+ * Called before a promotion writes a fresh review block. The case this exists
+ * for is `failed`: a speaker read the output, said it was wrong, and the next
+ * approve command used to erase the verdict, the score and the reference to
+ * their working, leaving a document in which the finding had never happened.
+ * A status with no evidence block is still worth keeping -- that a review
+ * failed is the fact, the block is only its working.
+ */
+function supersedeReview(draftRoute: Record<string, unknown>, request: PromotionRequest): void {
+  const status = draftRoute['humanReviewStatus'];
+  const existing = draftRoute['reviewEvidence'];
+  const hasEvidence = isRecordObject(existing);
+  // Re-stating the review that is already recorded supersedes nothing, and a
+  // history entry per re-run would cost the tool its idempotence.
+  if (
+    status === 'passed' &&
+    hasEvidence &&
+    request.reviewEvidence !== undefined &&
+    REVIEW_EVIDENCE_KEYS.every((key) => existing[key] === request.reviewEvidence?.[key])
+  ) {
+    return;
+  }
+  if (status === 'passed' && !hasEvidence) return;
+  if (!hasEvidence && status !== 'failed') return;
+
+  const entry: Record<string, unknown> = {
+    status,
+    supersededAt: request.decidedAt,
+    supersededBy: request.approver,
+    reason: isNonEmptyString(request.overturnFailedReviewReason)
+      ? request.overturnFailedReviewReason
+      : 'superseded by a later review recorded in the same act',
+  };
+  if (hasEvidence) entry['evidence'] = existing;
+
+  const history = draftRoute['reviewHistory'];
+  draftRoute['reviewHistory'] = Array.isArray(history) ? [...history, entry] : [entry];
 }
 
 /** The one place the audit line is worded, so promotion and revocation match. */
@@ -452,6 +536,7 @@ export function promoteRoute(document: unknown, request: PromotionRequest): Docu
 
   draftRoute['productionApproved'] = true;
   if (request.reviewEvidence !== undefined) {
+    supersedeReview(draftRoute, request);
     draftRoute['humanReviewStatus'] = 'passed';
     // Copied key by key rather than spread, so a caller's extra property cannot
     // ride into the document and be refused by a validator that never names it.
@@ -469,6 +554,28 @@ export function promoteRoute(document: unknown, request: PromotionRequest): Docu
     draftRoute['licenceStatus'] = licence;
   }
   for (const scope of request.scopes) draftScopes[scope] = 'approved';
+
+  /*
+   * PROVENANCE AS A FIELD. `scopes` is every scope approved AFTER this act, not
+   * merely the ones it opened, because the record has to cover what is live --
+   * validate.ts refuses an approved scope this does not name. The note keeps
+   * the history of who did what and when; this keeps the current answer where
+   * deleting a line of prose cannot reach it.
+   *
+   * Written only when this act actually changed something, or when what is
+   * there does not already account for every approved scope. Stamping it
+   * unconditionally would make a re-run of the same command differ from the
+   * last one by a timestamp, which is idempotence lost to bookkeeping.
+   */
+  const approvedAfter = SERVICE_SCOPES.filter((scope) => draftScopes[scope] === 'approved');
+  const substantive = JSON.stringify(draftRoute) !== JSON.stringify(found.route);
+  if (substantive || !approvalCovers(draftRoute['approval'], approvedAfter)) {
+    draftRoute['approval'] = {
+      approvedBy: request.approver,
+      approvedAt: request.decidedAt,
+      scopes: approvedAfter,
+    };
+  }
 
   const changed = JSON.stringify(draftRoute) !== JSON.stringify(found.route);
   if (!changed) {
@@ -493,7 +600,14 @@ export function promoteRoute(document: unknown, request: PromotionRequest): Docu
       `${request.scopes.join(', ')}, on a human review passed by ${reviewer}` +
       (isNonEmptyString(request.overturnRefusalReason)
         ? `. Overturns a recorded refusal: ${request.overturnRefusalReason}`
-        : '.'),
+        : '.') +
+      // Said in the note as well as in the record, because the note is what a
+      // person reads top to bottom. A line that does not say a review FAILED
+      // reads as an ordinary approval.
+      (found.route['humanReviewStatus'] === 'failed'
+        ? ` OVERTURNS A FAILED HUMAN REVIEW: ${String(request.overturnFailedReviewReason)}. ` +
+          'The superseded review is kept in this record\'s reviewHistory.'
+        : ''),
   );
 
   /*
@@ -510,8 +624,10 @@ export function promoteRoute(document: unknown, request: PromotionRequest): Docu
         {
           path: '',
           message:
-            'this promotion would produce a document the validator refuses, which would stop ' +
-            'the registry loading anywhere. Nothing was written.',
+            'this promotion would produce a document the validator refuses. The document it ' +
+            'was given was sound, so everything below is something this act would have ' +
+            'written -- and a document the validator refuses stops the registry loading ' +
+            'anywhere. Nothing was written.',
         },
         ...after.problems,
       ],
@@ -530,7 +646,11 @@ export function promoteRoute(document: unknown, request: PromotionRequest): Docu
  * Withdraw an approval. ALWAYS ALLOWED.
  *
  * Revocation demands none of the evidence promotion does, and it deliberately
- * tolerates a document that is already invalid. The first time a live route is
+ * tolerates a document that is already invalid -- which is only true END TO END
+ * because `document-write.ts` writes a withdrawal at the
+ * `no-worse-than-before` bar. This function used to say yes while every write
+ * path said no, two green tests asserted the two halves, and nothing tested the
+ * join. The first time a live route is
  * found corrupting phone numbers, the person turning it off is doing it under
  * pressure and possibly at night; making them satisfy a bar to take something
  * AWAY would be the bar working exactly backwards. The only thing refused here

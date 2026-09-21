@@ -9,7 +9,7 @@
  */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -56,8 +56,19 @@ const REVIEW_FLAGS = [
   '--review-method', 'read all eight lines against the source',
   '--review-score', '8',
   '--review-scale', 'sentences materially correct out of 8',
+  '--review-scale-maximum', '8',
+  '--review-pass-threshold', '7',
   '--review-reference', 'docs/reviews/en-fr.md',
 ];
+
+/**
+ * The same review, of the model the en->yo record actually names. A review of
+ * another model is refused, which is why this cannot simply reuse the block
+ * above.
+ */
+const YO_REVIEW_FLAGS = REVIEW_FLAGS.map((token) =>
+  token === 'Helsinki-NLP/opus-mt-en-fr' ? 'Helsinki-NLP/opus-mt-en-alv' : token,
+);
 
 beforeEach(() => {
   directory = mkdtempSync(join(tmpdir(), 'route-cli-'));
@@ -176,7 +187,7 @@ describe('an approval names one direction and one scope', () => {
   it('will not overturn a recorded refusal without saying why', () => {
     const attempt = [
       'approve', '--source', 'en', '--target', 'yo', '--scope', 'call-live', '--approver', 'Zoe',
-      ...REVIEW_FLAGS,
+      ...YO_REVIEW_FLAGS,
     ];
     expect(run(...attempt)).toBe(1);
     expect(err.join('')).toContain('is "refused"');
@@ -247,6 +258,182 @@ describe('MECHANISM, NOT POLICY', () => {
           `${record.sourceLanguage}->${record.targetLanguage} ${scope}`,
         ).toBe(false);
       }
+    }
+  });
+});
+
+/**
+ * THE JOIN NOTHING USED TO TEST.
+ *
+ * `revokeRoute` tolerates a document that is already invalid, and one test
+ * asserted it. The writer re-validated the whole document and refused one, and
+ * another test asserted that. Both were green and the two halves contradicted
+ * each other, so the off switch did not work in the emergency it was built for:
+ * a stray field in an UNRELATED record made a live approval impossible to
+ * withdraw, while the service -- which read the registry once, at boot -- kept
+ * translating. These tests fail if a withdrawal is ever routed back through the
+ * strict writer.
+ */
+describe('a withdrawal works on a document that is invalid somewhere else', () => {
+  function breakAnUnrelatedRoute(): void {
+    const parsed = JSON.parse(readFileSync(target, 'utf8')) as {
+      routes: Record<string, unknown>[];
+    };
+    // routes[1] is en->yo: nothing to do with the route being withdrawn.
+    (parsed.routes[1] as Record<string, unknown>)['strayField'] = 'left by a hand edit';
+    writeFileSync(target, `${JSON.stringify(parsed, null, 2)}\n`, 'utf8');
+  }
+
+  it('turns the route off, and says so, with exit 0', () => {
+    expect(run(...APPROVE)).toBe(0);
+    breakAnUnrelatedRoute();
+    out.length = 0;
+    err.length = 0;
+
+    const code = run(
+      'revoke', '--source', 'en', '--target', 'fr', '--all',
+      '--approver', 'Zoe at 2am', '--reason', 'it is corrupting phone numbers',
+    );
+
+    expect(err.join(''), 'the withdrawal was refused').toBe('');
+    expect(code).toBe(0);
+    const record = (document() as { routes: Record<string, unknown>[] }).routes[0] as {
+      productionApproved: boolean;
+      serviceScopes: Record<string, string>;
+    };
+    expect(record.serviceScopes['messaging']).toBe('unapproved');
+    expect(record.productionApproved).toBe(false);
+    expect(String((document() as { note?: string }).note)).toContain('WITHDRAWN');
+    // The unrelated mess is still there: a withdrawal fixes nothing else.
+    expect(JSON.stringify(document())).toContain('strayField');
+  });
+
+  it('rehearses the same answer the real run gives, rather than the opposite one', () => {
+    expect(run(...APPROVE)).toBe(0);
+    breakAnUnrelatedRoute();
+    const before = readFileSync(target, 'utf8');
+    out.length = 0;
+
+    const revocation = [
+      'revoke', '--source', 'en', '--target', 'fr', '--all', '--approver', 'Zoe at 2am',
+    ] as const;
+    expect(run(...revocation, '--dry-run')).toBe(0);
+    expect(out.join('')).toContain('DRY RUN, nothing written');
+    expect(readFileSync(target, 'utf8')).toBe(before);
+
+    // And the promotion bar is unmoved: an approve on this same document is
+    // refused, dry run and real run alike.
+    expect(run(...APPROVE, '--dry-run')).toBe(1);
+    expect(run(...APPROVE)).toBe(1);
+    expect(readFileSync(target, 'utf8')).toBe(before);
+  });
+});
+
+describe('the default write target is not the file this repository ships', () => {
+  beforeEach(() => {
+    // An unset variable, not a missing one: resolveDocumentSource reads the
+    // real environment, and the point of this test is the fallback behind it.
+    vi.stubEnv('TRANSLATION_ROUTES_DOCUMENT', '');
+  });
+
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
+  function seedBytes(): string {
+    return readFileSync(SEED_DOCUMENT_PATH, 'utf8');
+  }
+
+  it('refuses an approve with no --document, naming the absolute path it would have written', () => {
+    const before = seedBytes();
+    expect(runRouteApprovalCli([...APPROVE])).toBe(1);
+    const said = err.join('');
+    expect(said).toContain('REFUSED');
+    expect(said).toContain(resolve(SEED_DOCUMENT_PATH));
+    expect(said).toContain('--document');
+    expect(seedBytes()).toBe(before);
+  });
+
+  it('refuses the rehearsal of it too, which is where the operator learns the rule', () => {
+    const before = seedBytes();
+    expect(runRouteApprovalCli([...APPROVE, '--dry-run'])).toBe(1);
+    expect(err.join('')).toContain(resolve(SEED_DOCUMENT_PATH));
+    expect(out.join('')).not.toContain('Would be true');
+    expect(seedBytes()).toBe(before);
+  });
+
+  it('refuses a revoke with no --document as well', () => {
+    const before = seedBytes();
+    expect(
+      runRouteApprovalCli(['revoke', '--source', 'en', '--target', 'fr', '--all', '--approver', 'x']),
+    ).toBe(1);
+    expect(err.join('')).toContain('--write-shipped-seed');
+    expect(seedBytes()).toBe(before);
+  });
+
+  it('still READS it without a flag, because show is not a write', () => {
+    expect(runRouteApprovalCli(['show'])).toBe(0);
+    expect(out.join('')).toContain('en->fr');
+  });
+
+  it('lets --write-shipped-seed past the target guard, and the evidence bar then refuses', () => {
+    /*
+     * MECHANISM, NOT POLICY. The flag is the gate this test is about; the seed
+     * is still refused on its own evidence -- all fourteen routes record
+     * commercialUse "unknown" deliberately -- and --dry-run is here as well so
+     * that a future change to the seed cannot turn this test into an approval.
+     */
+    const before = seedBytes();
+    expect(runRouteApprovalCli([...APPROVE, '--write-shipped-seed', '--dry-run'])).toBe(1);
+    const said = err.join('');
+    expect(said).not.toContain('--write-shipped-seed');
+    expect(said).toContain('licenceStatus.commercialUse');
+    expect(seedBytes()).toBe(before);
+  });
+});
+
+describe('every run that writes, or would write, names the file', () => {
+  it('prints the absolute path and where it came from', () => {
+    expect(run(...APPROVE)).toBe(0);
+    const said = out.join('');
+    expect(said).toContain(`Document: ${resolve(target)} (explicit)`);
+    expect(said).toContain(`Written and re-validated`);
+    expect(said).toContain(resolve(target));
+  });
+
+  it('prints it on a dry run too, with the byte count it would have written', () => {
+    expect(run(...APPROVE, '--dry-run')).toBe(0);
+    const said = out.join('');
+    expect(said).toContain(`Document: ${resolve(target)} (explicit)`);
+    expect(said).toMatch(/Would write \d+ bytes to /u);
+    expect(said).toContain(resolve(target));
+  });
+});
+
+describe('a write names its target even when the environment already does', () => {
+  it('refuses an approve that leans on the variable, and never prints its value', () => {
+    vi.stubEnv('TRANSLATION_ROUTES_DOCUMENT', target);
+    try {
+      const before = readFileSync(target, 'utf8');
+      expect(runRouteApprovalCli([...APPROVE])).toBe(1);
+      const said = err.join('');
+      expect(said).toContain('TRANSLATION_ROUTES_DOCUMENT');
+      // The NAME is safe to print; the VALUE is not, and this command was not
+      // told it. Everything this package logs follows that rule.
+      expect(said).not.toContain(target);
+      expect(readFileSync(target, 'utf8')).toBe(before);
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it('accepts the same act once the path is named, which is one flag away', () => {
+    vi.stubEnv('TRANSLATION_ROUTES_DOCUMENT', target);
+    try {
+      expect(runRouteApprovalCli([...APPROVE, '--document', target])).toBe(0);
+      expect(registry().mayTranslate('en', 'fr', 'messaging').allowed).toBe(true);
+    } finally {
+      vi.unstubAllEnvs();
     }
   });
 });

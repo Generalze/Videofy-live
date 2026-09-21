@@ -5,7 +5,14 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { MEASURED, PERMISSIVE_LICENCE, documentOf, route, scopes } from './document.fixtures.js';
+import {
+  MEASURED,
+  PERMISSIVE_LICENCE,
+  approvedBy,
+  documentOf,
+  route,
+  scopes,
+} from './document.fixtures.js';
 import { TranslationRouteRegistry, createTranslationRouteRegistry } from './registry.js';
 import * as publicApi from './index.js';
 
@@ -21,10 +28,11 @@ function registryOf(document: unknown): TranslationRouteRegistry {
   return created.registry;
 }
 
-/** A route that is live for every scope: measured, licensed, reviewed. */
+/** A route that is live for every scope: measured, licensed, reviewed, signed. */
 function approved(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return route({
     productionApproved: true,
+    approval: approvedBy(),
     technicalEvidence: { ...MEASURED },
     humanReviewStatus: 'passed',
     licenceStatus: { ...PERMISSIVE_LICENCE },
@@ -343,6 +351,7 @@ describe('the review-required list is configurable and only ever tightens', () =
         sourceLanguage: 'en',
         targetLanguage: 'fr',
         productionApproved: true,
+        approval: approvedBy('messaging'),
         technicalEvidence: { ...MEASURED },
         humanReviewStatus: 'required-not-done',
         serviceScopes: scopes({ messaging: 'approved' }),

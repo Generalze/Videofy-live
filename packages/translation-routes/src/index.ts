@@ -29,9 +29,11 @@ export {
   type HumanReviewStatus,
   type LatencyProfile,
   type LicenceStatus,
+  type RouteApprovalRecord,
   type RouteReviewEvidence,
   type ScopeApproval,
   type ServiceScope,
+  type SupersededReview,
   type TechnicalEvidence,
   type TranslationRouteRecord,
 } from './route-record.js';
