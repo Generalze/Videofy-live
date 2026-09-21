@@ -308,6 +308,69 @@ describe('a withdrawal works on a document that is invalid somewhere else', () =
     expect(JSON.stringify(document())).toContain('strayField');
   });
 
+  it('does NOT claim it re-validated a document that does not validate', () => {
+    /*
+     * THE SUCCESS MESSAGE IS A CLAIM, AND THIS ONE WAS FALSE. The withdrawal
+     * succeeds at the looser bar over somebody else's broken record -- that is
+     * the whole point of the bar -- and the command then announced "Written
+     * and re-validated". It had done no such thing, and the difference is not
+     * cosmetic: until the rest of the file is repaired NO service will load it
+     * at the next restart, so the person who just switched a bad route off at
+     * two in the morning has not switched it off at all. Both halves have to
+     * be said, and a reassuring half-truth is worse here than either.
+     */
+    expect(run(...APPROVE)).toBe(0);
+    breakAnUnrelatedRoute();
+    out.length = 0;
+    err.length = 0;
+
+    const code = run(
+      'revoke', '--source', 'en', '--target', 'fr', '--all',
+      '--approver', 'Zoe at 2am', '--reason', 'it is corrupting phone numbers',
+    );
+    const said = out.join('');
+
+    expect(code).toBe(0);
+    expect(said, 'the withdrawal must still be reported as done').toMatch(/Written/u);
+    expect(said, 'it did not re-validate anything').not.toMatch(/re-validated/u);
+    expect(said).toMatch(/STILL NOT VALID/u);
+    // The reason the warning matters, in the words the reader needs.
+    expect(said).toMatch(/will NOT take effect/u);
+    // And it must not blame the operator for a mess that was already there.
+    expect(said).toMatch(/none of it was introduced by this command/u);
+  });
+
+  it('says the same thing in rehearsal, so the dry run is not the cheerier one', () => {
+    expect(run(...APPROVE)).toBe(0);
+    breakAnUnrelatedRoute();
+    out.length = 0;
+
+    expect(
+      run(
+        'revoke', '--source', 'en', '--target', 'fr', '--all',
+        '--approver', 'Zoe at 2am', '--reason', 'rehearsing', '--dry-run',
+      ),
+    ).toBe(0);
+    expect(out.join('')).toMatch(/STILL NOT VALID|will NOT take effect/u);
+  });
+
+  it('keeps the plain message when the document really is whole', () => {
+    // The warning has to be ABSENT in the healthy case, or it means nothing in
+    // the broken one.
+    expect(run(...APPROVE)).toBe(0);
+    out.length = 0;
+
+    expect(
+      run(
+        'revoke', '--source', 'en', '--target', 'fr', '--all',
+        '--approver', 'Zoe', '--reason', 'no longer needed',
+      ),
+    ).toBe(0);
+    const said = out.join('');
+    expect(said).toMatch(/Written and re-validated/u);
+    expect(said).not.toMatch(/STILL NOT VALID/u);
+  });
+
   it('rehearses the same answer the real run gives, rather than the opposite one', () => {
     expect(run(...APPROVE)).toBe(0);
     breakAnUnrelatedRoute();

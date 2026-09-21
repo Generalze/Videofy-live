@@ -468,18 +468,39 @@ export function runRouteApprovalCli(argv: readonly string[]): number {
     report({ ok: false, problems: written.problems });
     return 1;
   }
+  /*
+   * WHAT THE DOCUMENT STILL CARRIES, SAID OUT LOUD.
+   *
+   * A withdrawal is written at the looser bar, so it succeeds over problems
+   * somebody else left behind -- deliberately, because refusing there would
+   * keep a live route switched on to protect a file that is not loading
+   * anywhere anyway. But this command used to announce "Written and
+   * re-validated" over exactly that document, which is a success message
+   * claiming a check that did not pass. The withdrawal is real and the file is
+   * still broken, and the person who just ran it needs both halves: until the
+   * rest is repaired, no service will load this document at its next restart,
+   * so the switch they just threw will not take effect.
+   */
+  const stillBroken = written.tolerated.length > 0;
+  const state = stillBroken
+    ? `Written (${String(written.bytesWritten)} bytes), but THE DOCUMENT IS STILL NOT VALID`
+    : `Written and re-validated (${String(written.bytesWritten)} bytes)`;
+  const residue = stillBroken
+    ? `\nStill wrong, and none of it was introduced by this command:\n` +
+      written.tolerated.map((entry) => `  - ${entry.path || '(document)'}: ${entry.message}`).join('\n') +
+      '\nUntil those are repaired no service will load this file, so this change ' +
+      'will NOT take effect at the next restart.\n'
+    : '\nEvery service that reads this document must be restarted before it takes effect.\n';
+
   if (!written.written) {
     process.stdout.write(
       `DRY RUN, nothing written. Would be true: ${decision.summary}\n` +
-        `Would write ${String(written.bytesWritten)} bytes to ${documentPath}.\n`,
+        `Would write ${String(written.bytesWritten)} bytes to ${documentPath}.` +
+        residue,
     );
     return 0;
   }
-  process.stdout.write(
-    `${decision.summary}\nWritten and re-validated (${String(written.bytesWritten)} bytes) to ` +
-      `${documentPath}. ` +
-      'Every service that reads this document must be restarted before it takes effect.\n',
-  );
+  process.stdout.write(`${decision.summary}\n${state} to ${documentPath}.${residue}`);
   return 0;
 }
 

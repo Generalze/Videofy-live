@@ -69,6 +69,20 @@ export type DocumentWrite =
       readonly bytesWritten: number;
       /** False for a dry run: every check passed and nothing was written. */
       readonly written: boolean;
+      /**
+       * PROBLEMS THE WRITTEN DOCUMENT STILL CARRIES, under
+       * `no-worse-than-before`. Empty when the result loads whole.
+       *
+       * It exists because the caller was announcing "Written and re-validated"
+       * over a document that does not validate. A withdrawal is ALLOWED to
+       * leave somebody else's mess in place -- that is the whole point of the
+       * looser bar, and refusing there would keep a live route switched on to
+       * protect a file that is not loading anywhere anyway -- but the person
+       * who just ran it has to be told, because until those problems are
+       * repaired no service will load this document at its next restart, and
+       * the withdrawal they just performed will not take effect.
+       */
+      readonly tolerated: readonly DocumentProblem[];
     }
   | { readonly ok: false; readonly problems: readonly DocumentProblem[] };
 
@@ -152,6 +166,26 @@ function existingProblems(originalText: string): ReadonlySet<string> | null {
   }
   const checked = parseRouteDocument(parsed);
   return checked.ok ? new Set<string>() : new Set(checked.problems.map(problemKey));
+}
+
+/**
+ * What does this text STILL carry, once it has been accepted?
+ *
+ * Only ever non-empty under `no-worse-than-before`, where a withdrawal is
+ * deliberately allowed through a document somebody else broke. The caller
+ * announces the result to a person, and "written and re-validated" was being
+ * said over a file the validator refuses -- so the facts have to travel back
+ * with the success, not only with the refusal.
+ */
+function toleratedProblems(text: string): DocumentProblem[] {
+  let reparsed: unknown;
+  try {
+    reparsed = JSON.parse(text) as unknown;
+  } catch (error) {
+    return [{ path: '', message: `it is not JSON: ${(error as Error).message}` }];
+  }
+  const checked = parseRouteDocument(reparsed);
+  return checked.ok ? [] : [...checked.problems];
 }
 
 /**
@@ -306,7 +340,12 @@ export function writeRouteDocumentAtomically(
 
   // 3. Every decision is now taken. A dry run stops here, having refused
   //    everything the real command would refuse and nothing it would not.
-  if (options.dryRun === true) return { ok: true, bytesWritten: bytes, written: false };
+  if (options.dryRun === true) {
+    // The rehearsal reports what the real run would leave behind, including
+    // the problems it would tolerate -- otherwise a dry run is cheerier than
+    // the thing it is rehearsing.
+    return { ok: true, bytesWritten: bytes, written: false, tolerated: toleratedProblems(text) };
+  }
 
   // 4. Same directory, so the rename is a rename and not a copy.
   const placed = placeAtomically(io, path, text);
@@ -364,7 +403,9 @@ export function writeRouteDocumentAtomically(
     return restore('the document on disk does not match what was written.');
   }
 
-  return { ok: true, bytesWritten: bytes, written: true };
+  // Measured from the bytes that were READ BACK off disk, not from the text we
+  // meant to write: what the next reader gets is the only thing worth saying.
+  return { ok: true, bytesWritten: bytes, written: true, tolerated: toleratedProblems(written) };
 }
 
 /** The sentence for the case where the recovery itself did not work. */
