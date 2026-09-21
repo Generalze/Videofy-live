@@ -296,7 +296,11 @@ export type CallTranslatedAudioDiagnostic =
   /** No `error`: this build has no native track. With one: the path threw -- at setup, on a frame, or on teardown. */
   | { readonly kind: 'unavailable'; readonly error?: string }
   | { readonly kind: 'listening' }
-  /** Translated audio this phone actually played. Announced once per call. */
+  /**
+   * Translated audio this phone actually played. A HEARTBEAT: the first
+   * millisecond, then one per second of audio emitted, so a screen can say
+   * "playing" in the present tense and stop saying it when it stops.
+   */
   | { readonly kind: 'played'; readonly playedMs: number }
   | { readonly kind: 'refused'; readonly reason: string }
   | { readonly kind: 'originals'; readonly suppressed: boolean };

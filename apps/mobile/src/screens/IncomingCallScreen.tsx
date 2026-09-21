@@ -50,7 +50,15 @@ export function IncomingCallScreen({
     <View style={styles.screen}>
       <CallBackdrop />
       <View style={styles.top}>
-        <C7Mark caption={mode === 'translated' ? 'Translated call' : 'Incoming call'} />
+        {/*
+          * THE MARK IS THE PRODUCT, NOT THE CALL. It used to read "Translated
+          * call" for a translated call -- word for word what the teal pill 200dp
+          * below it says -- and "Incoming call" otherwise, which is word for word
+          * the eyebrow directly beneath it. One statement of what kind of call
+          * this is, per screen: the eyebrow says it is incoming, the pill says it
+          * is translated, and the mark says whose app this is.
+          */}
+        <C7Mark />
       </View>
       <View style={styles.identity}>
         <Eyebrow>Incoming call</Eyebrow>

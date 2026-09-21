@@ -20,6 +20,7 @@ import { URL, fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { TERMINAL_DIRECT_STATES } from '../call/directCallApi';
 import { callTickIntervalMs, callTickWanted, startCallTick } from '../call/callTimer';
+import { callScreenView, type CallScreenViewInput } from '../call/callScreenModel';
 
 const read = (relative: string): string =>
   readFileSync(fileURLToPath(new URL(relative, import.meta.url)), 'utf8').replace(/\r\n/gu, '\n');
@@ -126,9 +127,51 @@ describe("the screen's own timer stops", () => {
 });
 
 describe("the system's timer stops too, through the whole chain", () => {
-  it('a terminal state leaves the call screen without anyone tapping', () => {
-    expect(screen).toContain('if (!terminal) return undefined;');
-    expect(screen).toContain('const timer = setTimeout(() => onLeave(), 2500);');
+  it('a terminal state leaves the call screen when there is nothing to act on', () => {
+    /*
+     * IT USED TO LEAVE WHATEVER WAS ON THE SCREEN, and this test asserted the
+     * source of the 2500 ms timer that did it -- so it certified the defect:
+     * the ended screen's Call back and Message buttons and its summary card
+     * appeared and were unmounted while the person was still reading. The
+     * decision is now `autoDismissMs`, which is null wherever there is
+     * something to press or read, and the screen honouring it is rendered and
+     * driven in callScreenRender.test.tsx.
+     */
+    const ended = (over: Partial<CallScreenViewInput>) =>
+      callScreenView({
+        kind: 'direct',
+        phase: 'ended',
+        serverState: 'no_answer',
+        role: 'caller',
+        peerName: 'Tunde',
+        translation: {
+          mode: null,
+          engine: null,
+          playback: null,
+          playedAtMs: null,
+          refusedAtMs: null,
+          captionedAtMs: null,
+        },
+        languages: null,
+        connectedRow: { show: false, words: '', warn: false },
+        caption: null,
+        captionIsSelf: false,
+        speaking: false,
+        captionsShown: true,
+        elapsedMs: null,
+        ringElapsed: null,
+        nowMs: 1_700_000_000_000,
+        muted: false,
+        speakerOn: false,
+        cameraOn: false,
+        cameraStarting: false,
+        canCallBack: false,
+        canMessage: false,
+        ...over,
+      }).autoDismissMs;
+    expect(ended({})).toBe(2_500);
+    expect(ended({ canCallBack: true })).toBeNull();
+    expect(ended({ phase: 'live', serverState: 'connected' })).toBeNull();
   });
 
   it('leaving ends the Telecom connection', () => {

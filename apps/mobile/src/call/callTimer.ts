@@ -46,9 +46,10 @@ export function elapsedSinceMs(
  *
  * NO WINDOW LENGTH IS ASSUMED. `RINGING_WINDOW_MS` lives on the server and the
  * grace period after Answer moves `expiresAtMs` forward, so the denominator is
- * the FIRST remaining figure this screen saw, captured from the wire. A ring
- * that gets extended simply un-fills, which is the honest picture of a
- * deadline that moved.
+ * the FIRST remaining figure this screen saw, captured from the wire. An
+ * extended deadline therefore computes a SMALLER elapsed share here -- which
+ * the screen must not draw, because an arc that grows reads as a ring that
+ * restarted. {@link monotonicRingProgress} is what the screen draws.
  *
  * Returns null when there is nothing to measure -- no deadline on the wire, or
  * a deadline that had already passed when it arrived -- and the caller draws
@@ -71,6 +72,33 @@ export function ringProgress(input: {
   const elapsed = windowMs - remaining;
   if (elapsed <= 0) return 0;
   return Math.min(1, elapsed / windowMs);
+}
+
+/**
+ * THE ARC NEVER GROWS, and this is the correction of 20 Sep.
+ *
+ * The denominator is frozen at the first window seen, so an extended deadline
+ * made {@link ringProgress} clamp back to 0 -- the arc snapped from a fifth
+ * full to completely full in one frame and then sat motionless for six seconds
+ * while the extension was spent. A viewer reads that as a ring that restarted,
+ * and a motionless full arc on the one screen whose job is to show something is
+ * still happening reads as a display that has stopped measuring.
+ *
+ * So the figure the screen draws is the HIGH-WATER MARK of the share of the
+ * window that has gone. An extension slows the drain or holds it; it can never
+ * refill it. A measurement that jumps backwards is not a measurement a person
+ * can read.
+ *
+ * Null in is null out -- there is nothing to draw -- and the mark is kept by
+ * the caller so that a second call is not a second opinion.
+ */
+export function monotonicRingProgress(
+  seenElapsed: number | null,
+  elapsed: number | null,
+): number | null {
+  if (elapsed === null) return null;
+  if (seenElapsed === null) return elapsed;
+  return Math.max(seenElapsed, elapsed);
 }
 
 /**

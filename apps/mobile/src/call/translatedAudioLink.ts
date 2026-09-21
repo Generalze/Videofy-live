@@ -42,6 +42,14 @@ import { createNativeTranslatedSink, type NativeTranslatedSink } from './nativeT
 import { ensureBase64Decoder } from './pcmBase64';
 import type { TranslatedPcmBackend } from '../native/translatedPcm';
 
+/**
+ * One announcement per second of translated audio actually emitted. Short
+ * enough that the screen's present-tense sentence is never more than a second
+ * out of date (see translationReadiness.ts `PRESENT_MS`), long enough that a
+ * 20 ms frame rate does not become a 50 Hz event stream.
+ */
+export const PLAYED_HEARTBEAT_MS = 1_000;
+
 /** Everything either policy question needs, and nothing that changes per frame. */
 export interface TranslatedAudioPolicyInput {
   readonly participants: readonly CallParticipantSummary[];
@@ -146,15 +154,21 @@ export interface MobileTranslatedAudioDeps {
   /** Diagnostics only. Never audio, never text. */
   readonly onRefused?: (reason: CallFrameRefusal, frame: CallTranslatedAudioFrameEvent) => void;
   /**
-   * THE FIRST TRANSLATED SOUND THIS PHONE ACTUALLY MADE, once per call.
+   * TRANSLATED SOUND THIS PHONE IS ACTUALLY MAKING -- a heartbeat, not a badge.
    *
    * The sink has counted `playedMs` since it was written and nothing outside
    * its own tests has ever read it, so the strongest signal in the whole
    * translated path -- audio that reached the platform and was accepted -- was
    * held one object away from the screen, which meanwhile said "Listening"
-   * because a handler had been bound. This is the signal that lets a screen
-   * claim translation is running, and it is announced once because a call needs
-   * the fact, not fifty announcements a second.
+   * because a handler had been bound.
+   *
+   * IT WAS ANNOUNCED ONCE PER CALL FOR A DAY, and once is not enough for the
+   * sentence it feeds. "Playing translated speech" is present tense, and a
+   * single announcement at second three kept it on screen for the rest of a
+   * call in which every later frame was refused. So the first is announced
+   * immediately and then one per {@link PLAYED_HEARTBEAT_MS} of audio actually
+   * emitted -- a live figure, and still nowhere near the fifty a second the
+   * frames arrive at.
    */
   readonly onPlayed?: (playedMs: number) => void;
   /**
@@ -188,17 +202,20 @@ export function createMobileTranslatedAudio(
   const sink = createNativeTranslatedSink(deps.backend, deps.onBackendError);
 
   /*
-   * The sink, watched for the one transition worth reporting: `playedMs` going
-   * from nothing to something. A refused write does not move it -- the sink is
-   * careful about that -- so this cannot fire for audio the platform rejected.
+   * The sink, watched for what it has PLAYED: the first millisecond, and then
+   * one announcement per second of audio after that. A refused write does not
+   * move `playedMs` -- the sink is careful about that -- so this cannot fire
+   * for audio the platform rejected, and the interval is measured in audio
+   * emitted rather than wall clock, so a stream that stops stops announcing.
    */
-  let announced = false;
+  let announcedMs: number | null = null;
   const watched: NativeTranslatedSink = {
     play(samples: Int16Array, gain: number): void {
       sink.play(samples, gain);
-      if (!announced && sink.playedMs > 0) {
-        announced = true;
-        deps.onPlayed?.(sink.playedMs);
+      const played = sink.playedMs;
+      if (played > 0 && (announcedMs === null || played - announcedMs >= PLAYED_HEARTBEAT_MS)) {
+        announcedMs = played;
+        deps.onPlayed?.(played);
       }
     },
     flush: () => sink.flush(),

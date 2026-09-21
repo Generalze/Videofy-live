@@ -35,6 +35,8 @@ export type IconName =
   | 'bell'
   | 'gear'
   | 'translate'
+  /** SUBTITLES, and not the same thing as `translate`: see the dock's caption control. */
+  | 'captions'
   | 'wave'
   | 'close'
   | 'share'
@@ -86,6 +88,10 @@ export function Icon({
       {name === 'bell' && (<><Path d="M6.5 16.5v-5a5.5 5.5 0 0 1 11 0v5l1.5 2h-14z" {...p} /><Path d="M10 20.5a2 2 0 0 0 4 0" {...p} /></>)}
       {name === 'gear' && (<><Circle cx="12" cy="12" r="3" {...p} /><Path d="M12 3.5v2.2M12 18.3v2.2M3.5 12h2.2M18.3 12h2.2M6 6l1.6 1.6M16.4 16.4L18 18M6 18l1.6-1.6M16.4 7.6L18 6" {...p} /></>)}
       {name === 'translate' && (<><Path d="M4 6h8M8 4v2M10.5 6c-.6 3.5-2.8 6.3-6 8M6 9c1.2 2.4 3 4.2 5.5 5.5" {...p} /><Path d="M13 20l3.5-9 3.5 9M14.3 17h4.4" {...p} /></>)}
+      {/* A subtitle box: the frame, and two lines of text in the bottom of it.
+          Deliberately NOT the translate glyph -- the control it belongs to
+          hides and shows the caption card and cannot turn translation off. */}
+      {name === 'captions' && (<><Rect x="3" y="5" width="18" height="14" rx="3" {...p} /><Path d="M6.5 14.5h5M14 14.5h3.5M6.5 11h3M12 11h5.5" {...p} /></>)}
       {name === 'wave' && <Path d="M4 12h1.5M8 8v8M11 5v14M14 8v8M17 10v4M19.5 12H21" {...p} />}
       {name === 'close' && <Path d="M6 6l12 12M18 6L6 18" {...p} />}
       {name === 'share' && (<><Path d="M12 4v11M8 8l4-4 4 4" {...p} /><Path d="M5 13v5a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-5" {...p} /></>)}

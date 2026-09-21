@@ -118,18 +118,41 @@ export function CallStatePill({
 export function CallRing({
   size,
   remaining = null,
+  remainingLabel = null,
   dim = false,
 }: {
   readonly size: number;
   /** Share of the ring window LEFT (1 at the start, 0 at the deadline), or null. */
   readonly remaining?: number | null;
+  /**
+   * WHAT THE ARC IS A SHARE OF, for a screen reader -- because nothing on this
+   * screen said. The arc carried no label of any kind and the only text near it
+   * is "Calling…" and a name, so a shrinking teal arc read as falling signal as
+   * readily as it read as a deadline. Decided in ../call/callScreenModel.ts,
+   * where the figure behind it is.
+   */
+  readonly remainingLabel?: string | null;
   readonly dim?: boolean;
 }): JSX.Element {
   const stroke = 2;
   const geometry = ringGeometry({ size, stroke, remaining });
   const opacity = dim ? 0.35 : 1;
+  const measured = geometry.arc !== null && remainingLabel !== null;
   return (
-    <Svg width={size} height={size} style={{ position: 'absolute', opacity }}>
+    <Svg
+      width={size}
+      height={size}
+      style={{ position: 'absolute', opacity }}
+      // A ring with no arc is texture and is not announced at all.
+      {...(measured
+        ? {
+            accessible: true,
+            accessibilityRole: 'progressbar' as const,
+            accessibilityLabel: remainingLabel,
+            accessibilityValue: { min: 0, max: 100, now: Math.round((remaining ?? 0) * 100) },
+          }
+        : {})}
+    >
       {/* The dashed outer ring: texture, never a value. */}
       <Circle
         cx={geometry.centre}
@@ -185,6 +208,7 @@ export function AvatarHalo({
   pulsing = false,
   ring = false,
   remaining = null,
+  remainingLabel = null,
   dim = false,
 }: {
   readonly accountId: string;
@@ -194,6 +218,8 @@ export function AvatarHalo({
   readonly ring?: boolean;
   /** Share of the ring window left; null draws no arc. */
   readonly remaining?: number | null;
+  /** What that share is OF, spoken. See {@link CallRing}. */
+  readonly remainingLabel?: string | null;
   readonly dim?: boolean;
 }): JSX.Element {
   const pulse = useRef(new Animated.Value(0)).current;
@@ -221,7 +247,9 @@ export function AvatarHalo({
   const inner = size + 28;
   return (
     <View style={{ width: outer, height: outer, alignItems: 'center', justifyContent: 'center' }}>
-      {ring && <CallRing size={outer} remaining={remaining} dim={dim} />}
+      {ring && (
+        <CallRing size={outer} remaining={remaining} remainingLabel={remainingLabel} dim={dim} />
+      )}
       {pulsing ? (
         <Animated.View
           style={[
@@ -294,10 +322,14 @@ export function SpeechIndicator({
   /**
    * WHOSE. The bare word "Speaking" named no mouth, and these bars sit above
    * one particular person's face; the caller says who, because only the caller
-   * knows whether the caption behind the measurement was theirs. See
-   * ../call/callScreenModel.ts.
+   * knows whether the caption behind the measurement was theirs.
+   *
+   * NULL IS A REAL ANSWER and the bars are then not announced at all: when the
+   * caption on screen is this phone's own speech there is no measurement of the
+   * peer to report, and "Tunde is quiet" was a fact stated about somebody who
+   * may have been talking. See ../call/callScreenModel.ts.
    */
-  readonly accessibilityLabel: string;
+  readonly accessibilityLabel: string | null;
 }): JSX.Element {
   const wave = useRef(new Animated.Value(0)).current;
   useEffect(() => {
@@ -335,7 +367,12 @@ export function SpeechIndicator({
     { rest: 4, peak: 14 },
   ];
   return (
-    <View accessibilityLabel={accessibilityLabel} accessibilityRole="image" style={styles.waveRow}>
+    <View
+      {...(accessibilityLabel === null
+        ? { accessibilityElementsHidden: true, importantForAccessibility: 'no-hide-descendants' as const }
+        : { accessibilityLabel, accessibilityRole: 'image' as const })}
+      style={styles.waveRow}
+    >
       {bars.map((bar, index) => (
         <Animated.View
           key={`${bar.rest}-${index}`}
@@ -383,10 +420,23 @@ export function CaptionCard({
 }): JSX.Element {
   return (
     <View style={styles.caption}>
+      {/*
+        * THE LANGUAGE IS THE PART THAT MUST SURVIVE. This was one line reading
+        * `NAME · LANGUAGE` under `numberOfLines={1}`, and RN ellipsises at the
+        * tail: "OLUWASEUN ADEBAYO-OGUNLESI · NIGERIAN PIDGIN" is 44 characters
+        * against the 35 that fit, so what got cut was the language -- for
+        * exactly the users the whole-word label was written for. They are two
+        * Texts now: the NAME shrinks and the language does not.
+        */}
       <View style={styles.captionSpeakerRow}>
         <View style={styles.captionDot} />
-        <Text style={styles.captionSpeaker} numberOfLines={1}>
-          {speaker.length === 0 ? sourceLabel : `${speaker.toUpperCase()} · ${sourceLabel}`}
+        {speaker.length > 0 && (
+          <Text style={styles.captionSpeaker} numberOfLines={1}>
+            {speaker.toUpperCase()}
+          </Text>
+        )}
+        <Text style={styles.captionLanguage} numberOfLines={1}>
+          {sourceLabel}
         </Text>
       </View>
       <Text style={[styles.captionOriginal, interim && styles.captionInterim]}>{original}</Text>
@@ -448,6 +498,7 @@ export function RoundControl({
   label,
   active = false,
   disabled = false,
+  showLabel = true,
   onPress,
 }: {
   /** A short text mark; used when no icon is given. */
@@ -457,6 +508,14 @@ export function RoundControl({
   readonly label: string;
   readonly active?: boolean;
   readonly disabled?: boolean;
+  /**
+   * WHETHER THE WORD IS DRAWN, decided by how many controls share the row (see
+   * `dockLabels` in ../call/callScreenModel.ts). Five labelled controls need
+   * 458dp and no portrait phone has it, so the dock wrapped to two rows and
+   * took a third of the screen. The label is ALWAYS the accessibility name,
+   * drawn or not: this hides a word, never a meaning.
+   */
+  readonly showLabel?: boolean;
   readonly onPress: () => void;
 }): JSX.Element {
   return (
@@ -473,9 +532,11 @@ export function RoundControl({
       </View>
       {/* One line, and a bounded one: a long label used to widen its control
           and push the red End button off the right edge of a 360dp screen. */}
-      <Text numberOfLines={1} style={styles.roundLabel}>
-        {label}
-      </Text>
+      {showLabel && (
+        <Text numberOfLines={1} style={styles.roundLabel}>
+          {label}
+        </Text>
+      )}
     </Pressable>
   );
 }
@@ -486,12 +547,15 @@ export function EndCallButton({
   onPress,
   icon,
   disabled = false,
+  showLabel = true,
 }: {
   readonly label: string;
   readonly onPress: () => void;
   readonly icon?: ReactNode;
   /** The request is already in flight; a second press would send a second end. */
   readonly disabled?: boolean;
+  /** See {@link RoundControl}. The red circle is never in doubt; the word can go. */
+  readonly showLabel?: boolean;
 }): JSX.Element {
   return (
     <Pressable
@@ -502,9 +566,11 @@ export function EndCallButton({
       style={({ pressed }) => [styles.roundWrap, (pressed || disabled) && styles.pressed]}
     >
       <View style={[styles.round, styles.end]}>{icon ?? <Text style={styles.endLabel}>End</Text>}</View>
-      <Text numberOfLines={1} style={styles.roundLabel}>
-        {label}
-      </Text>
+      {showLabel && (
+        <Text numberOfLines={1} style={styles.roundLabel}>
+          {label}
+        </Text>
+      )}
     </Pressable>
   );
 }
@@ -620,6 +686,15 @@ const styles = StyleSheet.create({
     letterSpacing: 1.2,
     flexShrink: 1,
   },
+  // `flexShrink: 0` is the whole point: the name gives way, the language does not.
+  captionLanguage: {
+    color: CALL_COLORS.teal,
+    fontSize: 11,
+    fontWeight: '700',
+    letterSpacing: 1.2,
+    flexShrink: 0,
+    opacity: 0.85,
+  },
   captionOriginal: { color: CALL_COLORS.text, fontSize: 16, lineHeight: 23 },
   // A partial is not yet what was said; it reads a shade back from a final one.
   captionInterim: { opacity: 0.7 },
@@ -659,23 +734,34 @@ const styles = StyleSheet.create({
   summaryLabel: { color: CALL_COLORS.muted, fontSize: 13 },
   summaryValue: { color: CALL_COLORS.text, fontSize: 14, fontWeight: '600', flexShrink: 1 },
 
+  /*
+   * THE DOCK IS ONE ROW, AND THAT IS WHERE THE CAPTION CARD'S SPACE CAME FROM.
+   *
+   * Five controls pinned to 72dp needed 458dp, so no portrait phone got the
+   * board's single row: it wrapped to two, cost 224dp -- a third of an 800dp
+   * screen -- and the 97dp it grew by is exactly what pushed the caption card
+   * off the bottom. The arithmetic now, at 360dp: 360 - 28 (dockWrap) - 2
+   * (border) - 32 (padding) = 298dp usable; four 52dp circles, one 56dp red
+   * one and four 6dp gaps is 288dp. It fits, with the touch targets still well
+   * over the 44dp floor.
+   */
   dock: {
     backgroundColor: CALL_COLORS.glass,
     borderColor: CALL_COLORS.glassEdge,
     borderWidth: 1,
     borderRadius: 28,
-    paddingHorizontal: 18,
-    paddingTop: 16,
-    paddingBottom: 18,
+    paddingHorizontal: 16,
+    paddingTop: 14,
+    paddingBottom: 16,
     gap: 16,
   },
-  // Bounded at both ends: 72 keeps the touch targets evenly spaced, and 88 stops
-  // one long word from claiming the width the End button needs.
-  roundWrap: { alignItems: 'center', gap: 8, minWidth: 72, maxWidth: 88 },
+  // Bounded at both ends: 52 is the circle and the floor for a touch target, and
+  // 88 stops one long word from claiming the width the End button needs.
+  roundWrap: { alignItems: 'center', gap: 6, minWidth: 52, maxWidth: 88 },
   round: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
+    width: 52,
+    height: 52,
+    borderRadius: 26,
     backgroundColor: 'rgba(255,255,255,0.09)',
     borderWidth: 1,
     borderColor: 'rgba(255,255,255,0.12)',
@@ -685,8 +771,8 @@ const styles = StyleSheet.create({
   roundActive: { backgroundColor: CALL_COLORS.teal, borderColor: CALL_COLORS.teal },
   roundMark: { color: CALL_COLORS.text, fontSize: 12, fontWeight: '800', letterSpacing: 1.5 },
   roundMarkActive: { color: CALL_COLORS.ground },
-  roundLabel: { color: CALL_COLORS.muted, fontSize: 12 },
-  end: { backgroundColor: CALL_COLORS.red, borderColor: CALL_COLORS.red, width: 68, height: 68, borderRadius: 34 },
+  roundLabel: { color: CALL_COLORS.muted, fontSize: 11 },
+  end: { backgroundColor: CALL_COLORS.red, borderColor: CALL_COLORS.red, width: 56, height: 56, borderRadius: 28 },
   endLabel: { color: '#ffffff', fontSize: 14, fontWeight: '700', letterSpacing: 0.3 },
   pressed: { opacity: 0.75 },
   disabled: { opacity: 0.4 },

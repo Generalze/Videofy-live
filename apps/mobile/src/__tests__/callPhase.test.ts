@@ -17,7 +17,12 @@
  */
 import { describe, expect, it } from 'vitest';
 import { callEyebrow, directCallPhase, endedSummaryLine } from '../call/callDisplay';
-import { formatSpokenElapsed, observeRingWindow, ringProgress } from '../call/callTimer';
+import {
+  formatSpokenElapsed,
+  monotonicRingProgress,
+  observeRingWindow,
+  ringProgress,
+} from '../call/callTimer';
 
 describe('which treatment a direct call is in', () => {
   it('is placing while the call has not connected', () => {
@@ -114,6 +119,24 @@ describe('the ended screen states a length, not a clock face', () => {
     expect(endedSummaryLine(291_000, 'translated', 'not-translated')).toBe('4 min 51 s · not translated');
   });
 
+  it('has a weaker word for a call that only ever produced translated TEXT', () => {
+    /*
+     * A caption proves the engine ran and its output reached the handset. It is
+     * not proof that anybody heard a translation, and for a day it was enough
+     * to print the bare word "translated" on a call in which every translated
+     * frame was turned away -- the 19 Sep production failure, certified.
+     */
+    expect(endedSummaryLine(291_000, 'translated', 'text-only')).toBe(
+      '4 min 51 s · translated text only',
+    );
+  });
+
+  it('says so when it worked and then stopped', () => {
+    expect(endedSummaryLine(291_000, 'translated', 'interrupted')).toBe(
+      '4 min 51 s · translation stopped partway',
+    );
+  });
+
   it('claims NOTHING about a translated call in which nothing was measured', () => {
     // Configured translated, nothing played, nothing captioned, no fault
     // reported. The duration is a fact; "· translated" would not be.
@@ -165,13 +188,12 @@ describe('the outgoing arc is a share of the server ring window', () => {
     ).toBe(1);
   });
 
-  it('UN-FILLS when the server moves the deadline, which is what happened', () => {
+  it('computes a smaller share when the server moves the deadline', () => {
     /*
      * Answering extends the window by the answer grace (direct-call-lifecycle's
      * `answering`). The denominator is the first window this screen saw, so a
-     * deadline pushed forward simply reads as less of the ring gone -- which is
-     * the truth. An arc that kept climbing would be asserting a call was closer
-     * to timing out after the very event that saved it.
+     * deadline pushed forward computes as less of the ring gone. That is the
+     * arithmetic; what the SCREEN may draw from it is the next test.
      */
     const extended = EXPIRES + 15_000;
     const before = ringProgress({ expiresAtMs: EXPIRES, windowMs: WINDOW, offsetMs: OFFSET, localNowMs: EXPIRES - 5_000 });
@@ -179,6 +201,40 @@ describe('the outgoing arc is a share of the server ring window', () => {
     expect(before).toBeCloseTo(0.888, 2);
     expect(after).toBeCloseTo(0.555, 2);
     expect(after).toBeLessThan(before as number);
+  });
+
+  it('NEVER GROWS on screen: an extension holds the arc, it does not refill it', () => {
+    /*
+     * The documented Answer grace, step by step: a 30 s window captured at
+     * t=0; at t=24 s a fifth of the arc is left; the server pushes
+     * `expiresAtMs` 30 s out. The raw share drops to zero, so the arc snapped
+     * from a fifth back to FULL in one frame and then sat motionless for six
+     * seconds -- which reads as a ring that restarted, and then as a display
+     * that has stopped measuring. The high-water mark holds it where it was
+     * until the drain catches up.
+     */
+    const window = 30_000;
+    const deadline = 1_700_000_030_000;
+    const at = (expiresAtMs: number, localNowMs: number) =>
+      ringProgress({ expiresAtMs, windowMs: window, offsetMs: OFFSET, localNowMs });
+    const t24 = at(deadline, deadline - 6_000);
+    expect(t24).toBeCloseTo(0.8, 5);
+    let seen = monotonicRingProgress(null, t24);
+    expect(seen).toBeCloseTo(0.8, 5);
+    // The extension lands. The raw figure collapses; the arc does not move.
+    const extended = deadline + 30_000;
+    const jump = at(extended, deadline - 6_000);
+    expect(jump).toBe(0);
+    seen = monotonicRingProgress(seen, jump);
+    expect(seen).toBeCloseTo(0.8, 5);
+    // Six seconds of the extension spent: still held, never grown.
+    seen = monotonicRingProgress(seen, at(extended, deadline));
+    expect(seen).toBeCloseTo(0.8, 5);
+    // And it drains again once the new deadline is closer than the old one was.
+    const later = monotonicRingProgress(seen, at(extended, extended - 3_000));
+    expect(later).toBeCloseTo(0.9, 5);
+    // Nothing to measure stays nothing to measure: no stale arc is kept.
+    expect(monotonicRingProgress(seen, null)).toBeNull();
   });
 
   it('is EMPTY, not part-filled, when the new deadline is past the whole window', () => {

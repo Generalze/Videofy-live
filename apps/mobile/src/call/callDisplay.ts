@@ -153,10 +153,15 @@ export function callEyebrow(
  * `endedTranslationVerdict` -- and it is required rather than defaulted so that
  * forgetting it is a compile error rather than a confident sentence:
  *
- *   translated      something was measured: a frame played, or a translated
- *                   caption arrived.
+ *   translated      a frame of translated speech was PLAYED here. Only this
+ *                   entitles the line to the bare word "translated": a caption
+ *                   proves the engine ran, not that anybody heard it, and for
+ *                   one day a caption was enough to write this word over a call
+ *                   in which every translated frame was turned away.
+ *   interrupted     it played, and then it stopped.
+ *   text-only       translated text arrived and no audio ever played.
  *   not-translated  something was measured that says it did not happen.
- *   unproven        neither. The duration alone; the call claims nothing.
+ *   unproven        nothing. The duration alone; the call claims nothing.
  */
 export function endedSummaryLine(
   elapsedMs: number | null,
@@ -168,6 +173,8 @@ export function endedSummaryLine(
   if (mode === 'normal') return `${duration} · original voices`;
   if (mode !== 'translated') return duration;
   if (verdict === 'translated') return `${duration} · translated`;
+  if (verdict === 'interrupted') return `${duration} · translation stopped partway`;
+  if (verdict === 'text-only') return `${duration} · translated text only`;
   if (verdict === 'not-translated') return `${duration} · not translated`;
   return duration;
 }

@@ -184,13 +184,20 @@ function harness(state: CallStateSnapshot | null = translatedCall()) {
   };
 }
 
-describe('the phone says, once, that it has actually made a sound', () => {
+describe('the phone keeps saying that it is making a sound', () => {
   /*
    * THE SIGNAL THAT EXISTED AND NEVER LEFT THE SINK. `playedMs` has counted
    * accepted output since this file was written, and nothing outside its own
    * tests ever read it -- so the screen said "Listening for translated speech"
    * (a socket handler is bound) with no way to ever say more, while the one
-   * piece of audible proof sat one object away. It is now announced, once.
+   * piece of audible proof sat one object away.
+   *
+   * AND ONCE PER CALL WAS NOT ENOUGH. The screen's sentence is "Playing
+   * translated speech", which is present tense: a single announcement at
+   * second three kept it -- and the ended screen's "· translated" -- on a call
+   * whose every later frame was refused. So it is a heartbeat, paced by the
+   * audio actually emitted rather than by the wall clock, and a stream that
+   * stops stops announcing.
    */
   it('announces the first frame the platform accepted', () => {
     const call = harness();
@@ -199,9 +206,28 @@ describe('the phone says, once, that it has actually made a sound', () => {
     call.send({ samples: [10, 20, 30], sequence: 0 });
     expect(call.played).toHaveLength(1);
     expect(call.played[0]).toBeGreaterThan(0);
-    // Once per call: a phone needs the fact, not fifty announcements a second.
+    // Not per frame: frames arrive fifty a second and a phone needs the fact.
     call.send({ samples: [40, 50], sequence: 1 });
     expect(call.played).toHaveLength(1);
+  });
+
+  it('announces again every second of audio it goes on playing', () => {
+    // 16 kHz: 8000 samples is half a second of sound.
+    const half = new Array<number>(8_000).fill(64);
+    const call = harness();
+    call.link.attach();
+    call.send({ samples: half, sequence: 0 });
+    expect(call.played).toEqual([500]);
+    // Half a second later there is nothing new to say.
+    call.send({ samples: half, sequence: 1 });
+    expect(call.played).toEqual([500]);
+    // A full second on from the last announcement, there is.
+    call.send({ samples: half, sequence: 2 });
+    expect(call.played).toEqual([500, 1_500]);
+    call.send({ samples: half, sequence: 3 });
+    expect(call.played).toEqual([500, 1_500]);
+    call.send({ samples: half, sequence: 4 });
+    expect(call.played).toEqual([500, 1_500, 2_500]);
   });
 
   it('says nothing for frames the phone never played', () => {

@@ -13,10 +13,12 @@
  * wiring was the only part nobody could test.
  *
  * So the wiring is here, as ordinary TypeScript, and the screen is a render of
- * what this returns. There is no react-test-renderer in this app (and adding
- * one to stand up React Native in node would be a mocking scaffold larger than
- * the thing it tested), so the choice was between proving the props or not
- * proving them.
+ * what this returns. The screen itself is now rendered in the suite as well --
+ * `react-test-renderer` against the stubs in src/__tests__/stubs, added 20 Sep
+ * after 22 mutants planted in the screen, the components and the styles
+ * survived a green run -- so these decisions are proven here and their arrival
+ * on screen is proven there. Neither is a substitute for the other: this file
+ * says what is true, the rendered tests say it reached a prop.
  *
  * EVERY FIELD IS NULL WHEN IT WAS NOT MEASURED, and the screen renders nothing
  * for a null. That is the rule this product's worst night produced -- it spent
@@ -29,9 +31,11 @@
  *                     person. The gateway delivers a speaker their own words,
  *                     and bars under their face while YOU talk name the wrong
  *                     mouth.
- *   the pill          one per screen. The language pair only where a translated
- *                     call is really running between two different languages;
- *                     otherwise the mode, which is a fact the server stated.
+ *   the pill          one per screen, and it states a PAIR rather than an
+ *                     activity. Not drawn at all where the phone has measured
+ *                     that translation is not happening, nor on an ended call
+ *                     whose verdict it would contradict, nor where it would
+ *                     print the same two words as the C7 mark above it.
  *   the ended line    the mode is what the call was CONFIGURED as, never
  *                     evidence that translation happened; see
  *                     `endedTranslationVerdict`.
@@ -51,6 +55,7 @@ import {
 import {
   endedTranslationVerdict,
   translationReadiness,
+  type EndedTranslationVerdict,
   type TranslationSignals,
 } from './translationReadiness';
 import { formatCallClock, formatSpokenElapsed } from './callTimer';
@@ -86,8 +91,14 @@ export interface CaptionCardView {
 
 export interface SpeechView {
   readonly active: boolean;
-  /** Attributed. "Speaking" alone does not say whose mouth. */
-  readonly accessibilityLabel: string;
+  /**
+   * Attributed -- "Speaking" alone does not say whose mouth -- and NULL rather
+   * than false. When the caption on screen is this phone's own speech the
+   * indicator holds no measurement of the peer at all, and it used to announce
+   * "Tunde is quiet" at the moment Tunde may have been talking over the user.
+   * No label is the honest value; a test certified the false one.
+   */
+  readonly accessibilityLabel: string | null;
 }
 
 export interface SummaryView {
@@ -102,6 +113,13 @@ export interface CallScreenView {
     readonly ring: boolean;
     /** The share of the ring window LEFT, or null when none was measured. */
     readonly remaining: number | null;
+    /**
+     * WHAT THE ARC IS A SHARE OF, said out loud. A teal arc shrinking under
+     * "Calling…" reads as falling signal as readily as it reads as time left,
+     * and to a screen reader it did not read at all: the Svg carried no label
+     * and no text on the screen mentioned a deadline.
+     */
+    readonly remainingLabel: string | null;
     readonly dim: boolean;
   };
   readonly speech: SpeechView | null;
@@ -120,6 +138,33 @@ export interface CallScreenView {
   readonly dock: readonly DockControl[];
   readonly endLabel: string;
   readonly endedActions: readonly EndedActionId[];
+  /**
+   * IS THERE ROOM FOR A WORD UNDER EACH CONTROL? The board draws ONE row, and
+   * five labelled controls need 458dp -- wider than any portrait phone, so the
+   * dock wrapped to two rows and took 97dp out of the stage, which is what
+   * pushed the caption card off the bottom of the screen. Five icon-only
+   * controls fit 360dp with room to spare; four labelled ones also fit. The
+   * label never disappears from the screen READER -- `DockControl.label` is the
+   * accessibility name either way.
+   */
+  readonly dockLabels: boolean;
+  /**
+   * THE COLUMN YIELDS; THE CAPTION CARD DOES NOT. With a card on screen the
+   * avatar, the clock and the name are drawn smaller, because the card is the
+   * point of the screen and it must be visible without scrolling a live call.
+   */
+  readonly compactIdentity: boolean;
+  /**
+   * HOW LONG THE ENDED SCREEN WAITS BEFORE DISMISSING ITSELF, or null when it
+   * does not.
+   *
+   * A screen with buttons does not delete itself. The ended screen used to call
+   * `onLeave()` 2500 ms after the terminal state, which was harmless when the
+   * only control was Close and is not now: Call back and Message appear and
+   * vanish before a hand reaches them, and the summary card cannot be read. The
+   * timer survives only where there is nothing to act on.
+   */
+  readonly autoDismissMs: number | null;
 }
 
 export interface CallScreenViewInput {
@@ -143,6 +188,13 @@ export interface CallScreenViewInput {
   readonly elapsedMs: number | null;
   /** `ringProgress`: the share of the server ring window that has GONE. */
   readonly ringElapsed: number | null;
+  /**
+   * The phone's clock, as the screen's tick last read it. Every present-tense
+   * sentence about translation is checked against it; see
+   * `translationReadiness`, where a stamp from second three stopped being a
+   * licence to say "playing" at minute four.
+   */
+  readonly nowMs: number;
   readonly muted: boolean;
   readonly speakerOn: boolean;
   readonly cameraOn: boolean;
@@ -155,11 +207,31 @@ export interface CallScreenViewInput {
 /** The states in which a call was never answered, and the board offers a way on. */
 const UNREACHED = new Set(['unavailable', 'no_answer', 'busy', 'declined']);
 
-function modeLabel(mode: 'normal' | 'translated' | null, kind: 'direct' | 'conference'): string {
-  if (kind === 'conference') return 'Conference';
+/**
+ * HOW MANY CONTROLS CAN WEAR A WORD ON ONE ROW of a 360dp phone.
+ *
+ * The arithmetic, from the styles as written: 360 - 28 (dockWrap) - 2 (dock
+ * border) - 36 (dock padding) = 294dp of usable width. A labelled control needs
+ * about 66dp for "Camera off" at 12pt; an icon-only one needs its 52dp circle.
+ * Four labelled plus gaps is 282dp and fits; five is 354dp and does not, which
+ * is how the dock came to be two rows tall and a third of the screen.
+ */
+const LABELLED_CONTROLS_THAT_FIT = 4;
+
+/** Long enough to read "Call ended" and no longer, on a screen with nothing to press. */
+const ENDED_AUTO_DISMISS_MS = 2_500;
+
+/**
+ * The mode the SERVER stated, as a phrase -- or null, which is the case that
+ * matters. It used to answer 'Direct call' for an unstated mode, and the C7
+ * mark at the top of the same screen reads DIRECT CALL, so for the whole of
+ * every outgoing ring the screen printed the same two words twice, 300dp apart.
+ * One statement of what kind of call this is, per screen.
+ */
+function modeLabel(mode: 'normal' | 'translated' | null): string | null {
   if (mode === 'translated') return 'Translated call';
   if (mode === 'normal') return 'Normal call';
-  return 'Direct call';
+  return null;
 }
 
 /** `yo-NG` -> `YORUBA`. The card has the room; see the pill for the codes. */
@@ -169,43 +241,66 @@ function languageLabel(tag: string): string {
 }
 
 /**
- * ONE PILL PER SCREEN (the board), and it has to be the one carrying the most
- * measured fact.
+ * ONE PILL PER SCREEN (the board), and it states a PAIR -- never an activity.
  *
- * The language pill is drawn only where a translated call is actually running
- * between two different languages -- which is also the only circumstance in
- * which its screen-reader label, "Translating Yoruba to English", is a true
- * sentence. It was hard-coded before, and gated on nothing but the pair
- * existing, so a normal-mode call read "Translating Yoruba to English" to a
- * screen-reader user and a same-language pair read "Translating English to
- * English". `isSameLanguagePair` was written and tested in the same commit and
- * called by nothing.
+ * Three things were wrong with the sentence it spoke, and all three are the
+ * same mistake in different clothes:
+ *
+ *   "Translating Yoruba to English" is present tense. It was announced on an
+ *   ENDED call, on a call the server had already said it could not translate,
+ *   and on a call nobody answered. On the ended screen with an unproven verdict
+ *   it was the ONLY element saying anything about translation and the only
+ *   unmeasured one -- three honest elements and a fourth, heard by screen-reader
+ *   users alone, contradicting all of them.
+ *
+ * So: the label states the pair; the pill is not drawn at all where the phone
+ * has measured that translation is NOT happening; and on the ended screen it is
+ * drawn only where the verdict says a translation was actually heard.
  */
-function pillFor(input: CallScreenViewInput): CallPill | null {
+function pillFor(input: CallScreenViewInput, verdict: EndedTranslationVerdict): CallPill | null {
+  if (input.kind !== 'direct') return null;
+  /*
+   * A KNOWN-NEGATIVE ENGINE SILENCES THE PILL. The readiness line beneath it
+   * already says the server cannot translate, or that this phone cannot play
+   * it; a teal pair beside that sentence is the contradiction, not the fact.
+   */
+  const knownNegative =
+    input.translation.engine === false || input.translation.playback === 'unavailable';
+  if (input.translation.mode === 'translated' && knownNegative) return null;
+  /*
+   * ON THE ENDED SCREEN THE PILL AGREES WITH THE VERDICT OR IS NOT DRAWN. A
+   * call that ended "· not translated" does not also wear its language pair,
+   * and a call that ended claiming nothing does not have the pill claim
+   * something on its behalf.
+   */
+  if (input.phase === 'ended' && input.translation.mode === 'translated' && verdict !== 'translated') {
+    return null;
+  }
   const pair = input.languages;
-  if (
-    pair !== null &&
-    input.kind === 'direct' &&
-    input.translation.mode === 'translated' &&
-    !isSameLanguagePair(pair)
-  ) {
+  if (pair !== null && input.translation.mode === 'translated' && !isSameLanguagePair(pair)) {
     return {
       kind: 'languages',
       label: languagePairLabel(pair),
-      accessibilityLabel: `Translating ${languagePairSpoken(pair)}`,
+      // A pair, stated. Not a claim that anything is happening to it.
+      accessibilityLabel: languagePairSpoken(pair),
     };
   }
-  const label = modeLabel(input.translation.mode, input.kind);
-  return { kind: 'mode', label, accessibilityLabel: label };
+  const label = modeLabel(input.translation.mode);
+  return label === null ? null : { kind: 'mode', label, accessibilityLabel: label };
 }
 
 function dockFor(input: CallScreenViewInput): readonly DockControl[] {
   /*
-   * ONE RED BUTTON WHILE A CALL IS BEING PLACED (the board). Mute, Speaker and
-   * Camera act on media that does not exist yet on a call nobody has answered.
-   *
-   * AND NONE OF THEM ON A CALL THAT HAS ENDED, which the old guard let through:
-   * a finished call showed Mute, Speaker and Camera acting on a dead call.
+   * NO LIVE CONTROLS ON A DEAD CALL -- and that includes a conference, which
+   * the previous guard exempted by asking about `kind` first: a finished
+   * conference still showed Mute, Speaker and Camera acting on a call that no
+   * longer existed. The dead-call rule comes first and applies to both.
+   */
+  if (input.phase === 'ended') return [];
+  /*
+   * ONE RED BUTTON WHILE A DIRECT CALL IS BEING PLACED (the board). Mute,
+   * Speaker and Camera act on media that does not exist yet on a call nobody
+   * has answered. A conference is JOINED rather than placed and keeps its dock.
    */
   if (input.kind === 'direct' && input.phase !== 'live') return [];
   const controls: DockControl[] = [
@@ -230,16 +325,21 @@ function dockFor(input: CallScreenViewInput): readonly DockControl[] {
    * on Camera. It is present for the whole live phase and simply cannot be
    * pressed before there is a caption to hide.
    *
-   * The board draws a teal Translate control here. It is NOT wired as one:
-   * turning translation on or off mid-call is `call:mode:set`, which the
-   * gateway grants to the call owner alone and this client has never sent. What
-   * the phone genuinely owns is whether the card is on screen.
+   * AND IT IS NOT A TRANSLATION SWITCH. The board draws a teal Translate
+   * control here and it was drawn with the translate glyph and a teal ON fill
+   * that went dark when pressed -- while its only effect is hiding the caption
+   * card. Turning translation on or off mid-call is `call:mode:set`, which the
+   * gateway grants to the call owner alone and this client has never sent, so
+   * somebody who pressed it to stop translation believed they had. The glyph is
+   * now a captions glyph (see ../ui/icons.tsx) and the label says which way it
+   * goes: what the phone genuinely owns is whether the card is on screen.
    */
   if (input.kind === 'direct') {
+    const shown = input.captionsShown && input.caption !== null;
     controls.push({
       id: 'captions',
-      label: 'Captions',
-      active: input.captionsShown && input.caption !== null,
+      label: shown ? 'Hide captions' : 'Show captions',
+      active: shown,
       disabled: input.caption === null,
     });
   }
@@ -255,13 +355,20 @@ function endLabelFor(input: CallScreenViewInput): string {
 
 function summaryFor(
   input: CallScreenViewInput,
-  verdict: ReturnType<typeof endedTranslationVerdict>,
+  verdict: EndedTranslationVerdict,
 ): SummaryView | null {
   if (input.phase !== 'ended' || input.kind !== 'direct') return null;
-  const rows: { label: string; value: string }[] = [];
-  if (input.elapsedMs !== null) {
-    rows.push({ label: 'Duration', value: formatSpokenElapsed(input.elapsedMs) });
-  }
+  /*
+   * NO SUMMARY OF A CALL THAT NEVER RAN. Gated on the phase alone, an
+   * unanswered call got a card headed "Call summary" whose single row was a
+   * translation verdict about a call that did not happen -- which a caller
+   * reads as "it ran and the translation broke". A duration is the evidence
+   * that there was something to summarise.
+   */
+  if (input.elapsedMs === null) return null;
+  const rows: { label: string; value: string }[] = [
+    { label: 'Duration', value: formatSpokenElapsed(input.elapsedMs) },
+  ];
   /*
    * THE LANGUAGES ROW IS A CLAIM ABOUT TRANSLATION, not a record of two
    * settings, and it used to stand beside a "· translated" line that the same
@@ -272,14 +379,20 @@ function summaryFor(
   if (verdict === 'translated' && input.languages !== null) {
     rows.push({ label: 'Languages', value: languagePairNames(input.languages) });
   }
+  if (verdict === 'interrupted') {
+    rows.push({ label: 'Translation', value: 'Stopped partway' });
+  }
+  if (verdict === 'text-only') {
+    rows.push({ label: 'Translation', value: 'Text only — no audio played' });
+  }
   if (verdict === 'not-translated') {
     rows.push({ label: 'Translation', value: 'Not available' });
   }
-  return rows.length === 0 ? null : { title: 'Call summary', rows };
+  return { title: 'Call summary', rows };
 }
 
 export function callScreenView(input: CallScreenViewInput): CallScreenView {
-  const readiness = translationReadiness(input.translation);
+  const readiness = translationReadiness(input.translation, input.nowMs);
   const verdict = endedTranslationVerdict(input.translation);
   const eyebrow = callEyebrow(input.serverState, input.role, input.phase);
   const words = stateLine(input.serverState, input.role, input.peerName);
@@ -305,6 +418,10 @@ export function callScreenView(input: CallScreenViewInput): CallScreenView {
     if (input.canMessage) endedActions.push('message');
   }
   const unreached = input.serverState !== null && UNREACHED.has(input.serverState);
+  const dock = dockFor(input);
+  const summary = summaryFor(input, verdict);
+  /** Is the caption card actually on screen? The column's size depends on it. */
+  const cardShown = direct && input.phase === 'live' && input.captionsShown && card !== null;
   return {
     eyebrow,
     halo: {
@@ -314,16 +431,31 @@ export function callScreenView(input: CallScreenViewInput): CallScreenView {
       pulsing: input.phase === 'placing' && remaining === null,
       ring: input.phase !== 'live',
       remaining,
+      remainingLabel:
+        remaining === null
+          ? null
+          : `Time left for them to answer: ${Math.round(remaining * 100)}%`,
       dim: input.phase === 'ended',
     },
     speech:
       direct && input.phase === 'live' && card !== null
         ? {
             active: speakingNow,
-            accessibilityLabel: speakingNow ? `${who} is speaking` : `${who} is quiet`,
+            /*
+             * SAY NOTHING ABOUT SOMEBODY YOU HAVE NOT MEASURED. When the
+             * caption on screen is this phone's own speech the slot holds no
+             * measurement of the peer, so there is no label -- it used to
+             * announce "Tunde is quiet" at the moment Tunde may have been
+             * talking over the user, their caption simply not having landed.
+             */
+            accessibilityLabel: input.captionIsSelf
+              ? null
+              : speakingNow
+                ? `${who} is speaking`
+                : `${who} is quiet`,
           }
         : null,
-    pill: direct ? pillFor(input) : null,
+    pill: pillFor(input, verdict),
     timer:
       input.phase === 'live' && input.elapsedMs !== null ? formatCallClock(input.elapsedMs) : null,
     connected: input.phase === 'live' && input.connectedRow.show
@@ -351,7 +483,7 @@ export function callScreenView(input: CallScreenViewInput): CallScreenView {
         ? { words: readiness.words, warn: readiness.warn }
         : null,
     caption:
-      direct && input.phase === 'live' && input.captionsShown && card !== null
+      cardShown && card !== null
         ? {
             speaker: card.speaker,
             sourceLabel: languageLabel(card.sourceLanguage),
@@ -370,7 +502,7 @@ export function callScreenView(input: CallScreenViewInput): CallScreenView {
                   },
           }
         : null,
-    summary: summaryFor(input, verdict),
+    summary,
     /*
      * THE BOARD'S TWO BUTTONS, or the sentence that stood in for them. The
      * prose is a fallback for a screen that was given no way to place a call or
@@ -380,8 +512,21 @@ export function callScreenView(input: CallScreenViewInput): CallScreenView {
       ? 'You can message them instead, or call again later.'
       : null,
     cameraNotice: direct && input.phase === 'live' && !input.cameraOn && card === null,
-    dock: dockFor(input),
+    dock,
     endLabel: endLabelFor(input),
     endedActions,
+    dockLabels: dock.length + endedActions.length + 1 <= LABELLED_CONTROLS_THAT_FIT,
+    compactIdentity: cardShown,
+    /*
+     * THE ENDED SCREEN DISMISSES ITSELF ONLY WHERE THERE IS NOTHING TO ACT ON.
+     * With Call back, Message or a summary card on it, the person decides when
+     * it goes -- they had 2.5 seconds to read a duration, a two-row card and
+     * press a 60dp button, which in practice meant the buttons appeared and
+     * vanished before a hand reached them.
+     */
+    autoDismissMs:
+      input.phase === 'ended' && endedActions.length === 0 && summary === null
+        ? ENDED_AUTO_DISMISS_MS
+        : null,
   };
 }

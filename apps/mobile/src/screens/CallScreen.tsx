@@ -77,6 +77,7 @@ import {
   callTickWanted,
   elapsedSinceMs,
   formatElapsed,
+  monotonicRingProgress,
   observeRingWindow,
   observeServerClock,
   ringProgress,
@@ -271,6 +272,8 @@ export function CallScreen({
    */
   const [ringExpiresAtMs, setRingExpiresAtMs] = useState<number | null>(null);
   const ringWindowMs = useRef<number | null>(null);
+  /** The furthest through the window the arc has been. It never goes back. */
+  const ringSeen = useRef<number | null>(null);
 
   /*
    * THE UTTERANCE ON SCREEN, and when it last changed on THIS phone's clock.
@@ -481,7 +484,7 @@ export function CallScreen({
          * "Listening for translated speech" ever meant. Counted whether or not
          * the merge puts this particular revision on screen.
          */
-        setSignals((current) => applyCaptionEvidence(current, event));
+        setSignals((current) => applyCaptionEvidence(current, event, Date.now()));
         setCaption((current) => {
           const accepted = nextCaption(current?.event ?? null, event);
           if (accepted === null) return current;
@@ -514,7 +517,13 @@ export function CallScreen({
          * the 19 Sep post-mortem's worst state -- and `played`, the only
          * audible proof there is, were dropped here.
          */
-        setSignals((current) => applyTranslatedAudioDiagnostic(current, event));
+        /*
+         * STAMPED, NOT LATCHED. "Playing translated speech" is present tense
+         * and the stamp is what keeps it honest: one frame at second three
+         * used to hold that sentence -- and the ended screen's "· translated"
+         * -- for the rest of a call in which every later frame was refused.
+         */
+        setSignals((current) => applyTranslatedAudioDiagnostic(current, event, Date.now()));
         if (event.kind === 'originals') {
           videoStamps.current['xlate_originals_suppressed'] = event.suppressed ? 1 : 0;
         }
@@ -683,12 +692,16 @@ export function CallScreen({
     }
   }, [terminal, connectedAtMs, finalElapsedMs]);
 
-  // A terminal telephone state ends the screen after the words are read.
+  /*
+   * A SCREEN WITH BUTTONS DOES NOT DELETE ITSELF, and `terminalNow` is how the
+   * End press below finds out whether the telephone answered it. The terminal
+   * auto-leave that used to live here is now the model's `autoDismissMs`, read
+   * where the view is built.
+   */
+  const terminalNow = useRef(terminal);
   useEffect(() => {
-    if (!terminal) return undefined;
-    const timer = setTimeout(() => onLeave(), 2500);
-    return () => clearTimeout(timer);
-  }, [terminal, onLeave]);
+    terminalNow.current = terminal;
+  }, [terminal]);
 
   // A refused knock ends the screen the same way: the words, then out.
   const refused = admission !== null && admission !== 'pending' && admission !== 'admitted';
@@ -761,14 +774,19 @@ export function CallScreen({
      * caller's own device disagreeing with the callee's. `ending` keeps the
      * button responsive and disabled without asserting anything untrue.
      *
-     * The screen still leaves on its own after the request settles: a person
-     * who pressed End must never be held on a call screen because an
-     * acknowledgement was lost.
+     * THE SCREEN LEAVES ONLY IF THE TELEPHONE NEVER ANSWERED. A person who
+     * pressed End must not be held on a call screen because an acknowledgement
+     * was lost -- so the timer stays -- but when the server's own terminal
+     * state HAS arrived the ended screen is a real screen with real buttons on
+     * it, and it used to be destroyed 600 ms after the press, taking Call back,
+     * Message and the summary with it.
      */
     const link = connection.current;
     setEnding(true);
     void (link?.end() ?? Promise.resolve(false)).finally(() => {
-      setTimeout(() => onLeave(), 600);
+      setTimeout(() => {
+        if (!terminalNow.current) onLeave();
+      }, 600);
     });
   }, [call.kind, onLeave, terminal]);
 
@@ -793,12 +811,25 @@ export function CallScreen({
     elapsedMs,
     connectedRowShown: connectedRowState.show,
   });
-  const arc = ringProgress({
-    expiresAtMs: ringExpiresAtMs,
-    windowMs: ringWindowMs.current,
-    offsetMs: clockOffset.current,
-    localNowMs: nowMs,
-  });
+  /*
+   * THE ARC NEVER GROWS. The denominator is frozen at the first window seen, so
+   * the Answer grace period -- which pushes `expiresAtMs` forward mid-ring --
+   * computed a smaller elapsed share and snapped the arc from a fifth back to
+   * full in one frame, where it then sat motionless for six seconds. That reads
+   * as a ring that restarted. The high-water mark is kept here, beside the
+   * other two figures captured once per call, and the rule itself is
+   * `monotonicRingProgress` where it can be tested.
+   */
+  const arc = monotonicRingProgress(
+    ringSeen.current,
+    ringProgress({
+      expiresAtMs: ringExpiresAtMs,
+      windowMs: ringWindowMs.current,
+      offsetMs: clockOffset.current,
+      localNowMs: nowMs,
+    }),
+  );
+  if (arc !== null) ringSeen.current = arc;
   /*
    * EVERY DECISION THIS SCREEN MAKES, MADE SOMEWHERE IT CAN BE PROVEN.
    *
@@ -827,6 +858,7 @@ export function CallScreen({
     captionsShown,
     elapsedMs,
     ringElapsed: arc,
+    nowMs,
     muted,
     speakerOn,
     cameraOn,
@@ -834,6 +866,21 @@ export function CallScreen({
     canCallBack: onCallBack !== undefined,
     canMessage: onMessagePeer !== undefined,
   });
+
+  /*
+   * THE ONLY AUTOMATIC EXIT LEFT, and the model decides whether there is one.
+   * A terminal state used to unmount this screen 2500 ms later whatever was on
+   * it, which was harmless when the only control was Close: the board's Call
+   * back and Message buttons then appeared and vanished before a hand could
+   * reach them, and the summary card could not be read. Where there is
+   * something to press or read, the person dismisses the screen.
+   */
+  const autoDismissMs = view.autoDismissMs;
+  useEffect(() => {
+    if (autoDismissMs === null) return undefined;
+    const timer = setTimeout(() => onLeave(), autoDismissMs);
+    return () => clearTimeout(timer);
+  }, [autoDismissMs, onLeave]);
 
   /** The dock's glyph and its action, by the id the model named. */
   const dockIcon = (control: DockControl): ReactNode => {
@@ -843,8 +890,19 @@ export function CallScreen({
     if (control.id === 'camera') {
       return <Icon name={cameraOn ? 'camera' : 'camera-off'} size={26} color={tint} />;
     }
-    return <Icon name="translate" size={24} color={tint} />;
+    /*
+     * A CAPTIONS GLYPH, NOT THE TRANSLATE ONE. This control hides and shows the
+     * caption card; it cannot turn translation off -- that is `call:mode:set`,
+     * which the gateway grants to the call owner alone and this client has
+     * never sent. A teal translate glyph that went dark when pressed told
+     * people they had stopped the translation, on a product whose named defect
+     * class is claiming a translation state nothing measured.
+     */
+    return <Icon name="captions" size={24} color={tint} />;
   };
+  /** The readiness sentence, but only when it is a FAULT. Both stages draw it. */
+  const warnLine =
+    view.readinessLine !== null && view.readinessLine.warn ? view.readinessLine.words : null;
   const dockPress = (control: DockControl): void => {
     if (control.id === 'mute') toggleMute();
     else if (control.id === 'speaker') toggleSpeaker();
@@ -908,16 +966,49 @@ export function CallScreen({
                   {elapsedMs !== null ? formatElapsed(elapsedMs) : stateLine(serverState, role, call.peer.name)}
                 </Text>
               </View>
+              {/*
+                * THE HONEST-STATE SURFACE DOES NOT VANISH WHEN A CAMERA COMES
+                * ON. This branch rendered nothing from the view model at all,
+                * so every measured-state fix in three rounds was silently
+                * bounded to audio-only calls -- on a product whose pitch is
+                * translated VIDEO calling. A translation FAULT and the ended
+                * verdict are the two that cannot wait for the full-screen
+                * video wave: one is the September defect's only dissenting
+                * voice, the other is the call's verdict on itself. The caption
+                * card and the summary belong with that wave and are not drawn
+                * here rather than being half-drawn here.
+                */}
+              {(warnLine !== null || view.endedLine !== null) && (
+                <View style={styles.peerVideoState}>
+                  {view.endedLine !== null && (
+                    <Text style={styles.peerVideoEnded}>{view.endedLine}</Text>
+                  )}
+                  {warnLine !== null && (
+                    <Text style={styles.peerVideoWarn}>{warnLine}</Text>
+                  )}
+                </View>
+              )}
             </View>
           ) : (
             /*
-             * SCROLLABLE, because the column overflows on the commonest phone.
-             * A live translated call with a three-line sentence and a three-line
-             * translation is taller than the stage on a 360x800 screen, and a
-             * centred column splits the overflow top and bottom: the bottom of
-             * the nested translation card -- the board's centrepiece -- went
-             * behind the dock, triggered by one long sentence.
+             * THE CAPTION CARD HAS ITS OWN SPACE, DIRECTLY ABOVE THE DOCK.
+             *
+             * It used to sit at the bottom of one long scrolling column, and a
+             * reviewer computed the consequence from the styles as written: on a
+             * 360x800 phone the stage is 462dp and the column above the card is
+             * 479dp, so at rest not one pixel of the card was on screen. The
+             * ScrollView had turned "clipped" into "invisible unless you scroll
+             * a live call by hand" -- for the one element that shows this
+             * product's billable unit working.
+             *
+             * So the column SCROLLS and the card DOES NOT: the identity block
+             * takes what is left (and compresses -- see `compactIdentity`),
+             * while the card keeps a bounded slot of its own with its own
+             * internal scroll for a long utterance. The dock did not grow to
+             * pay for this; it shrank to one row, which is where the space
+             * came from.
              */
+            <>
             <ScrollView
               style={styles.stageScroll}
               contentContainerStyle={styles.stageScrollContent}
@@ -941,10 +1032,12 @@ export function CallScreen({
                 <AvatarHalo
                   accountId={call.peer.accountId}
                   name={call.peer.name}
-                  size={124}
+                  // The avatar is the first thing to yield to the caption card.
+                  size={view.compactIdentity ? 92 : 124}
                   pulsing={view.halo.pulsing}
                   ring={view.halo.ring}
                   remaining={view.halo.remaining}
+                  remainingLabel={view.halo.remainingLabel}
                   dim={view.halo.dim}
                 />
                 {/* One line. A long name at 34pt wrapped to three and pushed the
@@ -953,7 +1046,11 @@ export function CallScreen({
                   numberOfLines={1}
                   adjustsFontSizeToFit
                   minimumFontScale={0.6}
-                  style={[styles.peerName, view.halo.dim && styles.peerNameEnded]}
+                  style={[
+                    styles.peerName,
+                    view.compactIdentity && styles.peerNameCompact,
+                    view.halo.dim && styles.peerNameEnded,
+                  ]}
                 >
                   {call.peer.name}
                 </Text>
@@ -977,7 +1074,11 @@ export function CallScreen({
                   * whenever that value existed, so a server that had gone back
                   * to `connecting` after a renegotiation still showed Connected.
                   */}
-                {view.timer !== null && <Text style={styles.timer}>{view.timer}</Text>}
+                {view.timer !== null && (
+                  <Text style={[styles.timer, view.compactIdentity && styles.timerCompact]}>
+                    {view.timer}
+                  </Text>
+                )}
                 {view.connected !== null && (
                   <View style={styles.stateRow}>
                     <View style={[styles.stateDot, view.connected.warn && styles.stateDotWarn]} />
@@ -1016,17 +1117,6 @@ export function CallScreen({
                   </Text>
                 )}
 
-                {/* ===== THE DUAL CAPTION. ===== */}
-                {view.caption !== null && (
-                  <CaptionCard
-                    speaker={view.caption.speaker}
-                    sourceLabel={view.caption.sourceLabel}
-                    original={view.caption.original}
-                    interim={view.caption.interim}
-                    translation={view.caption.translation}
-                  />
-                )}
-
                 {/* ===== THE CALL SUMMARY, on the ended screen. ===== */}
                 {view.summary !== null && (
                   <SummaryCard title={view.summary.title} rows={view.summary.rows} />
@@ -1045,6 +1135,25 @@ export function CallScreen({
                 )}
               </View>
             </ScrollView>
+            {/* ===== THE DUAL CAPTION, in the space that is kept for it. ===== */}
+            {view.caption !== null && (
+              <View style={styles.captionSlot}>
+                <ScrollView
+                  style={styles.captionScroll}
+                  contentContainerStyle={styles.captionScrollContent}
+                  showsVerticalScrollIndicator
+                >
+                  <CaptionCard
+                    speaker={view.caption.speaker}
+                    sourceLabel={view.caption.sourceLabel}
+                    original={view.caption.original}
+                    interim={view.caption.interim}
+                    translation={view.caption.translation}
+                  />
+                </ScrollView>
+              </View>
+            )}
+            </>
           )}
         </View>
       )}
@@ -1136,9 +1245,13 @@ export function CallScreen({
               * reaching for End sideways; and on the ended screen the board's
               * two round buttons instead of live controls acting on a dead call.
               *
-              * THE ROW WRAPS. Five children at 72-88dp do not fit across a 360dp
-              * phone, and the one that was pushed off the right edge was the red
-              * End button.
+              * ONE ROW, WHICH IS WHERE THE CAPTION CARD'S SPACE CAME FROM. Five
+              * LABELLED controls need 458dp and no portrait phone has it, so
+              * the row wrapped and the dock took a third of the screen. Five
+              * icon-only controls fit 360dp; `dockLabels` is the model's answer
+              * to whether the words fit, and the words are the accessibility
+              * names whether they are drawn or not. `flexWrap` stays as the
+              * last resort for a very large system font.
               */}
             {view.dock.map((control) => (
               <RoundControl
@@ -1147,6 +1260,7 @@ export function CallScreen({
                 label={control.label}
                 active={control.active}
                 disabled={control.disabled}
+                showLabel={view.dockLabels}
                 onPress={() => dockPress(control)}
               />
             ))}
@@ -1154,6 +1268,7 @@ export function CallScreen({
               <RoundControl
                 icon={<Icon name="phone" size={26} color={CALL_COLORS.text} />}
                 label="Call back"
+                showLabel={view.dockLabels}
                 onPress={() => onCallBack?.()}
               />
             )}
@@ -1161,6 +1276,7 @@ export function CallScreen({
               <RoundControl
                 icon={<Icon name="message" size={26} color={CALL_COLORS.text} />}
                 label="Message"
+                showLabel={view.dockLabels}
                 onPress={() => onMessagePeer?.()}
               />
             )}
@@ -1170,7 +1286,8 @@ export function CallScreen({
               // Pressed once means once. The screen leaves when the request
               // settles; it does not claim the call ended before the server says.
               disabled={ending}
-              icon={<Icon name="hangup" size={30} color="#ffffff" />}
+              showLabel={view.dockLabels}
+              icon={<Icon name="hangup" size={28} color="#ffffff" />}
             />
           </View>
         </GlassDock>
@@ -1208,8 +1325,20 @@ const styles = StyleSheet.create({
   // `flexGrow` keeps the column centred while it fits and lets it scroll once
   // it does not, which is the whole point: nothing is clipped by the dock.
   stageScrollContent: { flexGrow: 1, justifyContent: 'center', paddingVertical: 12 },
+  /*
+   * THE CARD'S OWN SPACE. Bounded, so it can never take the screen, and
+   * `flexShrink: 0` so the column above it is what yields when the two compete
+   * -- which is the whole ruling: the avatar, the clock and the name give way,
+   * the card does not. A long utterance scrolls INSIDE it rather than pushing
+   * anything off the bottom of the phone.
+   */
+  captionSlot: { flexShrink: 0, maxHeight: 216, paddingHorizontal: 16, paddingTop: 6 },
+  captionScroll: { flexGrow: 0 },
+  captionScrollContent: { paddingBottom: 2 },
   identity: { alignItems: 'center', gap: 10, paddingHorizontal: 28 },
   peerName: { color: CALL_COLORS.text, fontSize: 34, fontWeight: '600', fontFamily: 'serif', marginTop: 6, textAlign: 'center', letterSpacing: -0.3 },
+  // With a caption card on screen the name is a label, not the headline.
+  peerNameCompact: { fontSize: 24, marginTop: 2 },
   stateLine: { color: CALL_COLORS.muted, fontSize: 16, textAlign: 'center' },
   stateConnected: { color: CALL_COLORS.teal },
   stateWarn: { color: '#d9a441' },
@@ -1246,6 +1375,9 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     marginTop: 4,
   },
+  // 56pt of clock is the ended screen's and the plain live call's; with a
+  // caption card to fit, the clock is the second thing to yield after the face.
+  timerCompact: { fontSize: 36, marginTop: 0 },
   timerSmall: { color: CALL_COLORS.muted, fontSize: 18, fontVariant: ['tabular-nums'] },
   hint: { color: CALL_COLORS.faint, fontSize: 13, textAlign: 'center', lineHeight: 19, marginTop: 8 },
   code: { color: CALL_COLORS.teal, fontSize: 24, fontFamily: 'monospace', letterSpacing: 2, marginTop: 6 },
@@ -1267,6 +1399,20 @@ const styles = StyleSheet.create({
   },
   peerVideoName: { color: CALL_COLORS.text, fontSize: 14, fontWeight: '600', flex: 1 },
   peerVideoTimer: { color: CALL_COLORS.text, fontSize: 14, fontVariant: ['tabular-nums'] },
+  /* The two sentences that must survive a camera coming on. */
+  peerVideoState: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    bottom: 12,
+    gap: 4,
+    borderRadius: 16,
+    backgroundColor: 'rgba(7,12,20,0.72)',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  peerVideoEnded: { color: CALL_COLORS.text, fontSize: 15, fontVariant: ['tabular-nums'] },
+  peerVideoWarn: { color: '#d9a441', fontSize: 14, lineHeight: 20 },
 
   tiles: { paddingHorizontal: 12, gap: 12 },
   tile: { gap: 6 },

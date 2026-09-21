@@ -1,6 +1,6 @@
 /** @author masterzee001 */
 /**
- * WHAT THE CALL SCREEN SHOWS -- the half that had never been tested.
+ * WHAT THE CALL SCREEN SHOWS -- every decision behind it, checked here.
  *
  * The decisions behind this screen were proven a commit ago: the phase, the
  * eyebrow, the readiness sentence, the caption card's contents, the ring arc.
@@ -17,9 +17,10 @@
  *   call in the product including normal ones. The September defect that
  *   translationReadiness.ts exists to make impossible, suite green.
  *
- * Nothing in the repository imported a component, and there is no
- * react-test-renderer here to import one with. So the wiring moved into
- * `callScreenView`, and this file is the test that the ten mutants now die on.
+ * That is why the wiring moved into `callScreenView`, and this file is where
+ * those ten mutants die. The ones that live in the JSX -- a prop dropped, a
+ * component swapped, a style deleted -- die next door in callScreenRender and
+ * callThemeRender, which RENDER the screen rather than reading its source.
  */
 import { describe, expect, it } from 'vitest';
 import {
@@ -38,6 +39,8 @@ const CAPTION: CaptionCardModel = {
   isFinal: true,
 };
 
+const NOW = 1_700_000_000_000;
+
 function view(over: Partial<CallScreenViewInput> = {}) {
   const input: CallScreenViewInput = {
     kind: 'direct',
@@ -45,7 +48,14 @@ function view(over: Partial<CallScreenViewInput> = {}) {
     serverState: 'connected',
     role: 'caller',
     peerName: 'Tunde',
-    translation: { mode: 'translated', engine: null, playback: 'listening', proof: null, refused: false },
+    translation: {
+      mode: 'translated',
+      engine: null,
+      playback: 'listening',
+      playedAtMs: null,
+      refusedAtMs: null,
+      captionedAtMs: null,
+    },
     languages: { from: 'yo', to: 'en' },
     connectedRow: { show: true, words: 'Connected', warn: false },
     caption: CAPTION,
@@ -54,6 +64,7 @@ function view(over: Partial<CallScreenViewInput> = {}) {
     captionsShown: true,
     elapsedMs: 291_000,
     ringElapsed: null,
+    nowMs: NOW,
     muted: false,
     speakerOn: false,
     cameraOn: false,
@@ -106,12 +117,29 @@ describe('the nested card holds the TRANSLATION', () => {
     expect(view({ phase: 'ended' }).caption).toBeNull();
     expect(view({ caption: null }).caption).toBeNull();
   });
+
+  it('makes the column yield to the card, and only while the card is there', () => {
+    // The card is the point of the screen: with one on, the avatar, the clock
+    // and the name are drawn smaller so it fits above the dock without the
+    // person scrolling a live call by hand.
+    expect(view().compactIdentity).toBe(true);
+    expect(view({ caption: null }).compactIdentity).toBe(false);
+    expect(view({ captionsShown: false }).compactIdentity).toBe(false);
+    expect(view({ phase: 'ended' }).compactIdentity).toBe(false);
+  });
 });
 
 describe('the translation line says only what was measured', () => {
   it('says NOTHING on a normal call -- the September defect', () => {
     const normal = view({
-      translation: { mode: 'normal', engine: null, playback: 'listening', proof: null, refused: false },
+      translation: {
+        mode: 'normal',
+        engine: null,
+        playback: 'listening',
+        playedAtMs: null,
+        refusedAtMs: null,
+        captionedAtMs: null,
+      },
       phase: 'placing',
     });
     expect(normal.readinessLine).toBeNull();
@@ -121,7 +149,14 @@ describe('the translation line says only what was measured', () => {
     expect(
       view({
         phase: 'placing',
-        translation: { mode: null, engine: null, playback: null, proof: null, refused: false },
+        translation: {
+          mode: null,
+          engine: null,
+          playback: null,
+          playedAtMs: null,
+          refusedAtMs: null,
+          captionedAtMs: null,
+        },
       }).readinessLine,
     ).toBeNull();
   });
@@ -135,7 +170,14 @@ describe('the translation line says only what was measured', () => {
     const ended = view({
       phase: 'ended',
       serverState: 'ended',
-      translation: { mode: 'translated', engine: false, playback: 'listening', proof: null, refused: false },
+      translation: {
+        mode: 'translated',
+        engine: false,
+        playback: 'listening',
+        playedAtMs: null,
+        refusedAtMs: null,
+        captionedAtMs: null,
+      },
     });
     expect(ended.readinessLine?.warn).toBe(true);
     expect(ended.readinessLine?.words).toMatch(/server cannot translate/iu);
@@ -145,7 +187,14 @@ describe('the translation line says only what was measured', () => {
     const ended = view({
       phase: 'ended',
       serverState: 'ended',
-      translation: { mode: 'translated', engine: null, playback: null, proof: null, refused: false },
+      translation: {
+        mode: 'translated',
+        engine: null,
+        playback: null,
+        playedAtMs: null,
+        refusedAtMs: null,
+        captionedAtMs: null,
+      },
     });
     expect(ended.readinessLine).toBeNull();
   });
@@ -161,8 +210,9 @@ describe('the ended screen cannot certify what the phone measured as untranslate
         mode: 'translated',
         engine: null,
         playback: 'listening',
-        proof: null,
-        refused: false,
+        playedAtMs: null,
+        refusedAtMs: null,
+        captionedAtMs: null,
         ...over,
       },
     });
@@ -181,12 +231,36 @@ describe('the ended screen cannot certify what the phone measured as untranslate
     expect(endedWith({ playback: 'unavailable' }).endedLine).toBe('4 min 51 s · not translated');
   });
 
-  it('says "translated" once something actually played', () => {
-    const ended = endedWith({ proof: 'audio' });
+  it('says "translated" once audio actually played', () => {
+    const ended = endedWith({ playedAtMs: NOW - 5_000 });
     expect(ended.endedLine).toBe('4 min 51 s · translated');
     expect(ended.summary?.rows).toEqual([
       { label: 'Duration', value: '4 min 51 s' },
       { label: 'Languages', value: 'Yoruba → English' },
+    ]);
+  });
+
+  it('will NOT say "translated" for a call that only ever produced text', () => {
+    /*
+     * The headline defect of this round. A translated caption arrives within a
+     * sentence of every working translated call, so this state is reached on
+     * the exact call the 19 Sep post-mortem is about: text fine, audio dead.
+     */
+    const ended = endedWith({ captionedAtMs: NOW - 5_000 });
+    expect(ended.endedLine).toBe('4 min 51 s · translated text only');
+    expect(ended.endedLine).not.toBe('4 min 51 s · translated');
+    expect(ended.summary?.rows).toEqual([
+      { label: 'Duration', value: '4 min 51 s' },
+      { label: 'Translation', value: 'Text only — no audio played' },
+    ]);
+  });
+
+  it('says it stopped when it played and then every frame was refused', () => {
+    const ended = endedWith({ playedAtMs: NOW - 200_000, refusedAtMs: NOW - 5_000 });
+    expect(ended.endedLine).toBe('4 min 51 s · translation stopped partway');
+    expect(ended.summary?.rows).toEqual([
+      { label: 'Duration', value: '4 min 51 s' },
+      { label: 'Translation', value: 'Stopped partway' },
     ]);
   });
 
@@ -213,24 +287,58 @@ describe('the ended screen cannot certify what the phone measured as untranslate
     expect(declined.stateLine).not.toBeNull();
     expect(declined.stateLine).not.toBe(declined.eyebrow);
   });
+
+  it('writes no summary of a call that never ran', () => {
+    /*
+     * Gated on the phase alone, a call nobody answered got a card headed "Call
+     * summary" whose single row was a translation verdict about a call that did
+     * not happen -- which a caller reads as "it ran and the translation broke".
+     */
+    const unanswered = view({
+      phase: 'ended',
+      serverState: 'no_answer',
+      elapsedMs: null,
+      connectedRow: { show: false, words: '', warn: false },
+      translation: {
+        mode: 'translated',
+        engine: false,
+        playback: null,
+        playedAtMs: null,
+        refusedAtMs: null,
+        captionedAtMs: null,
+      },
+    });
+    expect(unanswered.summary).toBeNull();
+    expect(unanswered.endedLine).toBeNull();
+  });
 });
 
-describe('the speech indicator names the right mouth', () => {
+describe('the speech indicator names the right mouth, or none', () => {
   it('moves for the peer, and says who is speaking', () => {
     const speaking = view({ speaking: true, captionIsSelf: false });
     expect(speaking.speech?.active).toBe(true);
     expect(speaking.speech?.accessibilityLabel).toBe('Tunde is speaking');
   });
 
-  it('rests while the caption on screen is THIS phone’s own words', () => {
+  it('says NOTHING about the peer while the caption on screen is this phone’s own', () => {
     /*
      * `routeCaption` deliberately delivers a speaker their OWN transcript, and
      * the slot accepts a caption from anybody -- so the bars, which sit above
-     * the PEER's face, animated while this phone's user talked.
+     * the PEER's face, animated while this phone's user talked. The bars now
+     * rest, and the label does not trade an unattributed claim for an
+     * attributed false one: at that instant the phone holds no measurement of
+     * the peer at all, and "Tunde is quiet" was certified by a test.
      */
     const mine = view({ speaking: true, captionIsSelf: true });
     expect(mine.speech?.active).toBe(false);
-    expect(mine.speech?.accessibilityLabel).toBe('Tunde is quiet');
+    expect(mine.speech?.accessibilityLabel).toBeNull();
+    const mineSettled = view({ speaking: false, captionIsSelf: true });
+    expect(mineSettled.speech?.accessibilityLabel).toBeNull();
+  });
+
+  it('says the peer is quiet only when the caption on screen is THEIRS', () => {
+    const theirs = view({ speaking: false, captionIsSelf: false });
+    expect(theirs.speech?.accessibilityLabel).toBe('Tunde is quiet');
   });
 
   it('is absent before any caption has arrived, and off a live call', () => {
@@ -240,50 +348,139 @@ describe('the speech indicator names the right mouth', () => {
   });
 });
 
-describe('one pill, and it never says Translating about a call that is not', () => {
+describe('one pill, and it states a pair rather than an activity', () => {
   it('shows the pair on a translated call between two languages', () => {
     const pill = view().pill;
     expect(pill?.kind).toBe('languages');
     expect(pill?.label).toBe('YO → EN');
-    // An arrow is not a word: the spoken label is a sentence, not the print.
-    expect(pill?.accessibilityLabel).toBe('Translating Yoruba to English');
+    // An arrow is not a word -- but neither is this a claim that anything is
+    // happening. "Translating Yoruba to English" was announced on ended calls,
+    // on calls the server could not translate, and on calls nobody answered.
+    expect(pill?.accessibilityLabel).toBe('Yoruba to English');
+    expect(pill?.accessibilityLabel).not.toMatch(/translating/iu);
   });
 
-  it('never announces Translating on a NORMAL call', () => {
+  it('never announces a pair on a NORMAL call', () => {
     const pill = view({
-      translation: { mode: 'normal', engine: null, playback: null, proof: null, refused: false },
+      translation: {
+        mode: 'normal',
+        engine: null,
+        playback: null,
+        playedAtMs: null,
+        refusedAtMs: null,
+        captionedAtMs: null,
+      },
     }).pill;
     expect(pill?.kind).toBe('mode');
     expect(pill?.label).toBe('Normal call');
     expect(pill?.accessibilityLabel).not.toMatch(/translating/iu);
   });
 
-  it('never announces Translating English to English', () => {
+  it('never announces English to English', () => {
     const pill = view({ languages: { from: 'en', to: 'en-GB' } }).pill;
     expect(pill?.kind).toBe('mode');
-    expect(pill?.accessibilityLabel).not.toMatch(/translating/iu);
+    expect(pill?.label).toBe('Translated call');
   });
 
-  it('falls back to the mode the server stated when no pair was measured', () => {
+  it('is NOT DRAWN before the server has stated a mode -- the C7 mark says that much', () => {
+    /*
+     * The mark at the top of the screen reads DIRECT CALL. The pill's fallback
+     * read "Direct call" too, for the whole of every outgoing ring: the same
+     * two words twice, 300dp apart, on the screen a person stares at while a
+     * call rings.
+     */
+    expect(
+      view({
+        languages: null,
+        phase: 'placing',
+        translation: {
+          mode: null,
+          engine: null,
+          playback: null,
+          playedAtMs: null,
+          refusedAtMs: null,
+          captionedAtMs: null,
+        },
+      }).pill,
+    ).toBeNull();
+    // With a mode stated it says the mode, which the mark does not.
     expect(view({ languages: null }).pill).toEqual({
       kind: 'mode',
       label: 'Translated call',
       accessibilityLabel: 'Translated call',
     });
-    expect(
+  });
+
+  it('is not drawn where the phone has measured that translation is not happening', () => {
+    const noEngine = view({
+      phase: 'placing',
+      translation: {
+        mode: 'translated',
+        engine: false,
+        playback: 'listening',
+        playedAtMs: null,
+        refusedAtMs: null,
+        captionedAtMs: null,
+      },
+    });
+    expect(noEngine.pill).toBeNull();
+    expect(noEngine.readinessLine?.warn).toBe(true);
+    const noPlayback = view({
+      translation: {
+        mode: 'translated',
+        engine: null,
+        playback: 'unavailable',
+        playedAtMs: null,
+        refusedAtMs: null,
+        captionedAtMs: null,
+      },
+    });
+    expect(noPlayback.pill).toBeNull();
+  });
+
+  it('agrees with the ended verdict, or is not drawn at all', () => {
+    const ended = (over: Partial<CallScreenViewInput['translation']>) =>
       view({
-        languages: null,
-        translation: { mode: null, engine: null, playback: null, proof: null, refused: false },
-      }).pill?.label,
-    ).toBe('Direct call');
+        phase: 'ended',
+        serverState: 'ended',
+        connectedRow: { show: false, words: '', warn: false },
+        translation: {
+          mode: 'translated',
+          engine: null,
+          playback: 'listening',
+          playedAtMs: null,
+          refusedAtMs: null,
+          captionedAtMs: null,
+          ...over,
+        },
+      });
+    // Unproven: every honest element goes quiet, and the pill does not become
+    // the one thing on the screen still claiming a translation.
+    expect(ended({}).pill).toBeNull();
+    expect(ended({ captionedAtMs: NOW }).pill).toBeNull();
+    expect(ended({ playedAtMs: NOW - 1_000, refusedAtMs: NOW }).pill).toBeNull();
+    // Proven: the pair is exactly what the summary card also says.
+    expect(ended({ playedAtMs: NOW }).pill?.label).toBe('YO → EN');
+  });
+
+  it('belongs to a direct call; a conference has no pair to state', () => {
+    expect(view({ kind: 'conference' }).pill).toBeNull();
   });
 });
 
-describe('the ring arc is a measurement, drained', () => {
+describe('the ring arc is a measurement, drained, and it says what of', () => {
   it('is full at the start of the ring window and empty at the deadline', () => {
     expect(view({ phase: 'placing', ringElapsed: 0 }).halo.remaining).toBe(1);
     expect(view({ phase: 'placing', ringElapsed: 1 }).halo.remaining).toBe(0);
     expect(view({ phase: 'placing', ringElapsed: 0.25 }).halo.remaining).toBeCloseTo(0.75, 6);
+  });
+
+  it('names what it is a share of, for somebody who cannot see it', () => {
+    // A teal arc shrinking under "Calling…" reads as falling signal as readily
+    // as it reads as time left, and it carried no label of any kind.
+    const halo = view({ phase: 'placing', ringElapsed: 0.25 }).halo;
+    expect(halo.remainingLabel).toBe('Time left for them to answer: 75%');
+    expect(view({ phase: 'placing', ringElapsed: null }).halo.remainingLabel).toBeNull();
   });
 
   it('draws no arc, and breathes instead, when no deadline was measured', () => {
@@ -305,7 +502,7 @@ describe('the ring arc is a measurement, drained', () => {
   });
 });
 
-describe('the dock is a fixed set for the whole of a phase', () => {
+describe('the dock is a fixed set for the whole of a phase, on ONE row', () => {
   it('is the same four controls all through a live call', () => {
     const early = view({ caption: null });
     const later = view();
@@ -317,18 +514,47 @@ describe('the dock is a fixed set for the whole of a phase', () => {
     expect(later.dock[3]?.disabled).toBe(false);
   });
 
+  it('names what the caption control DOES, and never claims to switch translation off', () => {
+    // It renders a captions glyph for the same reason: this client has never
+    // sent `call:mode:set` and cannot turn translation off, and a teal
+    // translate glyph going dark told people it had.
+    expect(view().dock[3]?.label).toBe('Hide captions');
+    expect(view({ captionsShown: false }).dock[3]?.label).toBe('Show captions');
+    expect(view().dock[3]?.label).not.toMatch(/translat/iu);
+  });
+
+  it('drops the words when five controls have to share one row', () => {
+    /*
+     * Five labelled controls need 458dp and no portrait phone has it, so the
+     * row wrapped, the dock grew to a third of the screen and the caption card
+     * went off the bottom. The label survives as the accessibility name.
+     */
+    expect(view().dockLabels).toBe(false);
+    expect(view().dock).toHaveLength(4);
+    // Conference: three controls and End -- the words fit.
+    expect(view({ kind: 'conference' }).dockLabels).toBe(true);
+    // Ended: Call back, Message and Close.
+    expect(view({ phase: 'ended', serverState: 'no_answer' }).dockLabels).toBe(true);
+    // Placing: one red button.
+    expect(view({ phase: 'placing' }).dockLabels).toBe(true);
+  });
+
   it('is one red button while a call is being placed', () => {
     const placing = view({ phase: 'placing' });
     expect(placing.dock).toEqual([]);
     expect(placing.endLabel).toBe('Cancel');
   });
 
-  it('offers no live controls on a call that has ended', () => {
+  it('offers no live controls on a call that has ended -- conferences included', () => {
     // Mute, Speaker and Camera acting on a dead call: the old guard let all
-    // three through the ended phase.
+    // three through the ended phase, and the guard after it exempted
+    // conferences, so a finished conference still showed all three.
     const ended = view({ phase: 'ended', serverState: 'ended' });
     expect(ended.dock).toEqual([]);
     expect(ended.endLabel).toBe('Close');
+    const conference = view({ kind: 'conference', phase: 'ended', serverState: 'ended' });
+    expect(conference.dock).toEqual([]);
+    expect(conference.endLabel).toBe('Leave');
   });
 
   it('reflects what each control is currently doing', () => {
@@ -337,7 +563,7 @@ describe('the dock is a fixed set for the whole of a phase', () => {
       ['Unmute', true],
       ['Speaker', true],
       ['Camera on', true],
-      ['Captions', true],
+      ['Hide captions', true],
     ]);
     expect(on.dock[2]?.disabled).toBe(true);
   });
@@ -351,12 +577,44 @@ describe('the dock is a fixed set for the whole of a phase', () => {
   });
 });
 
-describe('the ended screen offers the two things a person does next', () => {
+describe('the ended screen offers the two things a person does next, and waits', () => {
   it('draws Call back and Message as controls', () => {
     const ended = view({ phase: 'ended', serverState: 'no_answer' });
     expect(ended.endedActions).toEqual(['call-back', 'message']);
     // And does not ALSO print the grey sentence that stood in for them.
     expect(ended.hint).toBeNull();
+  });
+
+  it('does NOT dismiss itself while there is something to press', () => {
+    /*
+     * The screen called `onLeave()` 2500 ms after the terminal state, so the
+     * two buttons the board exists to offer appeared and vanished before a hand
+     * reached them, and the summary card could not be read.
+     */
+    expect(view({ phase: 'ended', serverState: 'no_answer' }).autoDismissMs).toBeNull();
+    expect(view({ phase: 'ended', serverState: 'ended' }).autoDismissMs).toBeNull();
+  });
+
+  it('dismisses itself only where there is nothing to act on', () => {
+    const nothing = view({
+      phase: 'ended',
+      serverState: 'no_answer',
+      elapsedMs: null,
+      canCallBack: false,
+      canMessage: false,
+    });
+    expect(nothing.endedActions).toEqual([]);
+    expect(nothing.summary).toBeNull();
+    expect(nothing.autoDismissMs).toBe(2_500);
+    // A conference that ends has no actions of its own and still goes.
+    expect(
+      view({ kind: 'conference', phase: 'ended', serverState: 'ended' }).autoDismissMs,
+    ).toBe(2_500);
+  });
+
+  it('never dismisses a call that is still running', () => {
+    expect(view({ phase: 'live' }).autoDismissMs).toBeNull();
+    expect(view({ phase: 'placing' }).autoDismissMs).toBeNull();
   });
 
   it('falls back to the sentence only where the screen was given nowhere to go', () => {
