@@ -83,7 +83,8 @@ export class GatedTranslationProvider implements TimestampedTranslationProvider 
       });
       // The inner provider is not called. Not for empty input, not for emoji,
       // not for an unapproved route, not for text past the certified limit.
-      return { translatedText: decision.deliver, providerName: this.name };
+      // NOT a translation: the gate declined and this is the original.
+      return { translatedText: decision.deliver, providerName: this.name, translated: false };
     }
 
     let result: TranslationProviderResult;
@@ -103,7 +104,8 @@ export class GatedTranslationProvider implements TimestampedTranslationProvider 
         targetLanguage: input.targetLanguage,
         billable: false,
       });
-      return { translatedText: failed.deliver, providerName: this.name };
+      // NOT a translation: the engine failed and this is the original.
+      return { translatedText: failed.deliver, providerName: this.name, translated: false };
     }
 
     const restored = decision.restore(result.translatedText);
@@ -124,7 +126,8 @@ export class GatedTranslationProvider implements TimestampedTranslationProvider 
         billable: false,
         corruptedIdentifiers: restored.corrupted,
       });
-      return { translatedText: input.sourceText, providerName: this.name };
+      // NOT a translation: an identifier was mangled, so the original goes out.
+      return { translatedText: input.sourceText, providerName: this.name, translated: false };
     }
 
     this.options.onOutcome?.({

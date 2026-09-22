@@ -190,6 +190,39 @@ export class LiveTranslationPipeline {
         startMs: event.startMs,
         endMs: event.endMs,
       });
+      /*
+       * A NON-TRANSLATION IS NEVER SPOKEN.
+       *
+       * The gate hands back the ORIGINAL text whenever it declines -- an
+       * unapproved route, an engine that failed, a mangled phone number -- and
+       * for a message that is right, because the reader sees the original and
+       * is told it was not translated. Voicing it is a different act
+       * altogether: it replaces the speaker's own voice with a synthetic one
+       * saying the same words, in the language the listener already could not
+       * understand, and nothing on the call marks it as untranslated.
+       *
+       * Measured on two phones, 22 Sep 2026: `en->fr` unapproved, the gate
+       * correctly declined, and both people spent three minutes listening to a
+       * machine read their own sentences back. Silence would have been kinder
+       * and an outright refusal kinder still.
+       *
+       * The caption path is untouched: the words were still SAID, and a
+       * transcript of what was said is not a claim that it was translated.
+       */
+      if (result.translated === false) {
+        this.deps.log?.('translation declined; nothing will be spoken for this segment', {
+          segmentId: event.segmentId,
+          sourceLanguage: event.detectedLanguage ?? this.deps.sourceLanguage,
+          targetLanguage: this.deps.targetLanguage,
+          provider: result.providerName ?? null,
+        });
+        this.deps.performance?.for('translation').record(
+          'error',
+          (this.deps.now?.() ?? Date.now()) - translationStartedAt,
+          this.deps.now?.() ?? Date.now(),
+        );
+        return null;
+      }
       translatedText = result.translatedText;
       this.deps.performance?.for('translation').record(
         'success',

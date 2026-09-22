@@ -164,6 +164,48 @@ describe('6. a call that translates nothing needs no approval', () => {
     expect(authority.approved('en', 'en')).toBe(true);
     expect(authority.approved('EN', ' en ')).toBe(true);
   });
+
+  it('but TWO BLANKS ARE NOT THE SAME LANGUAGE, and are refused', () => {
+    /*
+     * THE 22 SEP 2026 PRODUCTION DEFECT, in one assertion.
+     *
+     * A translated en/fr call connected on a route that is `unapproved` for
+     * call-live, and nobody was refused. The registry was right all along --
+     * asked directly it answers allowed=false for both directions -- and the
+     * call ran anyway, because the caller's client had not resolved its
+     * profile and sent NO languages. Two empty strings arrived here, compared
+     * equal, and took the same-language shortcut above as though there were
+     * nothing to translate. The two people then spent three minutes listening
+     * to a synthetic voice read their own sentences back at them.
+     *
+     * An absent language is a question this call cannot answer yet, and the
+     * answer to a question you cannot answer is no. Asserted against a
+     * document where en->fr IS approved, so the ONLY thing refusing these is
+     * the blank itself.
+     */
+    const authority = authorityFor(route({ serviceScopes: scopes({ 'call-live': 'approved' }) }));
+    expect(authority.approved('en', 'fr'), 'the control: this document approves en->fr').toBe(true);
+
+    for (const [source, target] of [
+      ['', ''],
+      ['  ', '  '],
+      ['en', ''],
+      ['', 'fr'],
+      ['en', '   '],
+    ]) {
+      expect(authority.approved(source, target), `${JSON.stringify(source)}->${JSON.stringify(target)}`).toBe(
+        false,
+      );
+    }
+  });
+
+  it('says a missing language is missing, not that the route is unapproved', () => {
+    // Otherwise the next person reads "not approved" and goes to edit the
+    // route document, where there is nothing wrong.
+    const authority = authorityFor(route({ serviceScopes: scopes({ 'call-live': 'approved' }) }));
+    expect(authority.explain('en', '')).toMatch(/did not state both languages/u);
+    expect(authority.explain('en', '')).not.toMatch(/not approved/u);
+  });
 });
 
 describe('7. absent or unreadable evidence fails closed', () => {

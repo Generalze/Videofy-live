@@ -121,6 +121,88 @@ describe('only a Videofy final may be spoken', () => {
   });
 });
 
+describe('a NON-TRANSLATION is never spoken', () => {
+  /**
+   * MEASURED ON TWO PHONES IN PRODUCTION, 22 Sep 2026, and the worst defect
+   * this product has shipped.
+   *
+   * The route gate hands back the ORIGINAL text whenever it declines -- an
+   * unapproved route, an engine that failed, a phone number it mangled -- and
+   * marks the result `translated: false`. For a MESSAGE that is right: the
+   * reader sees the original and is told it was not translated.
+   *
+   * This pipeline SPOKE it. `en->fr` was unapproved, the gate correctly
+   * declined, the English came back, and it was synthesised and delivered as
+   * translated audio. Two people spent three minutes listening to a machine
+   * voice read their own sentences back at them -- in the language the
+   * listener already could not understand, with the speaker's real voice
+   * suppressed, and nothing anywhere marking it as untranslated.
+   */
+  function decliningRig() {
+    const translation: TimestampedTranslationProvider = {
+      name: 'gated:mock-mt',
+      // Exactly what GatedTranslationProvider returns on a refusal: the
+      // source text, unchanged, flagged as not a translation.
+      translate: async (input) => ({
+        translatedText: input.sourceText,
+        providerName: 'gated:mock-mt',
+        translated: false,
+      }),
+    };
+    return rig({ translation });
+  }
+
+  it('speaks NOTHING when the gate declined the direction', async () => {
+    const r = decliningRig();
+    const record = await r.pipeline.onTranscriptEvent(transcript());
+    expect(record, 'nothing was spoken').toBeNull();
+    expect(r.delivered, 'and not one frame of audio was delivered').toHaveLength(0);
+  });
+
+  it('is decided by the FLAG, not by comparing the text', async () => {
+    /*
+     * The tempting shortcut is "if the output equals the input, it was not
+     * translated". It is wrong in both directions: a proper name or a greeting
+     * can translate to itself, and a declined result can differ from the
+     * source once identifiers have been restored. The provider says whether it
+     * translated; nobody infers it.
+     */
+    const r = rig({
+      translation: {
+        name: 'mock-mt',
+        translate: async () => ({ translatedText: 'quite different words', translated: false }),
+      },
+    });
+    expect(await r.pipeline.onTranscriptEvent(transcript())).toBeNull();
+    expect(r.delivered).toHaveLength(0);
+  });
+
+  it('still speaks a real translation that happens to equal its source', async () => {
+    // The other half of the same rule: "Bonjour" into French is "Bonjour".
+    const r = rig({
+      translation: {
+        name: 'mock-mt',
+        translate: async (input) => ({ translatedText: input.sourceText, translated: true }),
+      },
+    });
+    const record = await r.pipeline.onTranscriptEvent(transcript());
+    expect(record?.translatedText).toBe('good afternoon');
+    expect(r.delivered.length).toBeGreaterThan(0);
+  });
+
+  it('treats a provider that says nothing as a translation, so nothing else changes', async () => {
+    /*
+     * `translated` is optional and absent means translated. Every provider
+     * that really translates keeps working untouched; only the paths that hand
+     * back an original have to declare themselves.
+     */
+    const r = rig();
+    const record = await r.pipeline.onTranscriptEvent(transcript());
+    expect(record?.translatedText).toBe('[es] good afternoon');
+    expect(r.delivered.length).toBeGreaterThan(0);
+  });
+});
+
 describe('generations are the platform own', () => {
   it('PIN: each attempt at a segment gets the next generation', async () => {
     const r = rig();

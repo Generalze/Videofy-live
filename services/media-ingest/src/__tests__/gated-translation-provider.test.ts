@@ -380,3 +380,81 @@ describe('billing identity: a retry is not a revision', () => {
     expect(await keyFor(2)).not.toBe(await keyFor(1));
   });
 });
+
+/**
+ * WHENEVER THE ORIGINAL GOES OUT, THE RESULT SAYS SO.
+ *
+ * This provider hands back the source text on every path where it declines to
+ * translate. For a message that is correct. But the field is called
+ * `translatedText`, and on 22 Sep 2026 the live call pipeline read it, believed
+ * it, synthesised it, and delivered a machine voice reading two people's own
+ * words back at them for three minutes on an unapproved `en->fr` route.
+ *
+ * `translated: false` is how a caller that VOICES this text can tell. These
+ * pin it on every declining path, because one unflagged path is the whole
+ * defect again.
+ */
+describe('an untranslated result declares itself', () => {
+  it('says so when the ROUTE is not approved', async () => {
+    const provider = new GatedTranslationProvider({
+      inner: spyProvider().provider,
+      // A gate that approves a different direction entirely.
+      gate: createTranslationGate({ gate: routeGate('en->es:call-live'), scope: 'call-live' }),
+    });
+    const result = await provider.translate(input({}));
+    expect(result.translated, 'the original came back, unflagged').toBe(false);
+  });
+
+  it('says so when the ENGINE throws', async () => {
+    const provider = new GatedTranslationProvider({
+      inner: {
+        name: 'exploding',
+        translate: async () => {
+          throw new Error('provider down');
+        },
+      },
+      gate: createTranslationGate({ gate: routeGate('en->fr:call-live'), scope: 'call-live' }),
+    });
+    const result = await provider.translate(input({}));
+    expect(result.translated).toBe(false);
+  });
+
+  it('says so when an IDENTIFIER was mangled', async () => {
+    /*
+     * The third way the original goes out, and the one a first pass missed --
+     * a mutation run caught it. It matters most of all on a call: a sentence
+     * whose phone number the engine rounded is exactly the sentence somebody
+     * acts on, and hearing it spoken confidently by a synthetic voice is the
+     * worst version of that.
+     */
+    const provider = new GatedTranslationProvider({
+      inner: {
+        name: 'losing',
+        async translate() {
+          return { translatedText: 'Bienvenue a l emission.' };
+        },
+      },
+      gate: createTranslationGate({
+        gate: routeGate('en->fr:call-live'),
+        scope: 'call-live',
+        protectedTerms: [{ term: 'Ọ̀gbẹ́ni Adéyẹmí' }],
+      }),
+    });
+    const result = await provider.translate(
+      input({ sourceText: 'Welcome Ọ̀gbẹ́ni Adéyẹmí to the show.' }),
+    );
+    expect(result.translatedText).toBe('Welcome Ọ̀gbẹ́ni Adéyẹmí to the show.');
+    expect(result.translated, 'the original came back, and must say so').toBe(false);
+  });
+
+  it('DOES NOT say so when it really translated', async () => {
+    // The flag has to be absent or true in the healthy case, or it means
+    // nothing in the broken one and every call falls silent.
+    const provider = new GatedTranslationProvider({
+      inner: spyProvider().provider,
+      gate: createTranslationGate({ gate: routeGate('en->fr:call-live'), scope: 'call-live' }),
+    });
+    const result = await provider.translate(input({}));
+    expect(result.translated === false, 'a real translation must not be suppressed').toBe(false);
+  });
+});
