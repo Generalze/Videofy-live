@@ -186,13 +186,17 @@ describe('6. a call that translates nothing needs no approval', () => {
     const authority = authorityFor(route({ serviceScopes: scopes({ 'call-live': 'approved' }) }));
     expect(authority.approved('en', 'fr'), 'the control: this document approves en->fr').toBe(true);
 
-    for (const [source, target] of [
+    // Typed as tuples: an array of arrays infers `string | undefined` per
+    // element under this tsconfig, and the deploy gate is stricter than a
+    // vitest run that never typechecks.
+    const blanks: readonly (readonly [string, string])[] = [
       ['', ''],
       ['  ', '  '],
       ['en', ''],
       ['', 'fr'],
       ['en', '   '],
-    ]) {
+    ];
+    for (const [source, target] of blanks) {
       expect(authority.approved(source, target), `${JSON.stringify(source)}->${JSON.stringify(target)}`).toBe(
         false,
       );
