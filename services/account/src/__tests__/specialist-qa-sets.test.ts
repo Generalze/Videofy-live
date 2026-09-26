@@ -18,12 +18,14 @@ import type { AccountTrust } from '@videofy-live/account-trust';
 import {
   CONSENT_VERSION,
   ELICITATION_PROMPTS,
+  ROUTE_QA_MIN_JUDGED_PER_GROUP,
   ROUTE_QA_PASS_BAR_PERCENT,
   WITHHELD_FIELDS,
 } from '@videofy-live/language-specialist';
 import { parseRouteDocument, type TranslationRouteRecord } from '@videofy-live/translation-routes';
 import { registerSpecialistRoutes } from '../specialist-routes.js';
 import { registerSpecialistAdminRoutes } from '../specialist-admin-routes.js';
+import { evaluatorLabel } from '../specialist-route-evidence.js';
 import { SpecialistStore, createInMemorySpecialistPort } from '../specialist-store.js';
 import type { Caller } from '../routes.js';
 
@@ -39,10 +41,18 @@ function caller(accountId: string): Caller {
   return { accountId, trust: VERIFIED, record: {} as Caller['record'] };
 }
 
+/**
+ * A display name the account rules allow: `$(...)` and a backtick are legal
+ * characters in a name. It is what turned a generated promotion command into
+ * a shell injection, so it is in the fixture for good.
+ */
+const HOSTILE_NAME = 'Adé $(touch /tmp/pwned) `id` Bello';
+
 const NAMES: Record<string, { displayName: string | null; username: string | null }> = {
   acct_zoe: { displayName: 'Adé Bello', username: 'adebello' },
   acct_bisi: { displayName: 'Bisi Okonkwo', username: 'bisi' },
   acct_anon: { displayName: null, username: null },
+  acct_hostile: { displayName: HOSTILE_NAME, username: 'ade' },
 };
 
 interface Harness {
@@ -160,10 +170,18 @@ async function qualify(accountId: string, language: string, grant = true): Promi
 const OPUS_EN_YO = { provider: 'opus-mt', model: 'Helsinki-NLP/opus-mt-en-alv', modelVersion: 'rev-a' };
 const M2M = { provider: 'm2m100', model: 'facebook/m2m100_418M', modelVersion: 'rev-m' };
 
-/** Twelve items, six per engine, all en->yo: a blind head-to-head. */
+/**
+ * Forty items, twenty per engine, all en->yo: a blind head-to-head in which
+ * each engine's group reaches `ROUTE_QA_MIN_JUDGED_PER_GROUP` with ONE
+ * reviewer. The first fixture was twelve items, six per engine; under the
+ * floor that is two groups nobody may score, which is its own test below.
+ */
+const PER_ENGINE = ROUTE_QA_MIN_JUDGED_PER_GROUP;
+const SET_SIZE = PER_ENGINE * 2;
+
 function yorubaSet(version = 'review-packets/2026-08-31') {
   const items = [];
-  for (let index = 1; index <= 12; index += 1) {
+  for (let index = 1; index <= SET_SIZE; index += 1) {
     const engine = index % 2 === 0 ? M2M : OPUS_EN_YO;
     items.push({
       ordinal: index,
@@ -262,6 +280,24 @@ describe('publishing a QA set', () => {
     expect(result.body.detail).toMatch(/direction/u);
   });
 
+  it('PIN: a Yoruba set may not carry a yo->de item; the other side of every direction is English', async () => {
+    // A set with the language on EITHER side used to publish, so a Yoruba
+    // specialist could be asked to judge German output nothing in the Yoruba
+    // track had assessed them in. Refused at publication, not at review.
+    h = await harness();
+    for (const direction of ['yo->de', 'de->yo', 'yo->fr', 'yo->yo']) {
+      const bad = yorubaSet();
+      bad.items[2] = { ...bad.items[2]!, direction };
+      const result = await publish(bad);
+      expect(result.status, direction).toBe(400);
+      expect(result.body.detail, direction).toMatch(/other side must be en/u);
+    }
+    /* Both directions between the language and English are the whole of what is allowed. */
+    const both = yorubaSet();
+    both.items[2] = { ...both.items[2]!, direction: 'yo->en' };
+    expect((await publish(both)).status).toBe(201);
+  });
+
   it('PIN: the QA-set list route is reachable, not swallowed by the :accountId route', async () => {
     // `qa-sets` is a perfectly good-looking account id. Registered after the
     // parameterised routes, this whole family answered 404.
@@ -285,7 +321,7 @@ describe('self-serve pickup', () => {
     expect(queue.body.languages[0].unlocked).toBe(false);
     expect(queue.body.languages[0].lock).toBe('capability-not-granted');
     /* The set is announced -- the person can see what they are missing. */
-    expect(queue.body.languages[0].set.itemCount).toBe(12);
+    expect(queue.body.languages[0].set.itemCount).toBe(SET_SIZE);
 
     const pickup = await post('/specialists/qa-sets/yo/pickup');
     expect(pickup.status).toBe(403);
@@ -436,7 +472,7 @@ describe('the review stays blind', () => {
     const packet = await get(`/specialists/assignments/${pickup.body.assignmentId}`);
     const me = await get('/specialists/me');
     expect(packet.status).toBe(200);
-    expect(packet.body.candidates).toHaveLength(12);
+    expect(packet.body.candidates).toHaveLength(SET_SIZE);
 
     for (const response of [queue, list, packet, me]) {
       for (const field of WITHHELD_FIELDS) {
@@ -456,7 +492,9 @@ describe('the review stays blind', () => {
     const pickup = await post('/specialists/qa-sets/yo/pickup');
     const packet = await get(`/specialists/assignments/${pickup.body.assignmentId}`);
     const ordinals = packet.body.candidates.map((c: { ordinal: number }) => c.ordinal);
-    expect([...ordinals].sort((a, b) => a - b)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    expect([...ordinals].sort((a, b) => a - b)).toEqual(
+      Array.from({ length: SET_SIZE }, (_, index) => index + 1),
+    );
   });
 });
 
@@ -476,8 +514,63 @@ describe('aggregation and evidence', () => {
     const byProvider = new Map<string, any>(detail.body.scores.map((s: any) => [s.provider, s]));
     expect(byProvider.get('opus-mt').percent).toBe(100);
     expect(byProvider.get('m2m100').percent).toBe(0);
-    expect(byProvider.get('m2m100').reversed).toBe(6);
+    expect(byProvider.get('m2m100').reversed).toBe(PER_ENGINE);
     expect(detail.body.scores.every((s: any) => s.percent !== 50)).toBe(true);
+    expect(detail.body.unscored).toEqual([]);
+  });
+
+  it('PIN: a group below the floor has NO score, the screen says so plainly, and nothing is emitted', async () => {
+    // Ten items, nine of one engine and one of the other. The first version
+    // scored the group of one: that one item passed, 100% cleared the bar,
+    // and an operator was shown a number nobody may act on. A percentage
+    // over a handful of sentences is arithmetic wearing the costume of
+    // evidence; below the floor there is a count and a shortfall, never a
+    // percent.
+    h = await harness();
+    const items = Array.from({ length: 10 }, (_, index) => {
+      const engine = index === 9 ? M2M : OPUS_EN_YO;
+      return {
+        ordinal: index + 1,
+        direction: 'en->yo',
+        category: 'money',
+        sourceText: `s ${index + 1}`,
+        candidateText: `c ${index + 1} (${engine.provider})`,
+        provider: engine.provider,
+        model: engine.model,
+      };
+    });
+    const set = await publish({ language: 'yo', version: 'nine-and-one', engines: [OPUS_EN_YO, M2M], items, sourceReference: 'fixture' });
+    expect(set.status).toBe(201);
+    await qualify('acct_zoe', 'yo');
+    const pickup = await post('/specialists/qa-sets/yo/pickup');
+    /* Every OPUS-MT item fails; the one M2M100 item passes. */
+    await reviewAll(pickup.body.assignmentId, (text) => (text.includes('(m2m100)') ? CLEAN : REVERSED));
+
+    /* The last verdict tried to emit and could not, and said why. */
+    expect(h.events.filter((e) => e.event === 'specialist.route-evidence.emitted')).toHaveLength(0);
+    expect(h.events.find((e) => e.event === 'specialist.route-evidence.not-emitted')?.detail.reason).toBe('below-floor');
+
+    h.as(caller('acct_operator'));
+    const detail = await get(`/admin/language-specialists/qa-sets/${set.body.qaSetId}`);
+    expect(detail.status).toBe(200);
+    expect(detail.body.pickups).toEqual({ submitted: 1, open: 0 });
+    expect(detail.body.scores).toEqual([]);
+    expect(detail.body.evidence).toEqual([]);
+    expect(detail.body.unscored.map((g: any) => [g.provider, g.judged, g.needed])).toEqual([
+      ['opus-mt', 9, ROUTE_QA_MIN_JUDGED_PER_GROUP],
+      ['m2m100', 1, ROUTE_QA_MIN_JUDGED_PER_GROUP],
+    ]);
+    /* Said in words, with no figure a console could show as a score. */
+    expect(detail.body.unscored[1].message).toContain('1 judged item(s), 20 needed');
+    expect(detail.body.unscored[1].message).toContain('not evidence');
+    expect(JSON.stringify(detail.body.unscored)).not.toContain('percent');
+
+    /* Asking for evidence by hand gets the same answer, with the shortfall named. */
+    const emitted = await post(`/admin/language-specialists/qa-sets/${set.body.qaSetId}/evidence`);
+    expect(emitted.status).toBe(409);
+    expect(emitted.body.reason).toBe('below-floor');
+    expect(emitted.body.detail).toContain('opus-mt/Helsinki-NLP/opus-mt-en-alv: 9 of 20');
+    expect(emitted.body.detail).toContain('m2m100/facebook/m2m100_418M: 1 of 20');
   });
 
   it('PIN: the last verdict emits signed evidence in the registry’s shape, per (direction, model)', async () => {
@@ -519,8 +612,118 @@ describe('aggregation and evidence', () => {
     expect(m2m.approvable).toBe(false);
     expect(opus.sourceLanguage).toBe('en');
     expect(opus.targetLanguage).toBe('yo');
-    expect(opus.promotionCommand).toContain('--review-corpus-hash');
-    expect(opus.promotionCommand).toContain(set.body.sha256);
+    /*
+     * F6: the sample and the direction are legible in the block itself.
+     * 20 of 20 here; the exact-bar case below reads 41 of 50.
+     */
+    expect(opus.reviewEvidence.scale).toBe(
+      `percent of judged items passing: ${PER_ENGINE} of ${PER_ENGINE} items passed, en->yo`,
+    );
+    expect(opus.reviewEvidence.method).toContain(`en->yo, ${PER_ENGINE} of ${PER_ENGINE} judged items passed`);
+    expect(m2m.reviewEvidence.scale).toBe(
+      `percent of judged items passing: 0 of ${PER_ENGINE} items passed, en->yo`,
+    );
+    /* The command names the route and the file; the block's bytes are not on it. */
+    expect(opus.promotionCommand).toContain('--source en --target yo');
+    expect(opus.promotionCommand).toContain('--review-from');
+    expect(opus.promotionCommand).not.toContain('--review-corpus-hash');
+    expect(opus.promotionCommand).not.toContain(set.body.sha256);
+    expect(opus.promotionCommand).not.toContain('Adé');
+  });
+
+  it('PIN: the evaluator field states the standing READ AT EMISSION, never one assumed from the language', async () => {
+    // The first version wrote "qualified, TRANSLATION_REVIEWER" from the
+    // language alone. A specialist whose track was later suspended still
+    // carried evidence calling her qualified: a sentence asserting something
+    // nothing measured, which is the defect this feature exists to stop.
+    h = await harness();
+    const set = await publish(yorubaSet());
+    await qualify('acct_zoe', 'yo');
+    const pickup = await post('/specialists/qa-sets/yo/pickup');
+    await reviewAll(pickup.body.assignmentId, () => CLEAN);
+
+    h.as(caller('acct_operator'));
+    const first = await get(`/admin/language-specialists/qa-sets/${set.body.qaSetId}`);
+    const whileQualified = first.body.evidence[0].reviewEvidence.evaluator as string;
+    expect(whileQualified).toContain('Adé Bello (@adebello) [qualified, TRANSLATION_REVIEWER held]');
+    expect(whileQualified).toContain('standing as read at emission');
+
+    /* Suspended through the real operator route, then re-emitted. */
+    const suspended = await post('/admin/language-specialists/acct_zoe/yo/decision', {
+      state: 'SUSPENDED',
+      reason: 'pending an investigation',
+    });
+    expect(suspended.status).toBe(201);
+    const again = await post(`/admin/language-specialists/qa-sets/${set.body.qaSetId}/evidence`);
+    expect(again.status).toBe(201);
+    const afterSuspension = again.body.emitted[0].reviewEvidence.evaluator as string;
+    expect(afterSuspension).toContain('Adé Bello (@adebello) [track SUSPENDED, TRANSLATION_REVIEWER held]');
+    expect(afterSuspension).not.toContain('qualified');
+
+    /* NOT_QUALIFIED, put there by hand: no operator transition leads from SUSPENDED today. */
+    const track = (await h.store.allTracks()).find((entry) => entry.accountId === 'acct_zoe');
+    if (track === undefined) throw new Error('no track');
+    await (h.store as unknown as { port: { putTrack: (t: unknown) => Promise<void> } }).port.putTrack({
+      ...track,
+      state: 'NOT_QUALIFIED',
+    });
+    const third = await post(`/admin/language-specialists/qa-sets/${set.body.qaSetId}/evidence`);
+    expect(third.body.emitted[0].reviewEvidence.evaluator).toContain('[track NOT_QUALIFIED, TRANSLATION_REVIEWER held]');
+
+    /* The earlier block still says what was true when IT was written. */
+    const history = await h.store.routeEvidenceFor(set.body.qaSetId);
+    expect(history[0]?.evaluator).toBe(whileQualified);
+  });
+
+  it('the label has no word for a standing the store did not read', () => {
+    // No capability can be revoked over HTTP today, so the "not held" and
+    // "no track" forms are pinned at the function: they must read as what
+    // they are, and "qualified" must not appear for either.
+    const label = evaluatorLabel(
+      [
+        {
+          accountId: 'acct_x',
+          displayName: 'X',
+          username: null,
+          standing: { qualificationState: null, translationReviewer: false },
+        },
+      ],
+      'yo',
+    );
+    expect(label).toContain('X [no track, TRANSLATION_REVIEWER not held]');
+    expect(label).not.toContain('qualified');
+  });
+
+  it('PIN: a display name with $(...) and a backtick reaches the evidence verbatim and the command not at all', async () => {
+    // `promotionCommandFor` quoted thirteen fields with JSON.stringify, which
+    // escapes quotes and backslashes and not `$` or backticks. The evaluator
+    // is built from a display name; the command is copied and run by an
+    // operator. Now the block is data the operator saves to a file, and the
+    // command is a fixed template plus two subtags that passed the direction
+    // regex. The CLI's own test proves the file round-trips this exact name.
+    h = await harness();
+    const set = await publish(yorubaSet());
+    await qualify('acct_hostile', 'yo');
+    const pickup = await post('/specialists/qa-sets/yo/pickup');
+    await reviewAll(pickup.body.assignmentId, () => CLEAN);
+
+    h.as(caller('acct_operator'));
+    const detail = await get(`/admin/language-specialists/qa-sets/${set.body.qaSetId}`);
+    for (const row of detail.body.evidence) {
+      expect(row.reviewEvidence.evaluator).toContain(HOSTILE_NAME);
+      const command = row.promotionCommand as string;
+      expect(command).not.toContain('$(');
+      expect(command).not.toContain('`');
+      expect(command).not.toContain('Adé');
+      expect(command).not.toContain('--review-evaluator');
+      expect(command).not.toContain(row.reviewEvidence.corpusHash);
+      expect(command).not.toContain(row.reviewEvidence.model);
+      expect(command).toContain('--source en --target yo');
+      expect(command).toContain('--review-from');
+      expect(command).toContain('--dry-run');
+      /* What the operator saves is the object itself, and it survives JSON whole. */
+      expect(JSON.parse(JSON.stringify(row.reviewEvidence)).evaluator).toBe(row.reviewEvidence.evaluator);
+    }
   });
 
   it('PIN: the emitted block passes the REAL validator, and a below-bar block is refused as passed', async () => {
@@ -589,7 +792,14 @@ describe('aggregation and evidence', () => {
     h.as(caller('acct_operator'));
     const detail = await get(`/admin/language-specialists/qa-sets/${set.body.qaSetId}`);
     expect(detail.body.scores[0].percent).toBe(82);
+    expect(detail.body.scores[0].percentDisplay).toBe(82);
     expect(detail.body.evidence[0].approvable).toBe(true);
+    /* F6: "41 of 50" and the direction, in the block, not only in the database. */
+    expect(detail.body.evidence[0].reviewEvidence.scale).toBe(
+      'percent of judged items passing: 41 of 50 items passed, en->yo',
+    );
+    expect(detail.body.evidence[0].reviewEvidence.method).toContain('en->yo, 41 of 50 judged items passed');
+    expect(detail.body.evidence[0].reviewEvidence.method).toContain(`no fewer than ${ROUTE_QA_MIN_JUDGED_PER_GROUP}`);
 
     /* Ten bad of fifty is 80%: not approvable. */
     const items2 = items.map((item, index) => ({
@@ -605,6 +815,66 @@ describe('aggregation and evidence', () => {
     const detail2 = await get(`/admin/language-specialists/qa-sets/${set2.body.qaSetId}`);
     expect(detail2.body.scores[0].percent).toBe(80);
     expect(detail2.body.evidence[0].approvable).toBe(false);
+  });
+
+  it('PIN: 50 of 61 is 81.97 and is NOT approvable -- the ratio is compared, never a rounded percent', async () => {
+    // Reproduced over live HTTP by a reviewer against the first version,
+    // which rounded to one decimal and compared the rounded value: 81.967
+    // became 82.0 and passed. The bar is the founder's number and it has to
+    // mean what it says; the screen may show 82, the comparison may not.
+    h = await harness();
+    const items = Array.from({ length: 61 }, (_, index) => ({
+      ordinal: index + 1,
+      direction: 'en->yo',
+      category: 'money',
+      sourceText: `s ${index + 1}`,
+      candidateText: `c ${index + 1}${index < 11 ? ' BAD' : ''}`,
+      provider: OPUS_EN_YO.provider,
+      model: OPUS_EN_YO.model,
+    }));
+    const set = await publish({ language: 'yo', version: 'sixty-one', engines: [OPUS_EN_YO], items, sourceReference: 'fixture' });
+    await qualify('acct_zoe', 'yo');
+    const pickup = await post('/specialists/qa-sets/yo/pickup');
+    await reviewAll(pickup.body.assignmentId, (text) => (text.endsWith('BAD') ? REVERSED : CLEAN));
+    h.as(caller('acct_operator'));
+    const detail = await get(`/admin/language-specialists/qa-sets/${set.body.qaSetId}`);
+    const [score] = detail.body.scores;
+    expect(score.judged).toBe(61);
+    expect(score.passed).toBe(50);
+    expect(score.percent).toBe((50 * 100) / 61);
+    expect(score.percent).toBeLessThan(ROUTE_QA_PASS_BAR_PERCENT);
+    expect(score.percentDisplay).toBe(82);
+    const [row] = detail.body.evidence;
+    expect(row.approvable).toBe(false);
+    /* The block carries the exact value, so the registry's own comparison agrees. */
+    expect(row.reviewEvidence.score).toBe((50 * 100) / 61);
+    expect(row.reviewEvidence.scale).toBe('percent of judged items passing: 50 of 61 items passed, en->yo');
+    const asPassed = parseRouteDocument({
+      version: 1,
+      routes: [
+        {
+          sourceLanguage: 'en',
+          targetLanguage: 'yo',
+          provider: 'opus-mt',
+          modelId: OPUS_EN_YO.model,
+          executionClass: 'local',
+          productionApproved: true,
+          technicalEvidence: {
+            sampleCount: 8,
+            successRate: 1,
+            latencyMs: { min: 100, median: 160, mean: 170, max: 300 },
+            recordedAt: '2026-09-25T00:00:00Z',
+          },
+          humanReviewStatus: 'passed',
+          reviewEvidence: row.reviewEvidence,
+          approval: { approvedBy: 'acct_operator', approvedAt: '2026-09-26T00:00:00Z', scopes: ['messaging'] },
+          licenceStatus: { licence: 'Apache-2.0', commercialUse: 'permitted', evidence: 'read' },
+          serviceScopes: { messaging: 'approved', 'programme-live': 'unapproved', 'call-live': 'refused' },
+        },
+      ],
+    });
+    expect(asPassed.ok).toBe(false);
+    expect(!asPassed.ok && asPassed.problems.map((p) => p.path)).toContain('routes[0].reviewEvidence.score');
   });
 
   it('two specialists on one set are both named, and the score counts both', async () => {
@@ -624,11 +894,14 @@ describe('aggregation and evidence', () => {
     h.as(caller('acct_operator'));
     const detail = await get(`/admin/language-specialists/qa-sets/${set.body.qaSetId}`);
     const opus = detail.body.evidence.find((e: any) => e.reviewEvidence.engine === 'opus-mt');
-    expect(opus.judged).toBe(12);
+    expect(opus.judged).toBe(SET_SIZE);
     expect(opus.evaluatorAccountIds).toEqual(['acct_zoe', 'acct_bisi']);
-    expect(opus.reviewEvidence.evaluator).toMatch(/^2 qualified Yoruba/u);
-    expect(opus.reviewEvidence.evaluator).toContain('Adé Bello (@adebello)');
-    expect(opus.reviewEvidence.evaluator).toContain('Bisi Okonkwo (@bisi)');
+    expect(opus.reviewEvidence.evaluator).toMatch(/^2 C7 Language Specialists \(Yoruba; standing per name as read at emission\)/u);
+    expect(opus.reviewEvidence.evaluator).toContain('Adé Bello (@adebello) [qualified, TRANSLATION_REVIEWER held]');
+    expect(opus.reviewEvidence.evaluator).toContain('Bisi Okonkwo (@bisi) [qualified, TRANSLATION_REVIEWER held]');
+    expect(opus.reviewEvidence.scale).toBe(
+      `percent of judged items passing: ${SET_SIZE} of ${SET_SIZE} items passed, en->yo`,
+    );
     /* The latest emission supersedes: one current row per engine. */
     expect(detail.body.evidence).toHaveLength(2);
     expect((await h.store.routeEvidenceFor(set.body.qaSetId)).length).toBe(4);

@@ -69,6 +69,12 @@ npm run routes:approve -- approve \
   --review-reference docs/reviews/en-fr.md
 ```
 
+A block the specialist programme emitted is handed over as a FILE, not as
+thirteen flags: save the `reviewEvidence` object from the account service to
+disk and name it with `--review-from <file>` in place of every `--review-*`
+flag. The evaluator field carries a reviewer's display name, which may hold
+`$(...)` and backticks; a file is data the shell never reads.
+
 Add `--dry-run` to see the answer without writing. Turn one off with:
 
 ```sh

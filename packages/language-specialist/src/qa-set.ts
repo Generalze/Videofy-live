@@ -40,8 +40,8 @@ export interface QaSetEngine {
  * One sentence and one engine's rendering of it.
  *
  * `direction` is `source->target` in BCP-47 base subtags, as the route registry
- * writes it. One side must be the set's language; a French set carrying an
- * `en->es` row would put Spanish evidence under a French specialist's name.
+ * writes it. One side must be the set's language and the other side must be
+ * `QA_SET_REFERENCE_LANGUAGE`; see the note on that constant.
  */
 export interface QaSetItem {
   /** Position in the set, 1-based, unique. Withheld from the reviewer. */
@@ -73,8 +73,38 @@ export interface QaSetDefinition {
 /** A generous ceiling per text field. Chat lines are short; a runaway is not one. */
 export const MAX_QA_TEXT_LENGTH = 4000;
 
-/** A set has to be big enough to say something. Ten is the paper packet's floor. */
+/**
+ * A set has to be big enough to say something. Ten is the paper packet's floor.
+ * This floors the SET; `ROUTE_QA_MIN_JUDGED_PER_GROUP` in `route-review.ts`
+ * floors each (direction, engine) group a score is computed over, and it is
+ * the larger number.
+ */
 export const MIN_QA_SET_ITEMS = 10;
+
+/**
+ * THE OTHER SIDE OF EVERY DIRECTION IN A SET IS ENGLISH.
+ *
+ * A reviewer must not be asked to judge a language they were not assessed in,
+ * and the rule has to come from what the programme actually assesses. Every
+ * track -- elicitation (yo, ha, ig) and validation (fr, es, pt) alike --
+ * assesses a person in exactly two languages: their own, and English. The
+ * elicitation form demands an English semantic reference beside every native
+ * message (`ENGLISH_IS_SEMANTIC_REFERENCE`); the validation track hands a
+ * fluent speaker C7's source with its English meaning; the eight review
+ * criteria are put to every specialist in English. Nothing in the Yoruba
+ * track has measured whether its specialist reads German, or French, or
+ * Hausa. So a `yo` set may carry `en->yo` and `yo->en` and nothing else: a
+ * `yo->de` item would have a Yoruba specialist's name on a judgement of German
+ * output, and a `yo->yo` item is not a translation.
+ *
+ * This is also every route the registry ships: all fourteen are `en<->X`.
+ * The day the programme assesses a second reference language, that is a
+ * second track requirement here, not a loosening of this constant.
+ *
+ * Refused at publication, not at review: a set that reaches a specialist
+ * is one they can be expected to read, whole.
+ */
+export const QA_SET_REFERENCE_LANGUAGE = 'en';
 
 export type QaSetProblem =
   | { readonly kind: 'not-a-track' }
@@ -87,6 +117,8 @@ export type QaSetProblem =
   | { readonly kind: 'item-malformed'; readonly index: number; readonly field: string }
   | { readonly kind: 'ordinal-duplicated'; readonly index: number }
   | { readonly kind: 'direction-not-this-language'; readonly index: number }
+  /** One side is this language; the other is not `QA_SET_REFERENCE_LANGUAGE`. */
+  | { readonly kind: 'direction-other-side-not-assessed'; readonly index: number; readonly other: string }
   | { readonly kind: 'engine-not-declared'; readonly index: number }
   | { readonly kind: 'too-long'; readonly index: number; readonly field: string };
 
@@ -237,6 +269,18 @@ export function readQaSetDefinition(input: unknown, digest: Digest): QaSetReadin
       problems.push({ kind: 'direction-not-this-language', index });
       return;
     }
+    /*
+     * THE OTHER SIDE MUST BE THE REFERENCE LANGUAGE. Checked after the
+     * this-language test so each item gets the one problem that names its
+     * fault. `language` is null only when the set's language was already
+     * refused; the direction is still checked against the reference so the
+     * refusal lists everything wrong with the set.
+     */
+    const other = sides.source === language ? sides.target : sides.source;
+    if (other !== QA_SET_REFERENCE_LANGUAGE) {
+      problems.push({ kind: 'direction-other-side-not-assessed', index, other });
+      return;
+    }
     const provider = fields['provider'] as string;
     const model = fields['model'] as string;
     if (!declared.has(`${provider}::${model}`)) {
@@ -290,6 +334,12 @@ export function qaSetProblemMessage(problem: QaSetProblem): string {
       return `items[${problem.index}] repeats an ordinal.`;
     case 'direction-not-this-language':
       return `items[${problem.index}].direction is not a direction into or out of this language.`;
+    case 'direction-other-side-not-assessed':
+      return (
+        `items[${problem.index}].direction runs between this language and "${problem.other}"; ` +
+        `the programme assesses a specialist in their language and ${QA_SET_REFERENCE_LANGUAGE} only, ` +
+        `so the other side must be ${QA_SET_REFERENCE_LANGUAGE}.`
+      );
     case 'engine-not-declared':
       return `items[${problem.index}] names an engine that is not in engines[].`;
     case 'too-long':

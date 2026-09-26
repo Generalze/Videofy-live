@@ -42,6 +42,22 @@ import { splitDirection } from './qa-set.js';
 export const ROUTE_QA_PASS_BAR_PERCENT = 82;
 
 /**
+ * THE FLOOR UNDER A SCORE. A (direction, provider, model) group with fewer
+ * judged items than this produces NO score -- not a low one and not a high
+ * one, the same rule already applied to a group with zero judgements.
+ *
+ * It exists because a percentage over a handful of sentences is arithmetic
+ * wearing the costume of evidence. `MIN_QA_SET_ITEMS` floors the whole SET;
+ * it says nothing about the groups the set is cut into, so a ten-item set
+ * that was nine of one engine and one of another yielded a group of one, that
+ * one item passed, and 100% cleared the bar above. A judged item is one
+ * verdict, so a ten-item group reaches the floor when two specialists have
+ * both finished it; a group that cannot reach the floor is reported as such,
+ * with its count, and never as a number.
+ */
+export const ROUTE_QA_MIN_JUDGED_PER_GROUP = 20;
+
+/**
  * The bar per scope family. Two rows, one number: see the module note. The
  * account service maps the registry's three service scopes onto these two
  * (`messaging` -> messaging; `programme-live` and `call-live` -> live).
@@ -58,20 +74,49 @@ export function routeQaPassBar(scope: RouteQaScopeFamily): number {
 }
 
 /** The scale the evidence states, as the validator wants it: floor 0, higher is better. */
-export const ROUTE_QA_SCALE = 'percent of judged items passing';
 export const ROUTE_QA_SCALE_MAXIMUM = 100;
 
 /**
- * The method, in one sentence, for `RouteReviewEvidence.method`. Stated here
- * so the evidence and the code that produced it cannot describe two different
- * procedures.
+ * The procedure, in one sentence, for `RouteReviewEvidence.method`. Stated
+ * here so the evidence and the code that produced it cannot describe two
+ * different procedures. `routeQaMethod` appends what THIS block measured.
  */
 export const ROUTE_QA_METHOD =
   'C7 blind specialist review: each item judged on the eight packet criteria with engine ' +
   'identity withheld; an item passes when no yes/no criterion takes its adverse answer ' +
   '(meaning preserved, not reversed, nothing omitted or invented, names and numbers intact, ' +
   'trusted in a real chat) and, where asked, the output is observed to be in the target ' +
-  'language; score is the percent of judged items passing, per direction and model.';
+  'language; score is the exact percent of judged items passing, per direction and model, ' +
+  `over no fewer than ${ROUTE_QA_MIN_JUDGED_PER_GROUP} judged items.`;
+
+/** What one block's scale and method have to say about the block itself. */
+export interface RouteQaSample {
+  readonly direction: string;
+  readonly judged: number;
+  readonly passed: number;
+}
+
+/**
+ * The `scale` field, WITH the sample size and the direction in it.
+ *
+ * `RouteReviewEvidence` carries a corpusHash naming a whole set and a score
+ * computed over one slice of it, and has no field for the slice. So the two
+ * free-text fields carry it: a reader of "82" must be able to see whether it
+ * was 41 of 50 or 9 of 11, and which direction it describes, without the
+ * database. The registry's shape is fixed and other systems read it; nothing
+ * is added to it.
+ */
+export function routeQaScale(sample: RouteQaSample): string {
+  return `percent of judged items passing: ${sample.passed} of ${sample.judged} items passed, ${sample.direction}`;
+}
+
+/** The `method` field: the procedure, then what this block measured. */
+export function routeQaMethod(sample: RouteQaSample): string {
+  return (
+    `${ROUTE_QA_METHOD} This block: ${sample.direction}, ${sample.passed} of ${sample.judged} ` +
+    'judged items passed.'
+  );
+}
 
 /**
  * Whether ONE verdict passes its item.
@@ -117,7 +162,11 @@ export interface RouteQaScore {
   /** Verdicts counted. Several specialists on one item are several judgements. */
   readonly judged: number;
   readonly passed: number;
-  /** `passed / judged * 100`, to one decimal place. */
+  /**
+   * `passed * 100 / judged`, EXACT. Not rounded: 50 of 61 is 81.967..., and
+   * a value rounded to 82.0 before the comparison cleared a bar it had not
+   * met. Round with `displayPercent` for a screen, never before comparing.
+   */
   readonly percent: number;
   /** Items marked meaning REVERSED. Reported beside the score, never folded into it. */
   readonly reversed: number;
@@ -131,16 +180,44 @@ function round1(value: number): number {
   return Math.round(value * 10) / 10;
 }
 
+/** A percent as a screen shows it: one decimal place. For display only. */
+export function displayPercent(percent: number): number {
+  return round1(percent);
+}
+
+/**
+ * A (direction, provider, model) group that has judgements but not enough
+ * of them to be scored. Reported with its count so the operator screen can
+ * say so plainly, and with no percent so nothing can be acted on.
+ */
+export interface RouteQaUnscoredGroup {
+  readonly direction: string;
+  readonly provider: string;
+  readonly model: string;
+  readonly judged: number;
+  /** How many judged items a score needs: `ROUTE_QA_MIN_JUDGED_PER_GROUP`. */
+  readonly needed: number;
+  readonly reviewerAccountIds: readonly string[];
+}
+
+export interface RouteQaScoring {
+  /** Every group at or above the floor, in first-seen order. */
+  readonly scores: readonly RouteQaScore[];
+  /** Every group below it, in first-seen order. Never a percent. */
+  readonly unscored: readonly RouteQaUnscoredGroup[];
+}
+
 /**
  * Score every (direction, provider, model) present in the judgements.
  *
  * Groups on the identity the candidate carries; never on position, category
  * or text. Returns groups in first-seen order so a caller can present them
- * stably, and returns nothing for an engine with no judged items -- a group
- * with zero judgements has no percent, and inventing one would be a score for
- * a review nobody performed.
+ * stably. A group with zero judgements does not appear at all, and a group
+ * with fewer than `ROUTE_QA_MIN_JUDGED_PER_GROUP` appears under `unscored`
+ * with its count and no percent: inventing one would be a score for a review
+ * that was not big enough to be one.
  */
-export function scoreRouteQa(judged: readonly JudgedCandidate[]): readonly RouteQaScore[] {
+export function scoreRouteQa(judged: readonly JudgedCandidate[]): RouteQaScoring {
   const groups = new Map<
     string,
     {
@@ -177,24 +254,52 @@ export function scoreRouteQa(judged: readonly JudgedCandidate[]): readonly Route
     if (!group.reviewers.includes(row.reviewerAccountId)) group.reviewers.push(row.reviewerAccountId);
     groups.set(key, group);
   }
-  return [...groups.values()].map((group) => ({
-    direction: group.direction,
-    provider: group.provider,
-    model: group.model,
-    judged: group.judged,
-    passed: group.passed,
-    percent: round1((group.passed / group.judged) * 100),
-    reversed: group.reversed,
-    meanNaturalness: round1(group.naturalness / group.judged),
-    meanGrammar: round1(group.grammar / group.judged),
-    reviewerAccountIds: group.reviewers,
-  }));
+  const scores: RouteQaScore[] = [];
+  const unscored: RouteQaUnscoredGroup[] = [];
+  for (const group of groups.values()) {
+    if (group.judged < ROUTE_QA_MIN_JUDGED_PER_GROUP) {
+      unscored.push({
+        direction: group.direction,
+        provider: group.provider,
+        model: group.model,
+        judged: group.judged,
+        needed: ROUTE_QA_MIN_JUDGED_PER_GROUP,
+        reviewerAccountIds: group.reviewers,
+      });
+      continue;
+    }
+    scores.push({
+      direction: group.direction,
+      provider: group.provider,
+      model: group.model,
+      judged: group.judged,
+      passed: group.passed,
+      /* Multiply first: 41 * 100 / 50 is exactly 82; 41 / 50 * 100 need not be. */
+      percent: (group.passed * 100) / group.judged,
+      reversed: group.reversed,
+      meanNaturalness: round1(group.naturalness / group.judged),
+      meanGrammar: round1(group.grammar / group.judged),
+      reviewerAccountIds: group.reviewers,
+    });
+  }
+  return { scores, unscored };
 }
 
 /**
- * Whether a score clears the bar for a scope family. `>=`, because the ruling
- * is "82%" and a route that scores exactly 82.0 met it.
+ * Whether a score clears the bar for a scope family.
+ *
+ * COMPARED AS A RATIO, NEVER AS A ROUNDED NUMBER. `passed * 100 >= bar *
+ * judged` is integer arithmetic on both sides, so 41 of 50 meets 82 exactly
+ * and 50 of 61 (81.967...) does not, whatever a screen later rounds it to.
+ * The previous version took a percent already rounded to one decimal, so
+ * 81.95 became 82.0 and passed; the bar is the founder's number and it has
+ * to mean what it says. `>=`, because the ruling is "82%" and a route that
+ * scores exactly 82 met it.
  */
-export function meetsPassBar(percent: number, scope: RouteQaScopeFamily): boolean {
-  return percent >= routeQaPassBar(scope);
+export function meetsPassBar(
+  sample: { readonly passed: number; readonly judged: number },
+  scope: RouteQaScopeFamily,
+): boolean {
+  if (sample.judged <= 0) return false;
+  return sample.passed * 100 >= routeQaPassBar(scope) * sample.judged;
 }

@@ -285,6 +285,27 @@ function parseEvidence(log: ProblemLog, path: string, value: unknown): Technical
 }
 
 /**
+ * ONE review block on its own, held to the same bar as one inside a document.
+ *
+ * For the approval command's `--review-from <file>`: a block that arrived as
+ * data rather than as thirteen shell arguments. Same parser, same refusals,
+ * so a file cannot carry a field the document would refuse.
+ */
+export function parseReviewEvidenceBlock(
+  input: unknown,
+): { readonly ok: true; readonly evidence: RouteReviewEvidence } | { readonly ok: false; readonly problems: readonly DocumentProblem[] } {
+  const log = new ProblemLog();
+  const evidence = parseReviewEvidence(log, 'reviewEvidence', input);
+  if (evidence === undefined) {
+    log.add('reviewEvidence', 'the file holds no review block; it must be the thirteen-field object itself');
+  }
+  if (log.problems.length > 0 || evidence === null || evidence === undefined) {
+    return { ok: false, problems: log.problems };
+  }
+  return { ok: true, evidence };
+}
+
+/**
  * WHAT A HUMAN REVIEW ESTABLISHED -- parsed only when the block is there.
  *
  * `undefined` back means the field was absent, which is the state most routes

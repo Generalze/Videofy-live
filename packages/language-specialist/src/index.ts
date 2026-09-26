@@ -114,6 +114,7 @@ export type { QaReviewGateInput, ReviewAccess, ReviewGateInput, ReviewLock } fro
 export {
   MAX_QA_TEXT_LENGTH,
   MIN_QA_SET_ITEMS,
+  QA_SET_REFERENCE_LANGUAGE,
   canonicalQaSetBody,
   qaSetProblemMessage,
   readQaSetDefinition,
@@ -129,16 +130,26 @@ export type {
 
 export {
   ROUTE_QA_METHOD,
+  ROUTE_QA_MIN_JUDGED_PER_GROUP,
   ROUTE_QA_PASS_BARS,
   ROUTE_QA_PASS_BAR_PERCENT,
-  ROUTE_QA_SCALE,
   ROUTE_QA_SCALE_MAXIMUM,
+  displayPercent,
   itemPasses,
   meetsPassBar,
+  routeQaMethod,
   routeQaPassBar,
+  routeQaScale,
   scoreRouteQa,
 } from './route-review.js';
-export type { JudgedCandidate, RouteQaScopeFamily, RouteQaScore } from './route-review.js';
+export type {
+  JudgedCandidate,
+  RouteQaSample,
+  RouteQaScopeFamily,
+  RouteQaScore,
+  RouteQaScoring,
+  RouteQaUnscoredGroup,
+} from './route-review.js';
 
 export {
   MAX_SOURCE_LENGTH,

@@ -102,6 +102,7 @@ const REFUSAL_STATUS: Readonly<Record<StoreRefusal, number>> = {
    */
   'no-qa-set': 409,
   'nothing-judged': 409,
+  'below-floor': 409,
 };
 
 const REFUSAL_MESSAGE: Readonly<Record<StoreRefusal, string>> = {
@@ -134,6 +135,8 @@ const REFUSAL_MESSAGE: Readonly<Record<StoreRefusal, string>> = {
   'duplicate-qa-set': 'A QA set with this content, or this version label, is already published.',
   'no-qa-set': 'No QA set has been published for this language yet.',
   'nothing-judged': 'No completed review exists on this set, so there is nothing to score.',
+  'below-floor':
+    'Reviews exist, but no direction and engine has enough judged items to be scored. A percentage over a handful of sentences is not evidence; another specialist must finish the set.',
 };
 
 /**

@@ -199,6 +199,104 @@ describe('an approval names one direction and one scope', () => {
   });
 });
 
+/**
+ * THE REVIEW BLOCK AS A FILE. The specialist programme emits blocks whose
+ * `evaluator` is built from a display name, and a display name may carry `$`
+ * and backticks. Thirteen quoted shell arguments were an injection handed to
+ * an operator to run; a file is data the shell never reads.
+ */
+describe('--review-from carries the block as data, never as a command line', () => {
+  const HOSTILE = 'Adé $(touch /tmp/pwned) `id` \'x\' "y" \\ Bello (@adebello) [qualified]';
+  const block = {
+    engine: 'opus-mt',
+    model: 'Helsinki-NLP/opus-mt-en-fr',
+    modelVersion: 'a1b2c3d',
+    corpusHash: 'sha256:9f2c',
+    corpusVersion: '2026-09-01',
+    evaluator: HOSTILE,
+    assessedAt: '2026-09-19T09:00:00.000Z',
+    method: 'blind review; 41 of 50 judged items passed, en->fr',
+    score: 82,
+    scale: 'percent of judged items passing: 41 of 50 items passed, en->fr',
+    scaleMaximum: 100,
+    passThreshold: 82,
+    evidenceReference: 'C7 account service, evidence rev_1',
+  };
+
+  function blockFile(contents: unknown): string {
+    const path = join(directory, 'review-block.json');
+    writeFileSync(path, JSON.stringify(contents), 'utf8');
+    return path;
+  }
+
+  it('PIN: a hostile evaluator round-trips into the document verbatim, and nothing ran', () => {
+    const file = blockFile(block);
+    const argv = [
+      'approve', '--source', 'en', '--target', 'fr', '--scope', 'messaging', '--approver', 'Zoe',
+      '--at', '2026-09-20T12:00:00.000Z', '--review-from', file,
+    ];
+    expect(run(...argv)).toBe(0);
+    const written = document() as { note?: string; routes: { reviewEvidence?: { evaluator: string; score: number } }[] };
+    // The bytes are exactly the bytes: no shell saw them, so nothing in them
+    // was expanded, and the score kept its full value.
+    expect(written.routes[0]?.reviewEvidence?.evaluator).toBe(HOSTILE);
+    expect(written.routes[0]?.reviewEvidence?.score).toBe(82);
+    expect(String(written.note)).toContain(HOSTILE);
+    expect(registry().mayTranslate('en', 'fr', 'messaging').allowed).toBe(true);
+  });
+
+  it('refuses the file beside any review flag, so one field cannot have two sources', () => {
+    const before = readFileSync(target, 'utf8');
+    expect(
+      run('approve', '--source', 'en', '--target', 'fr', '--scope', 'messaging', '--approver', 'Zoe',
+        '--review-from', blockFile(block), '--review-score', '100'),
+    ).toBe(1);
+    expect(err.join('')).toContain('--review-from carries the whole review block');
+    expect(readFileSync(target, 'utf8')).toBe(before);
+  });
+
+  it('refuses a file that is not the block itself, naming the field it will not take', () => {
+    // The admin response wraps the block in a record carrying `approvable`,
+    // `judged` and the account ids. Pasting the record is refused with the
+    // stray field named, the same way the document validator would refuse it.
+    const before = readFileSync(target, 'utf8');
+    expect(
+      run('approve', '--source', 'en', '--target', 'fr', '--scope', 'messaging', '--approver', 'Zoe',
+        '--review-from', blockFile({ ...block, approvable: true, judged: 50 })),
+    ).toBe(1);
+    const said = err.join('');
+    expect(said).toContain('reviewEvidence.approvable');
+    expect(said).toContain('unknown field');
+    expect(readFileSync(target, 'utf8')).toBe(before);
+  });
+
+  it('refuses a file that is missing, or not JSON, before anything is read from the document', () => {
+    expect(
+      run('approve', '--source', 'en', '--target', 'fr', '--scope', 'messaging', '--approver', 'Zoe',
+        '--review-from', join(directory, 'absent.json')),
+    ).toBe(1);
+    expect(err.join('')).toContain('could not be read');
+    err.length = 0;
+    const notJson = join(directory, 'not.json');
+    writeFileSync(notJson, '{ evaluator: ', 'utf8');
+    expect(
+      run('approve', '--source', 'en', '--target', 'fr', '--scope', 'messaging', '--approver', 'Zoe',
+        '--review-from', notJson),
+    ).toBe(1);
+    expect(err.join('')).toContain('not valid JSON');
+  });
+
+  it('a block whose score is below its own threshold is still refused at the document bar', () => {
+    const before = readFileSync(target, 'utf8');
+    expect(
+      run('approve', '--source', 'en', '--target', 'fr', '--scope', 'messaging', '--approver', 'Zoe',
+        '--review-from', blockFile({ ...block, score: (50 * 100) / 61 })),
+    ).toBe(1);
+    expect(err.join('')).toContain('reviewEvidence.score');
+    expect(readFileSync(target, 'utf8')).toBe(before);
+  });
+});
+
 describe('withdrawing takes one command and no evidence', () => {
   it('turns off every scope of a route', () => {
     run(...APPROVE);

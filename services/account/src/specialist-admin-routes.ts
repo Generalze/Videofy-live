@@ -35,6 +35,7 @@ import {
   QUALIFICATION_STATES,
   SPECIALIST_CAPABILITIES,
   checkCapabilityGrant,
+  displayPercent,
   isQualificationState,
   specialistLanguageKey,
   trackNames,
@@ -268,7 +269,28 @@ export function registerSpecialistAdminRoutes(
       engines: scored.set.engines,
       sourceReference: scored.set.sourceReference,
       pickups: { submitted: scored.submitted, open: scored.open },
-      scores: scored.scores,
+      /*
+       * `percent` is exact and is what the bar was compared against;
+       * `percentDisplay` is the one-decimal figure for a screen. Both are
+       * sent so a console cannot round the one it should not.
+       */
+      scores: scored.scores.map((score) => ({ ...score, percentDisplay: displayPercent(score.percent) })),
+      /*
+       * SAID PLAINLY, WITH NO NUMBER. A group below the floor has a count and
+       * a shortfall, never a percent, so nobody can act on a figure the
+       * evidence rules do not allow to exist.
+       */
+      unscored: scored.unscored.map((group) => ({
+        direction: group.direction,
+        provider: group.provider,
+        model: group.model,
+        judged: group.judged,
+        needed: group.needed,
+        reviewerAccountIds: group.reviewerAccountIds,
+        message:
+          `${group.direction} ${group.provider}/${group.model}: ${group.judged} judged item(s), ` +
+          `${group.needed} needed. No score can be produced from this group; it is not evidence.`,
+      })),
       /*
        * `approvable` is the pass-bar comparison, written down. It is not an
        * approval: the route document is untouched until an operator runs the
@@ -286,8 +308,14 @@ export function registerSpecialistAdminRoutes(
         evaluatorAccountIds: row.evaluatorAccountIds,
         emittedBy: row.emittedBy,
         emittedAtMs: row.emittedAtMs,
+        /*
+         * THE BLOCK IS THE DATA; THE COMMAND CARRIES NONE OF IT. The operator
+         * saves `reviewEvidence` to a file and names it with --review-from.
+         * The evaluator field holds a display name, and a display name may
+         * hold `$(...)` and backticks; it is never quoted into a shell line.
+         */
         reviewEvidence: reviewEvidenceWire(row),
-        promotionCommand: promotionCommandFor(reviewEvidenceWire(row), {
+        promotionCommand: promotionCommandFor({
           source: row.sourceLanguage,
           target: row.targetLanguage,
         }),
@@ -314,8 +342,12 @@ export function registerSpecialistAdminRoutes(
         return;
       }
       res.status(409).json({
-        error: 'No completed review exists on this set, so there is nothing to score.',
+        error:
+          result.reason === 'below-floor'
+            ? 'Reviews exist, but no direction and engine has enough judged items to be scored; a percentage over a handful of sentences is not evidence.'
+            : 'No completed review exists on this set, so there is nothing to score.',
         reason: result.reason,
+        ...(result.detail === undefined ? {} : { detail: result.detail }),
       });
       return;
     }

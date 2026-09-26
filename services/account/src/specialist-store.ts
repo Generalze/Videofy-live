@@ -75,6 +75,7 @@ import {
   type ReviewLock,
   type ReviewVerdict,
   type RouteQaScore,
+  type RouteQaUnscoredGroup,
   type SourceItem,
   type SourceJudgement,
   type SourceRequirement,
@@ -858,7 +859,12 @@ export type StoreRefusal =
   /** No QA set has been published for this language. */
   | 'no-qa-set'
   /** No completed review exists on this set, so there is nothing to score. */
-  | 'nothing-judged';
+  | 'nothing-judged'
+  /**
+   * Reviews exist, but no (direction, engine) group has reached
+   * `ROUTE_QA_MIN_JUDGED_PER_GROUP` judged items, so no score can be made.
+   */
+  | 'below-floor';
 
 export type StoreResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -2383,6 +2389,8 @@ export class SpecialistStore {
   async routeQaScoresFor(qaSetId: string): Promise<{
     set: QaSetRecord;
     scores: readonly RouteQaScore[];
+    /** Groups with judgements but below the floor: a count each, never a percent. */
+    unscored: readonly RouteQaUnscoredGroup[];
     submitted: number;
     open: number;
   } | null> {
@@ -2411,9 +2419,11 @@ export class SpecialistStore {
         });
       }
     }
+    const scoring = scoreRouteQa(judged);
     return {
       set,
-      scores: scoreRouteQa(judged),
+      scores: scoring.scores,
+      unscored: scoring.unscored,
       submitted,
       open: assignments.length - submitted,
     };
@@ -2433,7 +2443,21 @@ export class SpecialistStore {
   }): Promise<StoreResult<readonly RouteEvidenceRecord[]>> {
     const scored = await this.routeQaScoresFor(input.qaSetId);
     if (scored === null) return refuse('no-qa-set');
-    if (scored.scores.length === 0) return refuse('nothing-judged');
+    /*
+     * NO SCORE BELOW THE FLOOR, AND THE REFUSAL SAYS WHICH. "nothing judged"
+     * and "judged, but not enough to be a score" are different instructions
+     * to the operator: the first needs a reviewer, the second needs another.
+     */
+    if (scored.scores.length === 0) {
+      return scored.unscored.length === 0
+        ? refuse('nothing-judged')
+        : refuse(
+            'below-floor',
+            scored.unscored
+              .map((group) => `${group.direction} ${group.provider}/${group.model}: ${group.judged} of ${group.needed}`)
+              .join('; '),
+          );
+    }
 
     const nowMs = this.now();
     const emitted: RouteEvidenceRecord[] = [];
@@ -2451,11 +2475,26 @@ export class SpecialistStore {
 
       const reviewers: ReviewerIdentity[] = [];
       for (const accountId of score.reviewerAccountIds) {
-        const named = await this.accountName(accountId);
+        /*
+         * STANDING IS READ NOW, for this language, and written into the
+         * evaluator field as what was true at emission. The gate checked it
+         * at pickup and at every verdict; this is a third read, because the
+         * evidence outlives both and must not assert a standing that had
+         * changed by the time the block was built.
+         */
+        const [named, track, capabilities] = await Promise.all([
+          this.accountName(accountId),
+          this.trackRecord(accountId, scored.set.language),
+          this.capabilitiesIn(accountId, scored.set.language),
+        ]);
         reviewers.push({
           accountId,
           displayName: named?.displayName ?? null,
           username: named?.username ?? null,
+          standing: {
+            qualificationState: track?.state ?? null,
+            translationReviewer: capabilities.includes('TRANSLATION_REVIEWER'),
+          },
         });
       }
       const evidenceId = `rev_${this.newId()}`;

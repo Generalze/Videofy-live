@@ -65,7 +65,19 @@ import {
   type RouteReviewEvidence,
   type ServiceScope,
 } from './route-record.js';
-import { parseRouteDocument } from './validate.js';
+import { parseReviewEvidenceBlock, parseRouteDocument } from './validate.js';
+
+/**
+ * THE REVIEW BLOCK AS A FILE, so nothing is assembled into a command line.
+ *
+ * The thirteen review flags are typed by a person. A block emitted by the
+ * specialist programme carries a reviewer's DISPLAY NAME in `evaluator`, and
+ * the account rules allow `$` and backticks in a display name -- so a
+ * generated command that quoted that name was a shell injection handed to an
+ * operator to copy and run. A file is data: the shell never sees its bytes,
+ * and the block is parsed by the same validator the document is.
+ */
+const REVIEW_FILE_FLAG = '--review-from';
 
 const REVIEW_FLAGS: Readonly<Record<string, keyof RouteReviewEvidence>> = {
   '--review-engine': 'engine',
@@ -103,6 +115,7 @@ const VALUE_FLAGS = new Set([
   '--overturn-refusal',
   '--overturn-failed-review',
   '--reason',
+  REVIEW_FILE_FLAG,
   ...Object.keys(REVIEW_FLAGS),
 ]);
 
@@ -174,6 +187,15 @@ function collectScopes(parsed: Parsed): ServiceScope[] | string {
  */
 function collectReviewEvidence(parsed: Parsed): RouteReviewEvidence | undefined | string {
   const supplied = Object.keys(REVIEW_FLAGS).filter((flag) => parsed.values.has(flag));
+  const file = single(parsed, REVIEW_FILE_FLAG);
+  if (file !== undefined) {
+    // One way or the other. A flag beside the file would be a second source
+    // for the same field, and the block that got written would be neither.
+    if (supplied.length > 0) {
+      return `${REVIEW_FILE_FLAG} carries the whole review block; do not also give ${supplied.join(', ')}.`;
+    }
+    return readReviewEvidenceFile(file);
+  }
   if (supplied.length === 0) return undefined;
   const numbers = new Map<string, number>();
   for (const flag of Object.keys(NUMERIC_REVIEW_FLAGS)) {
@@ -207,6 +229,35 @@ function collectReviewEvidence(parsed: Parsed): RouteReviewEvidence | undefined 
   };
 }
 
+/**
+ * The block from a file: the thirteen-field object itself, as the account
+ * service's evidence endpoint returns it under `reviewEvidence`. Read whole,
+ * parsed by the document validator, refused with every problem named.
+ */
+function readReviewEvidenceFile(path: string): RouteReviewEvidence | string {
+  let text: string;
+  try {
+    text = readFileSync(path, 'utf8');
+  } catch (error) {
+    return `${REVIEW_FILE_FLAG}: the file could not be read: ${(error as Error).message}`;
+  }
+  let block: unknown;
+  try {
+    block = JSON.parse(text) as unknown;
+  } catch (error) {
+    return `${REVIEW_FILE_FLAG}: the file is not valid JSON: ${(error as Error).message}`;
+  }
+  const parsed = parseReviewEvidenceBlock(block);
+  if (!parsed.ok) {
+    return (
+      `${REVIEW_FILE_FLAG}: the review block in ${path} does not validate. Save the ` +
+      '`reviewEvidence` object itself, not the record around it:\n' +
+      parsed.problems.map((problem) => `  ${problem.path}\n    ${problem.message}`).join('\n')
+    );
+  }
+  return parsed.evidence;
+}
+
 function collectLicence(parsed: Parsed): LicenceFinding | undefined | string {
   const use = single(parsed, '--licence-commercial-use');
   const evidence = single(parsed, '--licence-evidence');
@@ -235,13 +286,14 @@ const USAGE = `translation route approval
 
   approve  --source <tag> --target <tag> --scope <scope> [--scope <scope>]
            --approver <name> [--at <iso>]
-           [--review-engine ... --review-model <the record's modelId>
-            --review-model-version ... --review-corpus-hash ...
-            --review-corpus-version ... --review-evaluator ...
-            --review-assessed-at <iso> --review-method ...
-            --review-score <n> --review-scale <what was counted>
-            --review-scale-maximum <n> --review-pass-threshold <n>
-            --review-reference ...]
+           [--review-from <file holding the thirteen-field review block as JSON>
+            | --review-engine ... --review-model <the record's modelId>
+              --review-model-version ... --review-corpus-hash ...
+              --review-corpus-version ... --review-evaluator ...
+              --review-assessed-at <iso> --review-method ...
+              --review-score <n> --review-scale <what was counted>
+              --review-scale-maximum <n> --review-pass-threshold <n>
+              --review-reference ...]
            [--licence <id>] [--licence-commercial-use permitted|restricted|unknown]
            [--licence-evidence <where it was read>]
            [--overturn-refusal <reason>] [--overturn-failed-review <reason>]

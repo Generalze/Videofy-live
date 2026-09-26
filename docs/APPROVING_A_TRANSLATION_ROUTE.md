@@ -51,6 +51,13 @@ npm run routes:approve -- approve \
   --review-reference docs/reviews/en-fr-2026-09-19.md
 ```
 
+When the review came from the specialist programme, do not retype the block
+and do not paste it into a command line: save the `reviewEvidence` object the
+account service returns to a file and give `--review-from <file>` in place of
+all thirteen `--review-*` flags. The evaluator field is built from a display
+name, and a display name may contain `$(...)` and backticks; the file is read
+as data and validated by the same parser the document is.
+
 `--review-model` must name the record's own `modelId`. A review of one model
 establishes nothing about another, and until 2026-09-21 that field was
 collected and compared to nothing, so a block naming `opus-mt-en-fr` could
