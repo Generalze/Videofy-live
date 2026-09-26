@@ -54,18 +54,27 @@ import {
   freezeCorpus,
   freezeValidatedSource,
   isOperatorSettable,
+  qaReviewAccess,
+  qaSetProblemMessage,
   readElicitation,
+  readQaSetDefinition,
   readSourceJudgements,
   reviewAccess,
+  scoreRouteQa,
   specialistLanguageKey,
+  splitDirection,
   trackFor,
   wasCorrected,
   type ConsentScope,
   type ElicitationItem,
   type FrozenCorpus,
+  type JudgedCandidate,
+  type QaSetEngine,
+  type QaSetItem,
   type QualificationState,
   type ReviewLock,
   type ReviewVerdict,
+  type RouteQaScore,
   type SourceItem,
   type SourceJudgement,
   type SourceRequirement,
@@ -73,6 +82,7 @@ import {
   type StoredCandidate,
   type ValidatedSourceItem,
 } from '@videofy-live/language-specialist';
+import { buildRouteReviewEvidence, type ReviewerIdentity } from './specialist-route-evidence.js';
 
 /* -------------------------------------------------------------------------- */
 /*  Records                                                                    */
@@ -225,6 +235,67 @@ export interface AssignmentRecord {
   readonly sourceSha256: string | null;
   /** For a SOURCE_VALIDATION packet: the supplied set being judged. */
   readonly sourceSetId: string | null;
+  /**
+   * FOR A ROUTE QA PICKUP: the set this packet was built from, and the hash
+   * of its content. Null on a qualification packet. A non-null set id is what
+   * makes an assignment count toward a ROUTE score rather than toward the
+   * person's own qualification, and the hash is what the evidence cites.
+   */
+  readonly qaSetId: string | null;
+  readonly qaSetSha256: string | null;
+}
+
+/**
+ * A route QA set, published. IMMUTABLE: the port refuses a duplicate hash and
+ * the table refuses UPDATE and DELETE. See migration 032.
+ */
+export interface QaSetRecord {
+  readonly qaSetId: string;
+  readonly language: string;
+  /** The human label; becomes `corpusVersion`. */
+  readonly version: string;
+  /** Over the content; becomes `corpusHash`. */
+  readonly sha256: string;
+  readonly engines: readonly QaSetEngine[];
+  readonly items: readonly QaSetItem[];
+  readonly itemCount: number;
+  readonly sourceReference: string;
+  readonly publishedBy: string;
+  readonly publishedAtMs: number;
+}
+
+/**
+ * The evidence a set's verdicts became, in the registry's shape plus the
+ * working behind it. Append-only: a later emission from more verdicts is a
+ * new row, and the latest per (direction, provider, model) is the current one.
+ */
+export interface RouteEvidenceRecord {
+  readonly evidenceId: string;
+  readonly qaSetId: string;
+  readonly language: string;
+  readonly direction: string;
+  /* ---- the thirteen RouteReviewEvidence fields ---- */
+  readonly provider: string;
+  readonly model: string;
+  readonly modelVersion: string;
+  readonly corpusHash: string;
+  readonly corpusVersion: string;
+  readonly evaluator: string;
+  readonly assessedAtMs: number;
+  readonly method: string;
+  readonly score: number;
+  readonly scale: string;
+  readonly scaleMaximum: number;
+  readonly passThreshold: number;
+  readonly evidenceReference: string;
+  /* ---- the working ---- */
+  readonly evaluatorAccountIds: readonly string[];
+  readonly approvable: boolean;
+  readonly judged: number;
+  readonly passed: number;
+  readonly reversed: number;
+  readonly emittedBy: string;
+  readonly emittedAtMs: number;
 }
 
 export interface CapabilityRecord {
@@ -326,6 +397,20 @@ export interface SpecialistRecordPort {
   /** Append-only. */
   appendDecision(decision: DecisionRecord): Promise<void>;
   decisions(accountId: string, language: string): Promise<readonly DecisionRecord[]>;
+
+  /** Append-only. MUST reject a duplicate sha256 and a duplicate (language, version). */
+  appendQaSet(set: QaSetRecord): Promise<void>;
+  qaSet(qaSetId: string): Promise<QaSetRecord | null>;
+  /** Oldest first. */
+  qaSets(language: string): Promise<readonly QaSetRecord[]>;
+  allQaSets(): Promise<readonly QaSetRecord[]>;
+  /** Every pickup of one set, across every specialist. Aggregation reads this. */
+  assignmentsForQaSet(qaSetId: string): Promise<readonly AssignmentRecord[]>;
+
+  /** Append-only. */
+  appendRouteEvidence(evidence: RouteEvidenceRecord): Promise<void>;
+  /** Oldest first. */
+  routeEvidence(qaSetId: string): Promise<readonly RouteEvidenceRecord[]>;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -345,6 +430,8 @@ interface Collections {
   verdicts: Map<string, { accountId: string; atMs: number; verdict: ReviewVerdict }[]>;
   capabilities: CapabilityRecord[];
   decisions: DecisionRecord[];
+  qaSets: QaSetRecord[];
+  routeEvidence: RouteEvidenceRecord[];
 }
 
 function emptyCollections(): Collections {
@@ -361,6 +448,8 @@ function emptyCollections(): Collections {
     verdicts: new Map(),
     capabilities: [],
     decisions: [],
+    qaSets: [],
+    routeEvidence: [],
   };
 }
 
@@ -386,6 +475,8 @@ function snapshot(source: Collections): Collections {
     verdicts: new Map([...source.verdicts].map(([key, rows]) => [key, [...rows]])),
     capabilities: [...source.capabilities],
     decisions: [...source.decisions],
+    qaSets: [...source.qaSets],
+    routeEvidence: [...source.routeEvidence],
   };
 }
 
@@ -591,6 +682,28 @@ export function createInMemorySpecialistPort(): SpecialistRecordPort {
           throw new Error('the cited source set does not belong to this assignment');
         }
       }
+      /*
+       * The QA-set composite key and the one-pickup rule the database carries
+       * (migration 032): a pickup names a set of ITS language with the hash
+       * that set actually has, and one account picks a set up once.
+       */
+      if (assignment.qaSetId !== null) {
+        const set = db.qaSets.find((entry) => entry.qaSetId === assignment.qaSetId);
+        if (
+          set === undefined ||
+          set.language !== assignment.language ||
+          set.sha256 !== assignment.qaSetSha256
+        ) {
+          throw new Error('the cited QA set does not belong to this assignment');
+        }
+        const other = [...db.assignments.values()].find(
+          (entry) =>
+            entry.assignmentId !== assignment.assignmentId &&
+            entry.accountId === assignment.accountId &&
+            entry.qaSetId === assignment.qaSetId,
+        );
+        if (other !== undefined) throw new Error('this account has already picked up this QA set');
+      }
       db.assignments.set(assignment.assignmentId, assignment);
     },
 
@@ -663,6 +776,49 @@ export function createInMemorySpecialistPort(): SpecialistRecordPort {
         (entry) => entry.accountId === accountId && entry.language === language,
       );
     },
+
+    async appendQaSet(set) {
+      /* The three UNIQUE keys of migration 032, refused in the same order. */
+      if (db.qaSets.some((entry) => entry.sha256 === set.sha256)) {
+        throw new Error('a QA set with this content is already published');
+      }
+      if (db.qaSets.some((entry) => entry.language === set.language && entry.version === set.version)) {
+        throw new Error('a QA set with this version label is already published for this language');
+      }
+      if (db.qaSets.some((entry) => entry.qaSetId === set.qaSetId)) {
+        throw new Error('a QA set with this id is already published');
+      }
+      db.qaSets.push(set);
+    },
+    async qaSet(qaSetId) {
+      return db.qaSets.find((entry) => entry.qaSetId === qaSetId) ?? null;
+    },
+    async qaSets(language) {
+      return db.qaSets
+        .filter((entry) => entry.language === language)
+        .sort((a, b) => a.publishedAtMs - b.publishedAtMs);
+    },
+    async allQaSets() {
+      return [...db.qaSets].sort((a, b) => a.publishedAtMs - b.publishedAtMs);
+    },
+    async assignmentsForQaSet(qaSetId) {
+      return [...db.assignments.values()].filter((entry) => entry.qaSetId === qaSetId);
+    },
+
+    async appendRouteEvidence(evidence) {
+      if (db.routeEvidence.some((entry) => entry.evidenceId === evidence.evidenceId)) {
+        throw new Error('evidence already recorded');
+      }
+      if (!db.qaSets.some((entry) => entry.qaSetId === evidence.qaSetId)) {
+        throw new Error('evidence must cite a QA set that exists');
+      }
+      db.routeEvidence.push(evidence);
+    },
+    async routeEvidence(qaSetId) {
+      return db.routeEvidence
+        .filter((entry) => entry.qaSetId === qaSetId)
+        .sort((a, b) => a.emittedAtMs - b.emittedAtMs);
+    },
   };
 
   return port;
@@ -696,7 +852,13 @@ export type StoreRefusal =
   | 'duplicate-engine-candidate'
   | 'no-candidates'
   /** The packet belongs to an attempt or a source this person is no longer on. */
-  | 'stale-assignment';
+  | 'stale-assignment'
+  /** A QA set with this content, or this version label, is already published. */
+  | 'duplicate-qa-set'
+  /** No QA set has been published for this language. */
+  | 'no-qa-set'
+  /** No completed review exists on this set, so there is nothing to score. */
+  | 'nothing-judged';
 
 export type StoreResult<T> =
   | { readonly ok: true; readonly value: T }
@@ -727,11 +889,21 @@ function shuffle<T>(items: readonly T[]): T[] {
 /** Events carry ids and counts. Never a message, a meaning or an email address. */
 export type SpecialistEvent = (event: string, detail: Record<string, string | number>) => void;
 
+/** How a reviewer is named on the evidence. Read from the C7 account, their profile. */
+export type AccountNameResolver = (
+  accountId: string,
+) => Promise<{ readonly displayName: string | null; readonly username: string | null } | null>;
+
 export interface SpecialistStoreOptions {
   readonly port: SpecialistRecordPort;
   readonly now?: () => number;
   readonly newId?: () => string;
   readonly onEvent?: SpecialistEvent;
+  /**
+   * Names for the evidence. Absent means every reviewer is named by account
+   * id, which is still a name; it is never absent in the deployed service.
+   */
+  readonly accountName?: AccountNameResolver;
 }
 
 /** One sentence of a frozen source, whichever kind produced it. */
@@ -830,12 +1002,14 @@ export class SpecialistStore {
   private readonly now: () => number;
   private readonly newId: () => string;
   private readonly onEvent: SpecialistEvent;
+  private readonly accountName: AccountNameResolver;
 
   constructor(options: SpecialistStoreOptions) {
     this.port = options.port;
     this.now = options.now ?? (() => Date.now());
     this.newId = options.newId ?? (() => randomUUID().replace(/-/gu, '').slice(0, 20));
     this.onEvent = options.onEvent ?? (() => undefined);
+    this.accountName = options.accountName ?? (async () => null);
   }
 
   private digest(body: string): string {
@@ -1309,6 +1483,8 @@ export class SpecialistStore {
       sourceRevision: null,
       sourceSha256: null,
       sourceSetId: set.setId,
+      qaSetId: null,
+      qaSetSha256: null,
     };
 
     await this.port.transaction(async (tx) => {
@@ -1639,6 +1815,8 @@ export class SpecialistStore {
       sourceRevision: source.revision,
       sourceSha256: source.sha256,
       sourceSetId: null,
+      qaSetId: null,
+      qaSetSha256: null,
     };
 
     /*
@@ -1684,6 +1862,22 @@ export class SpecialistStore {
     assignment: AssignmentRecord,
   ): Promise<StoreResult<null>> {
     if (assignment.qualificationAttempt !== track.attempt) return refuse('stale-assignment');
+
+    /*
+     * A ROUTE QA PICKUP is gated on standing, not on a frozen source: the
+     * person must be QUALIFIED here and hold TRANSLATION_REVIEWER here. Asked
+     * on every read and every verdict, so a suspension after pickup closes the
+     * packet mid-review rather than letting the rest be written into evidence.
+     */
+    if (assignment.qaSetId !== null) {
+      const access = qaReviewAccess({
+        language: assignment.language,
+        qualificationState: track.state,
+        capabilities: await this.capabilitiesIn(track.accountId, assignment.language),
+      });
+      if (!access.unlocked) return refuse('review-locked', access.reason);
+      return { ok: true, value: null };
+    }
 
     /*
      * A SOURCE_VALIDATION packet is the work that PRODUCES the frozen source,
@@ -1840,6 +2034,28 @@ export class SpecialistStore {
       judged,
       total: candidates.length,
     });
+
+    /*
+     * THE LAST VERDICT ON A QA PICKUP EMITS EVIDENCE. This is the join firing
+     * without anybody asking it to: the specialist finishes, and a signed
+     * block in the registry's shape exists for the operator to read. Emission
+     * is outside the verdict transaction on purpose -- the verdict is the
+     * specialist's act and stands whether or not the platform managed to
+     * score it, and a re-emission from the admin surface can always be asked
+     * for. It is not approval: nothing here touches the route document.
+     */
+    if (assignment.qaSetId !== null && judged >= candidates.length) {
+      const emitted = await this.emitRouteEvidence({
+        qaSetId: assignment.qaSetId,
+        emittedBy: 'platform:on-submission',
+      });
+      if (!emitted.ok) {
+        this.onEvent('specialist.route-evidence.not-emitted', {
+          qaSetId: assignment.qaSetId,
+          reason: emitted.reason,
+        });
+      }
+    }
     return { ok: true, value: { judged, total: candidates.length } };
   }
 
@@ -1937,6 +2153,392 @@ export class SpecialistStore {
       language: capability.language,
       capability: capability.capability,
       grantedBy: capability.grantedBy,
+    });
+  }
+
+  /* ---------------------------------------------------------- route QA sets */
+
+  /** The capabilities this account holds IN ONE LANGUAGE. Never account-wide. */
+  private async capabilitiesIn(accountId: string, language: string): Promise<readonly string[]> {
+    return (await this.port.capabilities(accountId))
+      .filter((grant) => grant.language === language)
+      .map((grant) => grant.capability);
+  }
+
+  /**
+   * Publish a QA set for a language. The one act only C7 performs, because
+   * only C7 knows which engine produced which candidate.
+   *
+   * CONTENT-ADDRESSED AT THE MOMENT OF PUBLICATION. The definition is read,
+   * refused whole if any of it is wrong, hashed over its canonical body, and
+   * appended. A second publication of the same content is refused by hash; a
+   * reused version label is refused by (language, version). There is no
+   * update path anywhere, and the table's trigger says the same.
+   */
+  async publishQaSet(input: {
+    definition: unknown;
+    publishedBy: string;
+  }): Promise<StoreResult<QaSetRecord>> {
+    const reading = readQaSetDefinition(input.definition, (body) => this.digest(body));
+    if (!reading.ok) {
+      return refuse('malformed', reading.problems.map(qaSetProblemMessage).join(' '));
+    }
+    const record: QaSetRecord = {
+      qaSetId: `qa_${this.newId()}`,
+      language: reading.definition.language,
+      version: reading.definition.version,
+      sha256: reading.sha256,
+      engines: reading.definition.engines,
+      items: reading.definition.items,
+      itemCount: reading.definition.items.length,
+      sourceReference: reading.definition.sourceReference,
+      publishedBy: input.publishedBy,
+      publishedAtMs: this.now(),
+    };
+    try {
+      await this.port.appendQaSet(record);
+    } catch {
+      return refuse('duplicate-qa-set');
+    }
+    /* The hash IS the evidence pointer, so it is logged. The sentences are not. */
+    this.onEvent('specialist.qa-set.published', {
+      qaSetId: record.qaSetId,
+      language: record.language,
+      version: record.version,
+      sha256: record.sha256,
+      items: record.itemCount,
+      engines: record.engines.length,
+      publishedBy: input.publishedBy,
+    });
+    return { ok: true, value: record };
+  }
+
+  async qaSet(qaSetId: string): Promise<QaSetRecord | null> {
+    return this.port.qaSet(qaSetId);
+  }
+
+  async allQaSets(): Promise<readonly QaSetRecord[]> {
+    return this.port.allQaSets();
+  }
+
+  /**
+   * The set a language's specialists currently review: the LATEST published.
+   *
+   * Earlier sets stay readable and their evidence stays valid for what it
+   * names; they simply stop being handed out. A specialist mid-way through an
+   * older set keeps that assignment (it names its own set and hash).
+   */
+  async currentQaSet(language: unknown): Promise<QaSetRecord | null> {
+    const key = specialistLanguageKey(language);
+    if (key === null) return null;
+    return (await this.port.qaSets(key)).at(-1) ?? null;
+  }
+
+  /**
+   * What each of this person's languages offers them, decided by the store.
+   *
+   * The portal renders this; it computes nothing. The gate answer here is the
+   * SAME `qaReviewAccess` call the pickup and every later read make, so a
+   * queue that shows a set cannot disagree with the button beneath it.
+   */
+  async qaSetQueueFor(accountId: string): Promise<
+    readonly {
+      language: string;
+      state: QualificationState;
+      unlocked: boolean;
+      lock: ReviewLock | null;
+      set: QaSetRecord | null;
+      assignment: AssignmentRecord | null;
+    }[]
+  > {
+    const tracks = await this.port.tracks(accountId);
+    const assignments = await this.port.assignments(accountId);
+    const queue = [];
+    for (const track of tracks) {
+      const access = qaReviewAccess({
+        language: track.language,
+        qualificationState: track.state,
+        capabilities: await this.capabilitiesIn(accountId, track.language),
+      });
+      const set = (await this.port.qaSets(track.language)).at(-1) ?? null;
+      queue.push({
+        language: track.language,
+        state: track.state,
+        unlocked: access.unlocked,
+        lock: access.unlocked ? null : access.reason,
+        set,
+        assignment:
+          set === null ? null : (assignments.find((entry) => entry.qaSetId === set.qaSetId) ?? null),
+      });
+    }
+    return queue;
+  }
+
+  /**
+   * SELF-SERVE PICKUP. A qualified TRANSLATION_REVIEWER opens their language's
+   * current set without an operator issuing anything.
+   *
+   * IDEMPOTENT PER SET. A second pickup returns the first assignment: one
+   * person counts once in a score, and a tap on a slow connection must not
+   * mint a second packet. The database says the same with
+   * UNIQUE (account_id, qa_set_id).
+   *
+   * THE ITEMS BECOME CANDIDATES, SHUFFLED, WITH THE ENGINE ON THE ROW. From
+   * here on this is an ordinary blind review: the same packet endpoint, the
+   * same `blindCandidate`, the same verdict table. The engine identity travels
+   * on the candidate because aggregation has to score per (direction, model),
+   * and it is never selected into anything the reviewer receives.
+   */
+  async pickUpQaSet(
+    accountId: string,
+    language: unknown,
+  ): Promise<StoreResult<{ assignment: AssignmentRecord; created: boolean }>> {
+    const key = specialistLanguageKey(language);
+    if (key === null) return refuse('not-a-track');
+    const track = await this.trackRecord(accountId, key);
+
+    /*
+     * ONE GATE, including for a language the person never applied in: that
+     * is a lock with a reason ("not-applied"), answered by the same function
+     * the queue and every later read consult, not a separate refusal.
+     */
+    const access = qaReviewAccess({
+      language: key,
+      qualificationState: track?.state ?? null,
+      capabilities: await this.capabilitiesIn(accountId, key),
+    });
+    if (!access.unlocked || track === undefined) {
+      return refuse('review-locked', access.unlocked ? 'not-applied' : access.reason);
+    }
+
+    const set = (await this.port.qaSets(key)).at(-1) ?? null;
+    if (set === null) return refuse('no-qa-set');
+
+    const existing = (await this.port.assignments(accountId)).find(
+      (entry) => entry.qaSetId === set.qaSetId,
+    );
+    if (existing !== undefined) return { ok: true, value: { assignment: existing, created: false } };
+
+    const assignment: AssignmentRecord = {
+      assignmentId: `asg_${this.newId()}`,
+      accountId,
+      language: key,
+      kind: 'BLIND_TRANSLATION_REVIEW',
+      state: 'NEW',
+      createdAtMs: this.now(),
+      dueAtMs: null,
+      qualificationAttempt: track.attempt,
+      sourceRevision: null,
+      sourceSha256: null,
+      sourceSetId: null,
+      qaSetId: set.qaSetId,
+      qaSetSha256: set.sha256,
+    };
+    const ordered: StoredCandidate[] = shuffle(set.items).map((item, index) => ({
+      candidateId: `cand_${this.newId()}`,
+      assignmentId: assignment.assignmentId,
+      ordinal: index + 1,
+      direction: item.direction,
+      category: item.category,
+      sourceText: item.sourceText,
+      candidateText: item.candidateText,
+      provider: item.provider,
+      model: item.model,
+    }));
+
+    try {
+      await this.port.transaction(async (tx) => {
+        await tx.putAssignment(assignment);
+        await tx.putCandidates(ordered);
+      });
+    } catch {
+      /* Two taps raced: the first one won, and it is the answer. */
+      const raced = (await this.port.assignments(accountId)).find(
+        (entry) => entry.qaSetId === set.qaSetId,
+      );
+      if (raced !== undefined) return { ok: true, value: { assignment: raced, created: false } };
+      return refuse('no-qa-set');
+    }
+
+    this.onEvent('specialist.qa-set.picked-up', {
+      accountId,
+      language: key,
+      qaSetId: set.qaSetId,
+      sha256: set.sha256,
+      assignmentId: assignment.assignmentId,
+      candidates: ordered.length,
+    });
+    return { ok: true, value: { assignment, created: true } };
+  }
+
+  /**
+   * The un-blinded aggregation for one set: every SUBMITTED pickup's verdicts,
+   * joined back to the engine each candidate came from, scored per
+   * (direction, provider, model).
+   *
+   * THIS IS WHERE THE BLIND IS LIFTED, and it is server-side, after the
+   * verdicts are recorded. Only completed pickups count: a half-finished
+   * review would weight whichever rows happened to come first in a shuffle.
+   */
+  async routeQaScoresFor(qaSetId: string): Promise<{
+    set: QaSetRecord;
+    scores: readonly RouteQaScore[];
+    submitted: number;
+    open: number;
+  } | null> {
+    const set = await this.port.qaSet(qaSetId);
+    if (set === null) return null;
+    const assignments = await this.port.assignmentsForQaSet(qaSetId);
+    const judged: JudgedCandidate[] = [];
+    let submitted = 0;
+    for (const assignment of assignments) {
+      if (assignment.state !== 'SUBMITTED') continue;
+      submitted += 1;
+      const [candidates, verdicts] = await Promise.all([
+        this.port.candidates(assignment.assignmentId),
+        this.port.verdicts(assignment.assignmentId),
+      ]);
+      const byId = new Map(candidates.map((candidate) => [candidate.candidateId, candidate]));
+      for (const verdict of verdicts) {
+        const candidate = byId.get(verdict.candidateId);
+        if (candidate === undefined) continue;
+        judged.push({
+          direction: candidate.direction,
+          provider: candidate.provider,
+          model: candidate.model,
+          reviewerAccountId: assignment.accountId,
+          verdict,
+        });
+      }
+    }
+    return {
+      set,
+      scores: scoreRouteQa(judged),
+      submitted,
+      open: assignments.length - submitted,
+    };
+  }
+
+  /**
+   * Turn a set's scores into signed evidence, one row per (direction,
+   * provider, model), in the registry's exact shape.
+   *
+   * The reviewers are named from their C7 accounts -- that is the founder's
+   * "they already have a profile". Nothing is approved by this: the rows are
+   * what an operator reads, and the promotion command is what they then run.
+   */
+  async emitRouteEvidence(input: {
+    qaSetId: string;
+    emittedBy: string;
+  }): Promise<StoreResult<readonly RouteEvidenceRecord[]>> {
+    const scored = await this.routeQaScoresFor(input.qaSetId);
+    if (scored === null) return refuse('no-qa-set');
+    if (scored.scores.length === 0) return refuse('nothing-judged');
+
+    const nowMs = this.now();
+    const emitted: RouteEvidenceRecord[] = [];
+    for (const score of scored.scores) {
+      const engine = scored.set.engines.find(
+        (entry) => entry.provider === score.provider && entry.model === score.model,
+      );
+      /*
+       * Unreachable for a set that passed `readQaSetDefinition`, which refuses
+       * an item naming an undeclared engine. Refused rather than defaulted
+       * all the same: evidence citing a model version nobody stated is worse
+       * than no evidence.
+       */
+      if (engine === undefined) return refuse('malformed', `${score.provider}/${score.model}`);
+
+      const reviewers: ReviewerIdentity[] = [];
+      for (const accountId of score.reviewerAccountIds) {
+        const named = await this.accountName(accountId);
+        reviewers.push({
+          accountId,
+          displayName: named?.displayName ?? null,
+          username: named?.username ?? null,
+        });
+      }
+      const evidenceId = `rev_${this.newId()}`;
+      const built = buildRouteReviewEvidence({
+        score,
+        modelVersion: engine.modelVersion,
+        corpusHash: scored.set.sha256,
+        corpusVersion: scored.set.version,
+        language: scored.set.language,
+        reviewers,
+        assessedAtMs: nowMs,
+        evidenceReference:
+          `C7 account service, GET /admin/language-specialists/qa-sets/${scored.set.qaSetId} ` +
+          `(evidence ${evidenceId}; ${score.judged} judgements by ${reviewers.length} specialist(s))`,
+      });
+      const record: RouteEvidenceRecord = {
+        evidenceId,
+        qaSetId: scored.set.qaSetId,
+        language: scored.set.language,
+        direction: score.direction,
+        provider: built.evidence.engine,
+        model: built.evidence.model,
+        modelVersion: built.evidence.modelVersion,
+        corpusHash: built.evidence.corpusHash,
+        corpusVersion: built.evidence.corpusVersion,
+        evaluator: built.evidence.evaluator,
+        assessedAtMs: nowMs,
+        method: built.evidence.method,
+        score: built.evidence.score,
+        scale: built.evidence.scale,
+        scaleMaximum: built.evidence.scaleMaximum,
+        passThreshold: built.evidence.passThreshold,
+        evidenceReference: built.evidence.evidenceReference,
+        evaluatorAccountIds: score.reviewerAccountIds,
+        approvable: built.approvable,
+        judged: score.judged,
+        passed: score.passed,
+        reversed: score.reversed,
+        emittedBy: input.emittedBy,
+        emittedAtMs: nowMs,
+      };
+      await this.port.appendRouteEvidence(record);
+      emitted.push(record);
+      /* Direction, model, score and hash. Not the evaluator's name. */
+      this.onEvent('specialist.route-evidence.emitted', {
+        qaSetId: record.qaSetId,
+        evidenceId,
+        direction: record.direction,
+        provider: record.provider,
+        model: record.model,
+        score: record.score,
+        judged: record.judged,
+        approvable: record.approvable ? 1 : 0,
+        corpusHash: record.corpusHash,
+        emittedBy: input.emittedBy,
+      });
+    }
+    return { ok: true, value: emitted };
+  }
+
+  async routeEvidenceFor(qaSetId: string): Promise<readonly RouteEvidenceRecord[]> {
+    return this.port.routeEvidence(qaSetId);
+  }
+
+  /**
+   * The current evidence per (direction, provider, model): the latest row for
+   * each, since every emission appends. The direction is split for the
+   * operator, who needs `--source` and `--target`.
+   */
+  async currentRouteEvidenceFor(qaSetId: string): Promise<
+    readonly (RouteEvidenceRecord & { readonly sourceLanguage: string; readonly targetLanguage: string })[]
+  > {
+    const latest = new Map<string, RouteEvidenceRecord>();
+    for (const row of await this.port.routeEvidence(qaSetId)) {
+      latest.set(`${row.direction}::${row.provider}::${row.model}`, row);
+    }
+    return [...latest.values()].map((row) => {
+      const sides = splitDirection(row.direction);
+      return {
+        ...row,
+        sourceLanguage: sides?.source ?? row.direction,
+        targetLanguage: sides?.target ?? row.direction,
+      };
     });
   }
 }

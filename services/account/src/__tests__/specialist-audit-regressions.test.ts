@@ -988,6 +988,8 @@ describe('second audit 3 — bad source provenance is unrepresentable', () => {
         sourceRevision: null,
         sourceSha256: null,
         sourceSetId: alice,
+        qaSetId: null,
+        qaSetSha256: null,
       }),
     ).rejects.toThrow(/does not belong to this assignment/u);
   });

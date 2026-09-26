@@ -1927,6 +1927,137 @@ const LANGUAGE_CATALOGUE_CODES: Migration = {
   `,
 };
 
+/**
+ * 032 -- route QA sets, and the evidence a specialist's verdicts become.
+ *
+ * THE JOIN THAT WAS MISSING. Specialist verdicts lived in this database; route
+ * approval read a JSON document through a command line; the two shared no
+ * import. This migration gives the join something to stand on: a per-language
+ * QA SET that a qualified specialist picks up without an operator handing it
+ * to them, and an EVIDENCE row, in the exact shape the route registry's
+ * `RouteReviewEvidence` demands, that a platform operator can then approve a
+ * route with. Emitting evidence is not approving a route: nothing here touches
+ * the route document, and the operator still performs the promotion.
+ *
+ * A QA SET IS CONTENT-ADDRESSED OR IT IS NOT EVIDENCE. `sha256` is computed
+ * over the set's content and is UNIQUE; the table refuses UPDATE and DELETE.
+ * Editing a sentence is publishing a new set with a new hash, and evidence
+ * citing the old hash still names the old set. `(language, version)` is unique
+ * as well, so a version label cannot be reused for different content.
+ *
+ * THE ENGINE IS IN THE SET AND NEVER IN THE REVIEWER'S VIEW. Items carry the
+ * provider and model that produced each candidate; a pickup copies them onto
+ * `specialist_review_candidates`, whose identity columns are already never
+ * selected into a reviewer payload. Aggregation is per (direction, provider,
+ * model), which is why the identity has to be on the row and not on the set.
+ *
+ * ONE PICKUP PER PERSON PER SET. `UNIQUE (account_id, qa_set_id)` -- NULL is
+ * legal and unenforced for the qualification packets, which have no set. A
+ * second pickup returns the first assignment rather than a second packet, so
+ * one person cannot count twice in a score.
+ *
+ * THE COMPOSITE KEY ON THE PICKUP carries the language and the hash, so an
+ * assignment cannot name a set of another language, or a set whose content is
+ * not what the assignment says it reviewed.
+ */
+const SPECIALIST_QA_SETS: Migration = {
+  name: '032_specialist_qa_sets',
+  sql: `
+    CREATE TABLE IF NOT EXISTS specialist_qa_sets (
+      qa_set_id        text    PRIMARY KEY,
+      language         text    NOT NULL,
+      -- The human label; becomes corpusVersion. The hash becomes corpusHash.
+      version          text    NOT NULL,
+      sha256           text    NOT NULL,
+      -- Every engine in the set with its model VERSION, so the evidence can
+      -- say which build was read without a version on every row.
+      engines          jsonb   NOT NULL,
+      items            jsonb   NOT NULL,
+      item_count       integer NOT NULL,
+      -- Where the sentences came from. Not hashed: a corrected path is not a
+      -- new set.
+      source_reference text    NOT NULL,
+      published_by     text    NOT NULL,
+      published_at_ms  bigint  NOT NULL,
+      UNIQUE (sha256),
+      UNIQUE (language, version),
+      -- The target the pickup's composite key needs.
+      UNIQUE (qa_set_id, language, sha256)
+    );
+
+    CREATE INDEX IF NOT EXISTS specialist_qa_sets_language_idx
+      ON specialist_qa_sets (language, published_at_ms DESC);
+
+    DROP TRIGGER IF EXISTS specialist_qa_sets_no_rewrite ON specialist_qa_sets;
+    CREATE TRIGGER specialist_qa_sets_no_rewrite
+      BEFORE UPDATE OR DELETE ON specialist_qa_sets
+      FOR EACH ROW EXECUTE FUNCTION specialist_records_are_append_only();
+
+    -- Which set a packet was picked up from, and the hash of that set's
+    -- content at the time. NULL on a qualification packet.
+    ALTER TABLE specialist_assignments
+      ADD COLUMN IF NOT EXISTS qa_set_id text;
+    ALTER TABLE specialist_assignments
+      ADD COLUMN IF NOT EXISTS qa_set_sha256 text;
+
+    ALTER TABLE specialist_assignments
+      DROP CONSTRAINT IF EXISTS specialist_assignments_qa_set_fkey;
+    ALTER TABLE specialist_assignments
+      ADD CONSTRAINT specialist_assignments_qa_set_fkey
+      FOREIGN KEY (qa_set_id, language, qa_set_sha256)
+      REFERENCES specialist_qa_sets (qa_set_id, language, sha256);
+
+    ALTER TABLE specialist_assignments
+      DROP CONSTRAINT IF EXISTS specialist_assignments_one_pickup_key;
+    ALTER TABLE specialist_assignments
+      ADD CONSTRAINT specialist_assignments_one_pickup_key
+      UNIQUE (account_id, qa_set_id);
+
+    -- The evidence, in the registry's shape, signed by the specialists who
+    -- produced it. APPEND-ONLY: a later emission from more verdicts is a new
+    -- row, and the operator reads the latest per (direction, provider, model).
+    CREATE TABLE IF NOT EXISTS specialist_route_evidence (
+      evidence_id           text    PRIMARY KEY,
+      qa_set_id             text    NOT NULL REFERENCES specialist_qa_sets (qa_set_id),
+      language              text    NOT NULL,
+      direction             text    NOT NULL,
+      provider              text    NOT NULL,
+      model                 text    NOT NULL,
+      model_version         text    NOT NULL,
+      corpus_hash           text    NOT NULL,
+      corpus_version        text    NOT NULL,
+      -- The specialist(s) by name, from their C7 profile. Never a process
+      -- string on its own: a review nobody's name is attached to is the thing
+      -- the gate exists to prevent.
+      evaluator             text    NOT NULL,
+      evaluator_account_ids jsonb   NOT NULL,
+      assessed_at_ms        bigint  NOT NULL,
+      method                text    NOT NULL,
+      score                 double precision NOT NULL,
+      scale                 text    NOT NULL,
+      scale_maximum         double precision NOT NULL,
+      pass_threshold        double precision NOT NULL,
+      evidence_reference    text    NOT NULL,
+      -- score >= pass_threshold, written down so a reader of the row does not
+      -- have to compare. The validator compares again regardless.
+      approvable            boolean NOT NULL,
+      judged                integer NOT NULL,
+      passed                integer NOT NULL,
+      reversed              integer NOT NULL,
+      emitted_by            text    NOT NULL,
+      emitted_at_ms         bigint  NOT NULL
+    );
+
+    CREATE INDEX IF NOT EXISTS specialist_route_evidence_set_idx
+      ON specialist_route_evidence (qa_set_id, emitted_at_ms DESC);
+
+    DROP TRIGGER IF EXISTS specialist_route_evidence_no_rewrite ON specialist_route_evidence;
+    CREATE TRIGGER specialist_route_evidence_no_rewrite
+      BEFORE UPDATE OR DELETE ON specialist_route_evidence
+      FOR EACH ROW EXECUTE FUNCTION specialist_records_are_append_only();
+  `,
+};
+
 export const MIGRATIONS: readonly Migration[] = [
   ACCOUNTS,
   ORGANIZATIONS,
@@ -1959,4 +2090,5 @@ export const MIGRATIONS: readonly Migration[] = [
   PROGRAMME_REPLAY_OVERRIDES,
   PROGRAMME_REPLAY_DELETIONS,
   LANGUAGE_CATALOGUE_CODES,
+  SPECIALIST_QA_SETS,
 ];

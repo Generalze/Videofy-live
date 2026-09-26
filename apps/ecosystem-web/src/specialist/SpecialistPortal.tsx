@@ -25,10 +25,16 @@
  * politeness; an unauthorized request is an attack.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { ROUTE_PATHS, pathLink, usePathname, type Route } from '../router';
+import { ROUTE_PATHS, pathLink, pushPath, usePathname, type Route } from '../router';
 import { readSessionToken, expireSession, signOutEverywhere } from '../session';
-import { createSpecialistApi, type Me, type ProgrammeLanguage, type SubmissionWire } from './api';
-import { Assignments, Dashboard, Languages, Profile, Submissions } from './panels';
+import {
+  createSpecialistApi,
+  type Me,
+  type ProgrammeLanguage,
+  type QaSetQueueEntry,
+  type SubmissionWire,
+} from './api';
+import { Assignments, Dashboard, Languages, Profile, QaSetQueue, Submissions } from './panels';
 import { Qualification } from './Qualification';
 import { SourceValidation } from './SourceValidation';
 import { Review } from './Review';
@@ -38,6 +44,7 @@ import {
   PORTAL_PAGES,
   breadcrumb,
   pathForPage,
+  pathForReview,
   pathForSourceWork,
   viewFromPath,
   type PortalPage,
@@ -61,6 +68,7 @@ export function SpecialistPortal({
   const [me, setMe] = useState<Me | null>(null);
   const [catalogue, setCatalogue] = useState<readonly ProgrammeLanguage[]>([]);
   const [submissions, setSubmissions] = useState<readonly SubmissionWire[]>([]);
+  const [qaQueue, setQaQueue] = useState<readonly QaSetQueueEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
@@ -92,10 +100,11 @@ export function SpecialistPortal({
     }
     let cancelled = false;
     void (async () => {
-      const [meResult, programmeResult, submissionsResult] = await Promise.all([
+      const [meResult, programmeResult, submissionsResult, qaResult] = await Promise.all([
         api.me(),
         api.programme(),
         api.submissions(),
+        api.qaSets(),
       ]);
       if (cancelled) return;
       if (!meResult.ok) {
@@ -110,6 +119,7 @@ export function SpecialistPortal({
       setMe(meResult.value);
       if (programmeResult.ok) setCatalogue(programmeResult.value.languages);
       if (submissionsResult.ok) setSubmissions(submissionsResult.value.submissions);
+      if (qaResult.ok) setQaQueue(qaResult.value.languages);
       setPhase('ready');
     })();
     return () => {
@@ -296,7 +306,33 @@ export function SpecialistPortal({
             'assignmentId' in effective ? (
               <Review api={api} assignmentId={effective.assignmentId} onChanged={refresh} />
             ) : (
-              <Assignments assignments={me.assignments} />
+              <>
+                <Assignments assignments={me.assignments} />
+                {/*
+                  Self-serve pickup sits under the list it feeds. A successful
+                  pickup lands on the same review screen an issued packet
+                  does; there is no second review surface.
+                */}
+                <QaSetQueue
+                  queue={qaQueue}
+                  busy={busy !== null && busy.startsWith('qa:') ? busy.slice(3) : null}
+                  error={error}
+                  onPickUp={(language) => {
+                    setBusy(`qa:${language}`);
+                    setError(null);
+                    void api.pickUpQaSet(language).then((result) => {
+                      setBusy(null);
+                      if (result.ok) {
+                        refresh();
+                        pushPath(pathForReview(result.value.assignmentId));
+                        return;
+                      }
+                      if ('unauthenticated' in result && result.unauthenticated) signedOut();
+                      else setError(result.error);
+                    });
+                  }}
+                />
+              </>
             )
           ) : null}
 

@@ -1206,6 +1206,17 @@ console.log(
  */
 const specialists = new SpecialistStore({
   port: databasePool ? createPostgresSpecialistPort(databasePool) : createInMemorySpecialistPort(),
+  /*
+   * THE SPECIALIST SIGNS THE EVIDENCE BY NAME. The name is the one on their
+   * C7 account -- the profile the founder's ruling refers to -- read here and
+   * nowhere else, so the specialist store never grows its own copy of a name
+   * that could drift from the account's.
+   */
+  accountName: async (accountId) => {
+    const record = store.get(accountId);
+    if (record === null || record === undefined) return null;
+    return { displayName: record.displayName ?? null, username: record.username ?? null };
+  },
   onEvent: (event, detail) => {
     /*
      * IDS, LANGUAGE CODES, COUNTS AND THE CORPUS HASH. Never a source message,

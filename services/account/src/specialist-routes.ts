@@ -95,6 +95,13 @@ const REFUSAL_STATUS: Readonly<Record<StoreRefusal, number>> = {
   'already-judged': 409,
   'illegal-transition': 409,
   'not-operator-settable': 403,
+  'duplicate-qa-set': 409,
+  /*
+   * 409, not 404: the language exists and the person is entitled; there is
+   * simply nothing published yet. A 404 would read as a wrong URL.
+   */
+  'no-qa-set': 409,
+  'nothing-judged': 409,
 };
 
 const REFUSAL_MESSAGE: Readonly<Record<StoreRefusal, string>> = {
@@ -124,6 +131,9 @@ const REFUSAL_MESSAGE: Readonly<Record<StoreRefusal, string>> = {
   'already-judged': 'You have already reviewed this translation.',
   'illegal-transition': 'That change is not allowed from the current state.',
   'not-operator-settable': 'That state cannot be set here.',
+  'duplicate-qa-set': 'A QA set with this content, or this version label, is already published.',
+  'no-qa-set': 'No QA set has been published for this language yet.',
+  'nothing-judged': 'No completed review exists on this set, so there is nothing to score.',
 };
 
 /**
@@ -501,6 +511,78 @@ export function registerSpecialistRoutes(
           unlocked: view.unlocked,
           lockMessage: view.lock === null ? null : reviewLockMessage(view.lock),
         })),
+    });
+  });
+
+  /**
+   * The route QA sets this person may pick up, per language, decided by the
+   * store.
+   *
+   * SELF-SERVE, GATED. No operator hands these out. A language appears with
+   * its current set once the person is QUALIFIED there and holds
+   * TRANSLATION_REVIEWER there; otherwise it appears LOCKED with the server's
+   * sentence saying why. Counts and hashes only: the sentences are served by
+   * the packet endpoint, blind, once a set is picked up.
+   */
+  app.get('/specialists/qa-sets', async (req, res) => {
+    const who = caller(req, res);
+    if (who === null) return;
+    const queue = await deps.specialists.qaSetQueueFor(who.accountId);
+    res.json({
+      languages: queue.map((entry) => ({
+        language: entry.language,
+        ...languageNames(entry.language),
+        state: entry.state,
+        unlocked: entry.unlocked,
+        lock: entry.lock,
+        lockMessage: entry.lock === null ? null : reviewLockMessage(entry.lock),
+        set:
+          entry.set === null
+            ? null
+            : {
+                qaSetId: entry.set.qaSetId,
+                version: entry.set.version,
+                sha256: entry.set.sha256,
+                itemCount: entry.set.itemCount,
+                publishedAtMs: entry.set.publishedAtMs,
+              },
+        assignment:
+          entry.assignment === null
+            ? null
+            : { assignmentId: entry.assignment.assignmentId, state: entry.assignment.state },
+      })),
+    });
+  });
+
+  /**
+   * Pick up the current set for a language. Idempotent per set: a second call
+   * returns the same assignment, so one person counts once in a score.
+   */
+  app.post('/specialists/qa-sets/:language/pickup', async (req, res) => {
+    const who = caller(req, res);
+    if (who === null) return;
+    const result = await deps.specialists.pickUpQaSet(who.accountId, req.params['language']);
+    if (!result.ok) {
+      /*
+       * A lock is explained in the gate's words, so the portal never writes
+       * its own reason for a refusal it did not decide.
+       */
+      if (result.reason === 'review-locked') {
+        const lock = (result.detail ?? 'not-applied') as ReviewLock;
+        res.status(403).json({ error: reviewLockMessage(lock), reason: 'review-locked', detail: lock });
+        return;
+      }
+      deny(res, result.reason, result.detail);
+      return;
+    }
+    const { assignment, created } = result.value;
+    /* 201 when this call minted the packet; 200 when it found the earlier one. */
+    res.status(created ? 201 : 200).json({
+      assignmentId: assignment.assignmentId,
+      language: assignment.language,
+      state: assignment.state,
+      qaSetId: assignment.qaSetId,
+      qaSetSha256: assignment.qaSetSha256,
     });
   });
 

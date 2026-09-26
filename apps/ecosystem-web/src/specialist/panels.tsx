@@ -24,6 +24,7 @@ import {
   stateWord,
   type Me,
   type ProgrammeLanguage,
+  type QaSetQueueEntry,
   type SubmissionWire,
   type TrackWire,
 } from './api';
@@ -505,6 +506,85 @@ export function Assignments({
         </Card>
       )}
     </>
+  );
+}
+
+/* ------------------------------------------------------------- QA queue */
+
+/**
+ * The route QA sets a specialist may pick up themselves.
+ *
+ * THE THINNEST PART OF THE JOIN, on purpose. Everything shown is the server's
+ * answer: whether a language is unlocked, why not, what set is current, and
+ * whether this person already holds it. The button asks the server; the
+ * server decides again. A language with no set yet says so rather than hiding,
+ * so a qualified reviewer can see that the wait is on C7 and not on them.
+ */
+export function QaSetQueue({
+  queue,
+  busy,
+  error,
+  onPickUp,
+}: {
+  readonly queue: readonly QaSetQueueEntry[];
+  readonly busy: string | null;
+  readonly error: string | null;
+  readonly onPickUp: (language: string) => void;
+}) {
+  if (queue.length === 0) return null;
+  return (
+    <Card
+      title="Route QA sets"
+      action={<Chip tone="neutral">Blind</Chip>}
+    >
+      <p className="sp-body sp-muted">
+        Once you are qualified in a language and hold the Translation Reviewer role for it, you
+        can review its QA set here without waiting to be assigned. Your verdicts are scored per
+        engine and become the evidence a route is approved on, under your name.
+      </p>
+      {error === null ? null : <Notice>{error}</Notice>}
+      <ul className="sp-rows">
+        {queue.map((entry) => (
+          <li className="sp-row" key={entry.language}>
+            <div className="sp-row-main">
+              <span className="sp-row-name">{entry.nativeName}</span>
+              <span className="sp-row-sub">
+                {entry.englishName}
+                {entry.set === null
+                  ? ' · no QA set published yet'
+                  : ` · ${entry.set.itemCount} items · ${entry.set.version}`}
+              </span>
+            </div>
+            {!entry.unlocked ? (
+              /* The gate's sentence, never one written here. */
+              <span className="sp-row-meta sp-muted">{entry.lockMessage}</span>
+            ) : entry.set === null ? (
+              <Chip tone="neutral">Waiting for C7</Chip>
+            ) : entry.assignment !== null ? (
+              entry.assignment.state === 'SUBMITTED' ? (
+                <Chip tone="positive">Reviewed</Chip>
+              ) : (
+                <a
+                  className="sp-button sp-button-small sp-button-primary"
+                  {...pathLink(pathForReview(entry.assignment.assignmentId))}
+                >
+                  Continue
+                </a>
+              )
+            ) : (
+              <button
+                className="sp-button sp-button-small sp-button-primary"
+                type="button"
+                disabled={busy !== null}
+                onClick={() => onPickUp(entry.language)}
+              >
+                {busy === entry.language ? 'Opening…' : 'Start review'}
+              </button>
+            )}
+          </li>
+        ))}
+      </ul>
+    </Card>
   );
 }
 

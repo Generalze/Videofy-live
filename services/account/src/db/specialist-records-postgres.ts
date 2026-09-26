@@ -26,6 +26,8 @@ import type { Pool, PoolClient } from 'pg';
 import type {
   ElicitationItem,
   FrozenCorpus,
+  QaSetEngine,
+  QaSetItem,
   QualificationState,
   ReviewVerdict,
   Score,
@@ -43,6 +45,8 @@ import type {
   DecisionRecord,
   ElicitationDraft,
   LanguageTrackRecord,
+  QaSetRecord,
+  RouteEvidenceRecord,
   SourceSetRecord,
   SpecialistProfile,
   SpecialistRecordPort,
@@ -67,7 +71,13 @@ const CORPUS_COLUMNS =
   'attempt_id, account_id, language, revision, items, source_count, sha256, frozen_at_ms, consent_id, consent_version';
 
 const ASSIGNMENT_COLUMNS =
-  'assignment_id, account_id, language, kind, state, created_at_ms, due_at_ms, qualification_attempt, source_revision, source_sha256, source_set_id';
+  'assignment_id, account_id, language, kind, state, created_at_ms, due_at_ms, qualification_attempt, source_revision, source_sha256, source_set_id, qa_set_id, qa_set_sha256';
+
+const QA_SET_COLUMNS =
+  'qa_set_id, language, version, sha256, engines, items, item_count, source_reference, published_by, published_at_ms';
+
+const ROUTE_EVIDENCE_COLUMNS =
+  'evidence_id, qa_set_id, language, direction, provider, model, model_version, corpus_hash, corpus_version, evaluator, evaluator_account_ids, assessed_at_ms, method, score, scale, scale_maximum, pass_threshold, evidence_reference, approvable, judged, passed, reversed, emitted_by, emitted_at_ms';
 
 const CANDIDATE_COLUMNS =
   'candidate_id, assignment_id, ordinal, direction, category, source_text, candidate_text, provider, model, machine_score, benchmark_rank, expected_winner';
@@ -178,6 +188,48 @@ interface AssignmentRow {
   source_revision: number | null;
   source_sha256: string | null;
   source_set_id: string | null;
+  qa_set_id: string | null;
+  qa_set_sha256: string | null;
+}
+
+interface QaSetRow {
+  qa_set_id: string;
+  language: string;
+  version: string;
+  sha256: string;
+  engines: unknown;
+  items: unknown;
+  item_count: number;
+  source_reference: string;
+  published_by: string;
+  published_at_ms: string;
+}
+
+interface RouteEvidenceRow {
+  evidence_id: string;
+  qa_set_id: string;
+  language: string;
+  direction: string;
+  provider: string;
+  model: string;
+  model_version: string;
+  corpus_hash: string;
+  corpus_version: string;
+  evaluator: string;
+  evaluator_account_ids: unknown;
+  assessed_at_ms: string;
+  method: string;
+  score: number;
+  scale: string;
+  scale_maximum: number;
+  pass_threshold: number;
+  evidence_reference: string;
+  approvable: boolean;
+  judged: number;
+  passed: number;
+  reversed: number;
+  emitted_by: string;
+  emitted_at_ms: string;
 }
 
 interface CandidateRow {
@@ -349,6 +401,57 @@ function toAssignment(row: AssignmentRow): AssignmentRecord {
     sourceRevision: row.source_revision,
     sourceSha256: row.source_sha256,
     sourceSetId: row.source_set_id,
+    qaSetId: row.qa_set_id,
+    qaSetSha256: row.qa_set_sha256,
+  };
+}
+
+function toQaSet(row: QaSetRow): QaSetRecord {
+  return {
+    qaSetId: row.qa_set_id,
+    language: row.language,
+    version: row.version,
+    sha256: row.sha256,
+    engines: (row.engines ?? []) as readonly QaSetEngine[],
+    items: (row.items ?? []) as readonly QaSetItem[],
+    itemCount: row.item_count,
+    sourceReference: row.source_reference,
+    publishedBy: row.published_by,
+    publishedAtMs: Number(row.published_at_ms),
+  };
+}
+
+function toRouteEvidence(row: RouteEvidenceRow): RouteEvidenceRecord {
+  return {
+    evidenceId: row.evidence_id,
+    qaSetId: row.qa_set_id,
+    language: row.language,
+    direction: row.direction,
+    provider: row.provider,
+    model: row.model,
+    modelVersion: row.model_version,
+    corpusHash: row.corpus_hash,
+    corpusVersion: row.corpus_version,
+    evaluator: row.evaluator,
+    evaluatorAccountIds: (row.evaluator_account_ids ?? []) as readonly string[],
+    assessedAtMs: Number(row.assessed_at_ms),
+    method: row.method,
+    /*
+     * `double precision` comes back as a JavaScript number from node-postgres
+     * (unlike bigint), so no conversion; `Number(...)` is still applied so a
+     * driver change to strings cannot put text into a score comparison.
+     */
+    score: Number(row.score),
+    scale: row.scale,
+    scaleMaximum: Number(row.scale_maximum),
+    passThreshold: Number(row.pass_threshold),
+    evidenceReference: row.evidence_reference,
+    approvable: row.approvable,
+    judged: row.judged,
+    passed: row.passed,
+    reversed: row.reversed,
+    emittedBy: row.emitted_by,
+    emittedAtMs: Number(row.emitted_at_ms),
   };
 }
 
@@ -764,7 +867,7 @@ export function createPostgresSpecialistPort(
     async putAssignment(assignment) {
       await db.query(
         `INSERT INTO specialist_assignments (${ASSIGNMENT_COLUMNS})
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
          ON CONFLICT (assignment_id) DO UPDATE SET
            state     = EXCLUDED.state,
            due_at_ms = EXCLUDED.due_at_ms`,
@@ -779,12 +882,15 @@ export function createPostgresSpecialistPort(
           /*
            * The evidence binding is written once and never updated: which
            * attempt and which frozen source a packet was built for is a fact
-           * about its creation, not a mutable property.
+           * about its creation, not a mutable property. The QA set binding is
+           * the same kind of fact.
            */
           assignment.qualificationAttempt,
           assignment.sourceRevision,
           assignment.sourceSha256,
           assignment.sourceSetId,
+          assignment.qaSetId,
+          assignment.qaSetSha256,
         ],
       );
     },
@@ -907,6 +1013,107 @@ export function createPostgresSpecialistPort(
         [accountId, language],
       );
       return result.rows.map(toDecision);
+    },
+
+    async appendQaSet(set) {
+      /*
+       * No ON CONFLICT: a duplicate hash or a reused version label raises,
+       * which the store reports as `duplicate-qa-set`. The trigger refuses
+       * UPDATE and DELETE, so this file could not rewrite a set if it tried.
+       */
+      await db.query(
+        `INSERT INTO specialist_qa_sets (${QA_SET_COLUMNS})
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+        [
+          set.qaSetId,
+          set.language,
+          set.version,
+          set.sha256,
+          JSON.stringify(set.engines),
+          JSON.stringify(set.items),
+          set.itemCount,
+          set.sourceReference,
+          set.publishedBy,
+          set.publishedAtMs,
+        ],
+      );
+    },
+
+    async qaSet(qaSetId) {
+      const result = await db.query<QaSetRow>(
+        `SELECT ${QA_SET_COLUMNS} FROM specialist_qa_sets WHERE qa_set_id = $1`,
+        [qaSetId],
+      );
+      const row = result.rows[0];
+      return row === undefined ? null : toQaSet(row);
+    },
+
+    async qaSets(language) {
+      const result = await db.query<QaSetRow>(
+        `SELECT ${QA_SET_COLUMNS} FROM specialist_qa_sets
+         WHERE language = $1 ORDER BY published_at_ms ASC`,
+        [language],
+      );
+      return result.rows.map(toQaSet);
+    },
+
+    async allQaSets() {
+      const result = await db.query<QaSetRow>(
+        `SELECT ${QA_SET_COLUMNS} FROM specialist_qa_sets ORDER BY published_at_ms ASC`,
+      );
+      return result.rows.map(toQaSet);
+    },
+
+    async assignmentsForQaSet(qaSetId) {
+      const result = await db.query<AssignmentRow>(
+        `SELECT ${ASSIGNMENT_COLUMNS} FROM specialist_assignments
+         WHERE qa_set_id = $1 ORDER BY created_at_ms ASC`,
+        [qaSetId],
+      );
+      return result.rows.map(toAssignment);
+    },
+
+    async appendRouteEvidence(evidence) {
+      /* No ON CONFLICT. Evidence is appended; the latest row is the current one. */
+      await db.query(
+        `INSERT INTO specialist_route_evidence (${ROUTE_EVIDENCE_COLUMNS})
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24)`,
+        [
+          evidence.evidenceId,
+          evidence.qaSetId,
+          evidence.language,
+          evidence.direction,
+          evidence.provider,
+          evidence.model,
+          evidence.modelVersion,
+          evidence.corpusHash,
+          evidence.corpusVersion,
+          evidence.evaluator,
+          JSON.stringify(evidence.evaluatorAccountIds),
+          evidence.assessedAtMs,
+          evidence.method,
+          evidence.score,
+          evidence.scale,
+          evidence.scaleMaximum,
+          evidence.passThreshold,
+          evidence.evidenceReference,
+          evidence.approvable,
+          evidence.judged,
+          evidence.passed,
+          evidence.reversed,
+          evidence.emittedBy,
+          evidence.emittedAtMs,
+        ],
+      );
+    },
+
+    async routeEvidence(qaSetId) {
+      const result = await db.query<RouteEvidenceRow>(
+        `SELECT ${ROUTE_EVIDENCE_COLUMNS} FROM specialist_route_evidence
+         WHERE qa_set_id = $1 ORDER BY emitted_at_ms ASC`,
+        [qaSetId],
+      );
+      return result.rows.map(toRouteEvidence);
     },
   };
 }

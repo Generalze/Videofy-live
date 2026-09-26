@@ -82,7 +82,7 @@ export type {
   ElicitationReading,
 } from './elicitation.js';
 
-export { canonicalCorpusBody, freezeCorpus } from './freeze.js';
+export { canonicalCorpusBody, canonicalJson, freezeCorpus } from './freeze.js';
 export type { Digest, FreezeRefusal, FreezeRequest, FreezeResult, FrozenCorpus } from './freeze.js';
 
 export {
@@ -108,8 +108,37 @@ export type {
   YesNo,
 } from './blind-review.js';
 
-export { reviewAccess, reviewLockMessage } from './review-gate.js';
-export type { ReviewAccess, ReviewGateInput, ReviewLock } from './review-gate.js';
+export { qaReviewAccess, reviewAccess, reviewLockMessage } from './review-gate.js';
+export type { QaReviewGateInput, ReviewAccess, ReviewGateInput, ReviewLock } from './review-gate.js';
+
+export {
+  MAX_QA_TEXT_LENGTH,
+  MIN_QA_SET_ITEMS,
+  canonicalQaSetBody,
+  qaSetProblemMessage,
+  readQaSetDefinition,
+  splitDirection,
+} from './qa-set.js';
+export type {
+  QaSetDefinition,
+  QaSetEngine,
+  QaSetItem,
+  QaSetProblem,
+  QaSetReading,
+} from './qa-set.js';
+
+export {
+  ROUTE_QA_METHOD,
+  ROUTE_QA_PASS_BARS,
+  ROUTE_QA_PASS_BAR_PERCENT,
+  ROUTE_QA_SCALE,
+  ROUTE_QA_SCALE_MAXIMUM,
+  itemPasses,
+  meetsPassBar,
+  routeQaPassBar,
+  scoreRouteQa,
+} from './route-review.js';
+export type { JudgedCandidate, RouteQaScopeFamily, RouteQaScore } from './route-review.js';
 
 export {
   MAX_SOURCE_LENGTH,

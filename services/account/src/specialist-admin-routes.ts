@@ -40,8 +40,42 @@ import {
   trackNames,
   type SourceItem,
 } from '@videofy-live/language-specialist';
+import type { RouteReviewEvidence } from '@videofy-live/translation-routes';
 import type { Caller } from './routes.js';
-import { progressOf, type CandidateRequest, type SpecialistStore } from './specialist-store.js';
+import { promotionCommandFor } from './specialist-route-evidence.js';
+import {
+  progressOf,
+  type CandidateRequest,
+  type RouteEvidenceRecord,
+  type SpecialistStore,
+} from './specialist-store.js';
+
+/**
+ * The thirteen fields, and only those, from a stored evidence row.
+ *
+ * Built by naming each field against the registry's own type, so what an
+ * operator pastes into the promotion command is exactly what the validator
+ * will read -- never the working columns (`approvable`, `judged`, the account
+ * ids) that sit beside them in the table and that `parseReviewEvidence` would
+ * refuse as unknown fields.
+ */
+function reviewEvidenceWire(row: RouteEvidenceRecord): RouteReviewEvidence {
+  return {
+    engine: row.provider,
+    model: row.model,
+    modelVersion: row.modelVersion,
+    corpusHash: row.corpusHash,
+    corpusVersion: row.corpusVersion,
+    evaluator: row.evaluator,
+    assessedAt: new Date(row.assessedAtMs).toISOString(),
+    method: row.method,
+    score: row.score,
+    scale: row.scale,
+    scaleMaximum: row.scaleMaximum,
+    passThreshold: row.passThreshold,
+    evidenceReference: row.evidenceReference,
+  };
+}
 
 export interface SpecialistAdminRouteDependencies {
   readonly specialists: SpecialistStore;
@@ -127,6 +161,171 @@ export function registerSpecialistAdminRoutes(
       /* The console renders its filters from the server's list, not its own. */
       states: QUALIFICATION_STATES,
       capabilities: SPECIALIST_CAPABILITIES,
+    });
+  });
+
+  /*
+   * REGISTERED BEFORE THE :accountId ROUTES. Express matches in registration
+   * order, and `qa-sets` is a perfectly good-looking account id; below the
+   * parameterised routes this whole family would answer 404 to every call.
+   */
+  /* ---------------------------------------------------------- route QA sets */
+
+  /**
+   * Publish a QA set for a language.
+   *
+   * THE ONE ACT ONLY C7 PERFORMS on this path, because only C7 knows which
+   * engine produced which candidate. The body is the set definition -- items
+   * with their provider and model, the engine table with model versions, a
+   * version label and a source reference. It is read whole, hashed over its
+   * content and appended; there is no edit endpoint and no delete endpoint,
+   * and the table refuses both. `scripts`: `qa-set-packet-cli.ts` turns a
+   * packet in docs/certification/review-packets into this body.
+   */
+  app.post('/admin/language-specialists/qa-sets', async (req, res) => {
+    const who = operator(req, res);
+    if (who === null) return;
+    const result = await deps.specialists.publishQaSet({
+      definition: req.body,
+      publishedBy: who,
+    });
+    if (!result.ok) {
+      res.status(result.reason === 'duplicate-qa-set' ? 409 : 400).json({
+        error:
+          result.reason === 'duplicate-qa-set'
+            ? 'A QA set with this content, or this version label, is already published.'
+            : 'That set could not be read.',
+        reason: result.reason,
+        ...(result.detail === undefined ? {} : { detail: result.detail }),
+      });
+      return;
+    }
+    emit('specialist.qa-set.issued', {
+      operator: who,
+      qaSetId: result.value.qaSetId,
+      language: result.value.language,
+      sha256: result.value.sha256,
+      items: result.value.itemCount,
+    });
+    res.status(201).json({
+      qaSetId: result.value.qaSetId,
+      language: result.value.language,
+      version: result.value.version,
+      sha256: result.value.sha256,
+      itemCount: result.value.itemCount,
+      engines: result.value.engines,
+      publishedAtMs: result.value.publishedAtMs,
+    });
+  });
+
+  /** Every set, every language. Counts and hashes; the sentences are per set. */
+  app.get('/admin/language-specialists/qa-sets', async (req, res) => {
+    if (operator(req, res) === null) return;
+    const sets = await deps.specialists.allQaSets();
+    res.json({
+      sets: sets.map((set) => ({
+        qaSetId: set.qaSetId,
+        language: set.language,
+        englishName: trackNames(set.language)?.english ?? set.language,
+        version: set.version,
+        sha256: set.sha256,
+        itemCount: set.itemCount,
+        engines: set.engines,
+        sourceReference: set.sourceReference,
+        publishedBy: set.publishedBy,
+        publishedAtMs: set.publishedAtMs,
+      })),
+    });
+  });
+
+  /**
+   * One set: its scores per (direction, provider, model) as they stand, and
+   * the CURRENT evidence for each -- the thirteen-field block, ready for the
+   * promotion command, with the command itself written out.
+   *
+   * THE OPERATOR SEES THE ENGINE NAMES; the reviewers never did. This is the
+   * read side of the join: what a specialist judged blind, scored by the
+   * identity they were not shown, signed with their name.
+   */
+  app.get('/admin/language-specialists/qa-sets/:qaSetId', async (req, res) => {
+    const who = operator(req, res);
+    if (who === null) return;
+    const qaSetId = req.params['qaSetId'] ?? '';
+    const scored = await deps.specialists.routeQaScoresFor(qaSetId);
+    if (scored === null) {
+      refuse(res);
+      return;
+    }
+    const evidence = await deps.specialists.currentRouteEvidenceFor(qaSetId);
+    emit('specialist.qa-set.read', { operator: who, qaSetId, scores: scored.scores.length });
+    res.json({
+      qaSetId,
+      language: scored.set.language,
+      englishName: trackNames(scored.set.language)?.english ?? scored.set.language,
+      version: scored.set.version,
+      sha256: scored.set.sha256,
+      itemCount: scored.set.itemCount,
+      engines: scored.set.engines,
+      sourceReference: scored.set.sourceReference,
+      pickups: { submitted: scored.submitted, open: scored.open },
+      scores: scored.scores,
+      /*
+       * `approvable` is the pass-bar comparison, written down. It is not an
+       * approval: the route document is untouched until an operator runs the
+       * command below, where the allowlist and live verification apply again.
+       */
+      evidence: evidence.map((row) => ({
+        evidenceId: row.evidenceId,
+        direction: row.direction,
+        sourceLanguage: row.sourceLanguage,
+        targetLanguage: row.targetLanguage,
+        approvable: row.approvable,
+        judged: row.judged,
+        passed: row.passed,
+        reversed: row.reversed,
+        evaluatorAccountIds: row.evaluatorAccountIds,
+        emittedBy: row.emittedBy,
+        emittedAtMs: row.emittedAtMs,
+        reviewEvidence: reviewEvidenceWire(row),
+        promotionCommand: promotionCommandFor(reviewEvidenceWire(row), {
+          source: row.sourceLanguage,
+          target: row.targetLanguage,
+        }),
+      })),
+    });
+  });
+
+  /**
+   * Emit evidence from the verdicts as they stand now.
+   *
+   * The last verdict on a pickup already emits; this is for an operator who
+   * wants a fresh block after a second specialist finished, or after a
+   * failed emission. Append-only: a new row per (direction, provider, model),
+   * never a rewrite. Still not an approval.
+   */
+  app.post('/admin/language-specialists/qa-sets/:qaSetId/evidence', async (req, res) => {
+    const who = operator(req, res);
+    if (who === null) return;
+    const qaSetId = req.params['qaSetId'] ?? '';
+    const result = await deps.specialists.emitRouteEvidence({ qaSetId, emittedBy: who });
+    if (!result.ok) {
+      if (result.reason === 'no-qa-set') {
+        refuse(res);
+        return;
+      }
+      res.status(409).json({
+        error: 'No completed review exists on this set, so there is nothing to score.',
+        reason: result.reason,
+      });
+      return;
+    }
+    res.status(201).json({
+      emitted: result.value.map((row) => ({
+        evidenceId: row.evidenceId,
+        direction: row.direction,
+        approvable: row.approvable,
+        reviewEvidence: reviewEvidenceWire(row),
+      })),
     });
   });
 
