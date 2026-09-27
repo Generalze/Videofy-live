@@ -204,11 +204,33 @@ export function NotificationsRow({
     [api, onChanged],
   );
 
-  const deviceWords = deviceOutcome === null ? 'Registering this phone…' : deviceOutcome.ok ? 'This phone can ring for calls and messages' : 'This phone cannot ring yet';
+  /*
+   * WHAT REGISTRATION ACTUALLY ESTABLISHED, AND NOTHING MORE.
+   *
+   * This said "This phone can ring for calls and messages" whenever the
+   * device registered, and "Calls always ring" underneath it. Neither was
+   * read from anything. Registering proves the server can ADDRESS this phone;
+   * it says nothing about whether Android will wake it. Measured on three real
+   * calls: the push was accepted by Google in under a second, the handset
+   * never woke, and all three rang out -- while this row would have said calls
+   * always ring.
+   *
+   * Whether a call will actually ring is the Ringing row's question, because
+   * that one reads the battery setting instead of assuming it.
+   */
+  const deviceWords =
+    deviceOutcome === null
+      ? 'Registering this phone…'
+      : deviceOutcome.ok
+        ? 'This phone is registered to receive them'
+        : 'This phone is not registered yet';
   return (
     <Row icon="bell" title="Notifications" subtitle={`${shown ? 'Messages and live reminders on' : 'Messages and live reminders off'} · ${deviceWords}`} open={open} onPress={onToggle}>
       <Toggle label="Messages and live reminders" value={shown} onChange={(next) => void flip(next)} />
-      <Text style={styles.hint}>Calls always ring. This is for messages and live reminders.</Text>
+      <Text style={styles.hint}>
+        This is for messages and live reminders. Whether a call rings when the app
+        has been closed for a while is a separate setting — see Ringing below.
+      </Text>
       {notice !== null && <Text style={styles.notice}>{notice}</Text>}
       <Text style={styles.label}>This phone</Text>
       {deviceOutcome !== null && !deviceOutcome.ok && (

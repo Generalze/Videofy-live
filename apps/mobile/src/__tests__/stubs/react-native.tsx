@@ -39,6 +39,14 @@ export const Text = 'Text';
 export const Image = 'Image';
 export const ScrollView = 'ScrollView';
 export const ActivityIndicator = 'ActivityIndicator';
+/**
+ * Missing until 27 Sep, and its absence did not look like an absence: any row
+ * containing a toggle failed to render with React's "Element type is invalid
+ * ... got: undefined", which reads as a broken import in the component under
+ * test rather than a gap in this file. Every preference row with a switch was
+ * untestable until somebody spent twenty minutes finding out why.
+ */
+export const Switch = 'Switch';
 
 export type StyleProp = unknown;
 

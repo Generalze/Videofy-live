@@ -22,7 +22,7 @@ vi.mock('expo-audio', () => ({
 }));
 vi.mock('expo-file-system', () => ({ File: class {} }));
 
-const { RingingRow, TranslatedVoiceRow } = await import('../screens/profileRows');
+const { NotificationsRow, RingingRow, TranslatedVoiceRow } = await import('../screens/profileRows');
 const { RingingBanner } = await import('../screens/RingingReadiness');
 
 const labels = (tree: TreeNode): string[] =>
@@ -232,5 +232,48 @@ describe('the ringing row on the profile', () => {
     expect(labels(tree)).toContain('Allow background use');
     expect(labels(tree)).toContain('Open app settings');
     expect(textsOf(tree).join(' ')).toContain('Tecno phones have a second setting no app can reach');
+  });
+});
+
+/**
+ * THE CLAIM TWO ROWS ABOVE THE FIX.
+ *
+ * While the Ringing row was being built to read Android's battery setting
+ * rather than assume it, the Notifications row directly above it said "This
+ * phone can ring for calls and messages" whenever the device registered, and
+ * "Calls always ring" underneath. Neither sentence was read from anything.
+ *
+ * Registering proves the server can ADDRESS this phone. It says nothing about
+ * whether Android will wake it, and on three real calls the push was accepted
+ * by Google in under a second, the handset never woke, and every one rang out.
+ * Nothing failed when those sentences were removed, because nothing tested
+ * them -- which is why they lasted.
+ */
+describe('the notifications row does not promise a ringing phone', () => {
+  const notifications = (): TreeNode =>
+    render(
+      <NotificationsRow
+        api={{ updateProfile: async () => ({ ok: true, value: undefined }) } as never}
+        notificationsEnabled
+        deviceOutcome={{ ok: true, deviceId: 'dev_1' }}
+        onRetryDevice={async () => {}}
+        onChanged={() => {}}
+        open
+        onToggle={() => {}}
+      />,
+    ).tree;
+
+  it('NEVER says calls always ring', () => {
+    const said = textsOf(notifications()).join(' ');
+    expect(said).not.toMatch(/always ring/iu);
+    expect(said).not.toMatch(/can ring for calls/iu);
+  });
+
+  it('says only what registering established', () => {
+    expect(textsOf(notifications()).join(' ')).toContain('registered to receive them');
+  });
+
+  it('sends the reader to the row that actually reads the setting', () => {
+    expect(textsOf(notifications()).join(' ')).toMatch(/Ringing/u);
   });
 });
