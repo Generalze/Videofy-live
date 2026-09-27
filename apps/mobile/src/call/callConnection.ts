@@ -73,6 +73,7 @@ import {
   type CallResumeCredentials,
   type CallMode,
   type CallSdpAck,
+  type CallVoiceGender,
   type CallCaptionEvent,
   type CallStateSnapshot,
   type CallVideoIcePayload,
@@ -144,6 +145,15 @@ export interface CallConnectionOptions {
   readonly speakLanguage?: string;
   /** The language this account PREFERS TO HEAR; preloads the join form. */
   readonly hearLanguage?: string;
+  /**
+   * The voice this account's TRANSLATED WORDS are spoken in, from the
+   * session (see ../call/translatedVoice). Goes on the join as the seat's
+   * `voiceGender`, which is what call-session reads to pick the vendor
+   * voice for this speaker. Absent means the shared form's default applies
+   * -- which is what every mobile join did until 27 Sep 2026, whatever the
+   * account said, so every speaker sounded like somebody else.
+   */
+  readonly translatedVoice?: CallVoiceGender;
   /**
    * The signed session token, or null.
    *
@@ -672,6 +682,9 @@ export class CallConnection {
       ...(this.options.hearLanguage === undefined
         ? {}
         : { hearLanguage: this.options.hearLanguage }),
+      ...(this.options.translatedVoice === undefined
+        ? {}
+        : { voiceGender: this.options.translatedVoice }),
       displayName: this.options.displayName,
       callCode: this.options.callId,
     };

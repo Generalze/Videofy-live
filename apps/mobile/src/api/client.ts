@@ -16,6 +16,7 @@
  * source instead of an argument about memory.
  */
 import type { AuthorizedFetch } from '../push/deviceRegistrationService';
+import { parseTranslatedVoice, type TranslatedVoice } from '../call/translatedVoice';
 
 /** A person as the contact and messaging routes describe them (routes.ts). */
 /** Presence as the server tells it: only ever given for accepted contacts. */
@@ -375,6 +376,16 @@ export function createApi(authorizedFetch: AuthorizedFetch) {
       }),
     setDisplayName: (displayName: string) =>
       request(authorizedFetch, '/accounts/display-name', json({ displayName }), () => undefined),
+    /**
+     * routes.ts POST /accounts/voice: which standard voice speaks this
+     * person's translated words. The wire field is `voiceGender`, the
+     * server's name for it; what it names is a voice (see call/translatedVoice).
+     * The reply is what the server now holds, never the request echoed.
+     */
+    setTranslatedVoice: (voice: TranslatedVoice) =>
+      request(authorizedFetch, '/accounts/voice', json({ voiceGender: voice }), (body) =>
+        parseTranslatedVoice((body as { voiceGender?: unknown } | null)?.voiceGender),
+      ),
     /** routes.ts POST /accounts/discovery: whether people can find you by username. Off is the default. */
     setDiscoverable: (discoverable: boolean) =>
       request(authorizedFetch, '/accounts/discovery', json({ discoverable }), (body) => body as { discoverable: boolean }),

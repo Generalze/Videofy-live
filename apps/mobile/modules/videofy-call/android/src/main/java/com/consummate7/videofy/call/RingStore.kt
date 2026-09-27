@@ -91,6 +91,11 @@ class RingStore(context: Context) {
     prefs.edit().putLong("t:$callId:$point", atMs).apply()
   }
 
+  /** A reading beside the stamps -- the standby bucket at T4, say -- in the same per-call space, reported and forgotten with them. */
+  fun note(callId: String, point: String, value: Long) {
+    prefs.edit().putLong("t:$callId:$point", value).apply()
+  }
+
   fun timeline(callId: String): JSONObject {
     val out = JSONObject()
     for ((key, value) in prefs.all) {

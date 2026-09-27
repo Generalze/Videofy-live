@@ -1317,6 +1317,41 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
   });
 
   /**
+   * Which standard voice speaks this person's TRANSLATED WORDS: male or
+   * female. Set at registration and, until 27 Sep 2026, frozen there -- the
+   * store could change it (`setVoiceGender`) and no route reached it, so
+   * nobody could. Returned on sign-in and `GET /sessions/current`, which is
+   * where the phone reads it for the call join.
+   *
+   * A VOICE PREFERENCE, NOT A GENDER. The field is named `voiceGender` on
+   * the wire because that is the contract the session already carries; what
+   * it names is how the words are rendered, nothing about the person. There
+   * is no gender on the profile, and adding one is the founder's decision.
+   */
+  app.post('/accounts/voice', (req, res) => {
+    const caller = callerAccountId(req);
+    if (caller === null) {
+      res.status(401).json({ error: 'Sign in to continue.' });
+      return;
+    }
+    const requested = voiceGenderOf(req.body);
+    if (requested === undefined) {
+      res.status(400).json({ error: 'Choose the male or the female voice.' });
+      return;
+    }
+    void deps.store
+      .setVoiceGender(caller.accountId, requested)
+      .then((record) => {
+        if (!record) {
+          res.status(401).json({ error: 'Sign in to continue.' });
+          return;
+        }
+        res.status(200).json({ voiceGender: record.voiceGender ?? null });
+      })
+      .catch(() => res.status(500).json({ error: 'That could not be saved.' }));
+  });
+
+  /**
    * The language this person's calls enter with. Speak and hear both preload
    * from it on the join screen; either can still be changed per call.
    */

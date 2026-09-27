@@ -24,6 +24,9 @@ import { File } from 'expo-file-system';
 import type { Api, Availability, MeCounts } from '../api/client';
 import type { RegistrationOutcome } from '../push/deviceRegistrationService';
 import { deleteVoice, ENROLMENT_MIME_TYPE, enrolVoice, INGEST_URL, judgeTake, MAX_TAKE_MS, takeCounter, voiceStatus } from '../people/voiceEnrolment';
+import { TRANSLATED_VOICE_WORDS, translatedVoiceSubtitle, type TranslatedVoice } from '../call/translatedVoice';
+import { readinessWords, type RingingReadiness } from '../push/ringingReadiness';
+import { RingingReadinessBody, type RingingReadinessActions } from './RingingReadiness';
 import { C7, Chip, GlassCard } from '../ui/c7';
 import { Icon, type IconName } from '../ui/icons';
 
@@ -262,6 +265,71 @@ export function PrivacyRow({
       {notice !== null && <Text style={styles.notice}>{notice}</Text>}
       <Toggle label="Unlock with fingerprint or face" value={biometricsPreferred} onChange={onBiometricsPreferred} />
       <Text style={styles.hint}>The app locks after an hour away. Biometrics make unlocking one touch.</Text>
+    </Row>
+  );
+}
+
+/** The two voices, in a fixed order, so the chips never reorder under a thumb. */
+const TRANSLATED_VOICES: readonly TranslatedVoice[] = ['female', 'male'];
+
+/**
+ * WHICH VOICE SPEAKS YOUR TRANSLATED WORDS. The account has held this since
+ * registration; the store could change it; no route reached the setter and
+ * no screen showed it, so it was frozen at whatever was picked on day one --
+ * and the phone did not send it anyway (27 Sep 2026). Now it is visible,
+ * editable, and sent.
+ *
+ * NAMED AS A VOICE. This is how a person's translated sentences are rendered,
+ * and nothing about the person. There is no gender on the profile; the
+ * words here do not pretend there is.
+ */
+export function TranslatedVoiceRow({ api, voice, onChanged, open, onToggle }: RowShell & { readonly api: Pick<Api, 'setTranslatedVoice'>; readonly voice: TranslatedVoice | null; readonly onChanged: (voice: TranslatedVoice) => void }): JSX.Element {
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const choose = useCallback(
+    async (next: TranslatedVoice) => {
+      if (busy || next === voice) return;
+      setBusy(true);
+      setNotice(null);
+      const result = await api.setTranslatedVoice(next);
+      /*
+       * THE SERVER'S ANSWER, NOT THE TAP. `onChanged` is given what the
+       * server now holds; a refusal, or a 200 that names no voice, leaves
+       * the chip where it was and says so.
+       */
+      if (result.ok && result.value !== null) onChanged(result.value);
+      else setNotice(result.ok ? 'That could not be saved.' : result.error);
+      setBusy(false);
+    },
+    [api, busy, onChanged, voice],
+  );
+  return (
+    <Row icon="wave" title="Translated voice" subtitle={translatedVoiceSubtitle(voice)} open={open} onPress={onToggle}>
+      <View style={styles.chips}>
+        {TRANSLATED_VOICES.map((code) => (
+          <Chip key={code} label={TRANSLATED_VOICE_WORDS[code]} active={voice === code} onPress={() => void choose(code)} />
+        ))}
+      </View>
+      <Text style={styles.hint}>When a call or programme is translated, the other side hears your words in this standard voice. It is a voice, not a statement about you. Once your own voice is enrolled below, that takes its place.</Text>
+      {notice !== null && <Text style={styles.notice}>{notice}</Text>}
+    </Row>
+  );
+}
+
+/**
+ * THE RIGHT TO WAKE, on the profile. The subtitle is the measured headline
+ * (push/ringingReadiness); the body is the shared one the Chats banner
+ * draws. Absent readiness means nothing has been read yet, and the row
+ * says that rather than guessing.
+ */
+export function RingingRow({ readiness, onAllow, onOpenSettings, open, onToggle }: RowShell & RingingReadinessActions & { readonly readiness: RingingReadiness | null }): JSX.Element {
+  return (
+    <Row icon="phone-in" title="Ringing" subtitle={readiness === null ? 'Not read yet' : readinessWords(readiness).headline} open={open} onPress={onToggle}>
+      {readiness === null ? (
+        <Text style={styles.hint}>The battery setting has not been read yet.</Text>
+      ) : (
+        <RingingReadinessBody readiness={readiness} onAllow={onAllow} onOpenSettings={onOpenSettings} />
+      )}
     </Row>
   );
 }

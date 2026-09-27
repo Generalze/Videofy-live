@@ -18,6 +18,14 @@
   <uses-permission android:name="android.permission.VIBRATE" />
   <uses-permission android:name="android.permission.WAKE_LOCK" />
   <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+  <!--
+    Lets the app ASK to be left out of battery optimisation (27 Sep 2026:
+    three calls whose push Google accepted and the handset never woke for).
+    The person decides in Android's own dialog; the app reads the answer back
+    from PowerManager and never assumes it. Vendor battery managers are a
+    second gate this permission does not touch.
+  -->
+  <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
   <application>
     <service

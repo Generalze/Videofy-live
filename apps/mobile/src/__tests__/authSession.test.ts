@@ -467,3 +467,87 @@ describe('creating an account', () => {
     expect(fake.value).not.toContain('correct horse');
   });
 });
+
+/**
+ * THE VOICE, HELD WITH THE SESSION. Sign-in, sign-up and the launch-time
+ * check all carry `voiceGender`; until 27 Sep 2026 every one of those bodies
+ * was read for the token and the rest thrown away, so the phone never knew
+ * the account's choice and every join spoke in the default.
+ */
+describe('the translated voice the account chose', () => {
+  const withVoice = (voiceGender: unknown, status = 200) =>
+    new Response(JSON.stringify({ accountId: 'acct_a', token: TOKEN, expiresInSeconds: 43_200, voiceGender }), { status });
+
+  it('is not known before anybody is signed in', () => {
+    const { auth } = manager({ fetchImpl: (async () => okSession()) as unknown as typeof fetch });
+    expect(auth.translatedVoice()).toBeNull();
+  });
+
+  it('is taken from the sign-in body', async () => {
+    const { auth } = manager({ fetchImpl: (async () => withVoice('male')) as unknown as typeof fetch });
+    await auth.signIn('a@example.com', 'pw');
+    expect(auth.translatedVoice()).toBe('male');
+  });
+
+  it('is taken from the sign-up body', async () => {
+    const { auth } = manager({ fetchImpl: (async () => withVoice('female', 201)) as unknown as typeof fetch });
+    await auth.signUp('a@example.com', 'pw', 'c7zoe');
+    expect(auth.translatedVoice()).toBe('female');
+  });
+
+  it('is read from the server on launch, which a stored token never carried', async () => {
+    const { auth } = manager({
+      stored: storedSession(),
+      fetchImpl: (async () => new Response(JSON.stringify({ accountId: 'acct_a', email: 'a@example.com', voiceGender: 'male' }), { status: 200 })) as unknown as typeof fetch,
+    });
+    await auth.restore();
+    expect(auth.current().status).toBe('signed-in');
+    expect(auth.translatedVoice()).toBe('male');
+  });
+
+  it('stays unknown when the server states no voice, or an unreadable one', async () => {
+    const none = manager({ stored: storedSession(), fetchImpl: (async () => new Response('{}', { status: 200 })) as unknown as typeof fetch });
+    await none.auth.restore();
+    expect(none.auth.translatedVoice()).toBeNull();
+
+    const odd = manager({ fetchImpl: (async () => withVoice('robot')) as unknown as typeof fetch });
+    await odd.auth.signIn('a@example.com', 'pw');
+    expect(odd.auth.current().status).toBe('signed-in');
+    expect(odd.auth.translatedVoice()).toBeNull();
+
+    const broken = manager({ stored: storedSession(), fetchImpl: (async () => new Response('not json', { status: 200 })) as unknown as typeof fetch });
+    await broken.auth.restore();
+    expect(broken.auth.current().status).toBe('signed-in');
+    expect(broken.auth.translatedVoice()).toBeNull();
+  });
+
+  it('follows a change the server accepted, without a round trip', async () => {
+    const { auth } = manager({ fetchImpl: (async () => withVoice('female')) as unknown as typeof fetch });
+    await auth.signIn('a@example.com', 'pw');
+    auth.rememberTranslatedVoice('male');
+    expect(auth.translatedVoice()).toBe('male');
+  });
+
+  it('is forgotten with the session: on sign-out, and when the server revokes it', async () => {
+    const out = manager({ fetchImpl: (async () => withVoice('male')) as unknown as typeof fetch });
+    await out.auth.signIn('a@example.com', 'pw');
+    await out.auth.signOut();
+    expect(out.auth.translatedVoice()).toBeNull();
+    // A remembered change with no session behind it is a change for nobody.
+    out.auth.rememberTranslatedVoice('female');
+    expect(out.auth.translatedVoice()).toBeNull();
+
+    let calls = 0;
+    const revoked = manager({
+      fetchImpl: (async () => {
+        calls += 1;
+        return calls === 1 ? withVoice('male') : new Response('{}', { status: 401 });
+      }) as unknown as typeof fetch,
+    });
+    await revoked.auth.signIn('a@example.com', 'pw');
+    expect(revoked.auth.translatedVoice()).toBe('male');
+    await revoked.auth.authorizedFetch('/me');
+    expect(revoked.auth.current().status).toBe('signed-out');
+    expect(revoked.auth.translatedVoice()).toBeNull();
+  });
+});

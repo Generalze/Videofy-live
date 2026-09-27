@@ -287,6 +287,8 @@ async function joinedCall(options: {
   readonly refuseToUnbind?: readonly string[];
   /** Platform calls that throw when the real native module would be reached. */
   readonly nativeThrowsOn?: readonly NativeCall[];
+  /** The account's translated voice, as App.tsx hands it down; absent = not known. */
+  readonly translatedVoice?: 'male' | 'female';
 }) {
   const socket = gatewaySocket(options);
   shared.socket = socket;
@@ -299,6 +301,7 @@ async function joinedCall(options: {
     displayName: 'Me',
     hearLanguage: 'fr',
     speakLanguage: 'fr',
+    ...(options.translatedVoice === undefined ? {} : { translatedVoice: options.translatedVoice }),
     sessionToken: 'session-token',
     // Given, so nothing fetches. Empty is a legal answer.
     iceServers: [],
@@ -503,5 +506,38 @@ describe('a direct call keeps its stated mode until another is stated', () => {
     call.directState({ mode: 'translated' });
     call.send({ samples: [3, 3], sequence: 0, segmentId: 'segment-2' });
     expect(call.backend.samples()).toEqual([1, 1, 3, 3]);
+  });
+});
+
+/**
+ * THE VOICE ON THE JOIN -- the same seam, one field along. The account has
+ * held a male/female voice choice since registration and call-session picks
+ * the vendor voice from the SPEAKER's seat (`voices[speaker.voiceGender]`).
+ * Until 27 Sep 2026 no mobile join carried it, so every speaker was rendered
+ * in the shared form's default. This drives the real join and reads the
+ * payload the gateway would have received.
+ */
+describe('the join carries the account’s translated voice', () => {
+  const snapshot = (): CallStateSnapshot => ({ callId: CALL_ID, callMode: 'translated', participants: roster() });
+
+  it('sends the choice as the seat’s voiceGender', async () => {
+    const call = await joinedCall({ snapshot: snapshot(), translatedVoice: 'male' });
+    const [join] = call.socket.sent(CALL_EVENTS.JOIN) as { voiceGender?: unknown }[];
+    expect(join?.voiceGender).toBe('male');
+    call.connection.leave();
+  });
+
+  it('sends female when that is the choice, not only when it is the default', async () => {
+    const call = await joinedCall({ snapshot: snapshot(), translatedVoice: 'female' });
+    const [join] = call.socket.sent(CALL_EVENTS.JOIN) as { voiceGender?: unknown }[];
+    expect(join?.voiceGender).toBe('female');
+    call.connection.leave();
+  });
+
+  it('falls back to the shared form default when the session holds no choice -- stated here, not hidden', async () => {
+    const call = await joinedCall({ snapshot: snapshot() });
+    const [join] = call.socket.sent(CALL_EVENTS.JOIN) as { voiceGender?: unknown }[];
+    expect(join?.voiceGender).toBe('female');
+    call.connection.leave();
   });
 });

@@ -28,7 +28,7 @@ import * as Notifications from 'expo-notifications';
  * resolves without an import. It is exported from 'react' instead.
  */
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
-import { AppState, BackHandler, Platform, Pressable, StyleSheet, Text, ToastAndroid, View } from 'react-native';
+import { AppState, BackHandler, Linking, Platform, Pressable, StyleSheet, Text, ToastAndroid, View } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { AuthSessionManager, type AuthState } from './src/auth/authSessionManager';
 import { createSecureSessionStore } from './src/auth/secureSessionStore';
@@ -72,6 +72,9 @@ import { foregroundPresentationFor } from './src/push/callNotificationPresentati
 import { videofyCall } from './src/native/videofyCall';
 import { createAppLock } from './src/auth/appLock';
 import { LockScreen } from './src/screens/LockScreen';
+import type { TranslatedVoice } from './src/call/translatedVoice';
+import { readRingingReadiness, shouldOfferExemption, type RingingReadiness } from './src/push/ringingReadiness';
+import { RingingBanner } from './src/screens/RingingReadiness';
 
 /** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. */
 const GATEWAY_BASE_URL =
@@ -95,6 +98,17 @@ const auth = new AuthSessionManager({
 });
 
 const authorizedFetch = (path: string, init?: RequestInit) => auth.authorizedFetch(path, init);
+
+/**
+ * Who made this phone, for the one thing no API reaches: the vendor battery
+ * manager. Android's own exemption is read from the platform; this only
+ * decides whether the words name a second setting (push/ringingReadiness).
+ */
+const MANUFACTURER: string | null =
+  Platform.OS === 'android' ? ((Platform.constants as { Manufacturer?: string }).Manufacturer ?? null) : null;
+
+/** "Not now" on the ringing banner, remembered per install. The profile row keeps showing the reading regardless. */
+const RINGING_NOT_NOW_KEY = 'c7.ringing.notNow';
 
 /** The one-hour lock in front of the until-sign-out session; its stamps live in the secure store. */
 const appLock = createAppLock({
@@ -336,6 +350,22 @@ function AppInner(): JSX.Element {
     speak?: string;
     hear?: string;
   }>({});
+  /**
+   * The voice this account's translated words are spoken in, as the session
+   * holds it (AuthSessionManager reads it from every sign-in and every
+   * launch). Goes on every join; null means not known and the shared
+   * default applies. Until 27 Sep 2026 nothing on the phone carried this
+   * and every speaker was rendered in the default voice.
+   */
+  const [translatedVoice, setTranslatedVoice] = useState<TranslatedVoice | null>(null);
+  /**
+   * WHETHER ANDROID WILL WAKE THIS APP FOR A CALL, as read from the
+   * platform -- on sign-in and on every return to the foreground, so the
+   * answer to "Allow background use" is what Android says and never what
+   * the dialog was assumed to have done. Null until the first read.
+   */
+  const [ringing, setRinging] = useState<RingingReadiness | null>(null);
+  const [ringingNotNow, setRingingNotNow] = useState(true);
   const handledColdStart = useRef(false);
   /*
    * ABOVE EVERY EARLY RETURN. This hook once sat just before the tab-bar
@@ -608,6 +638,7 @@ function AppInner(): JSX.Element {
     void api.verification().then((result) => {
       if (result.ok) setEmailVerified(result.value.email === 'verified');
     });
+    setTranslatedVoice(auth.translatedVoice());
     void api.me().then((result) => {
       if (result.ok) setMe(result.value);
       if (result.ok) {
@@ -624,6 +655,45 @@ function AppInner(): JSX.Element {
   }, [state.status]);
 
   const signIn = useCallback((email: string, password: string) => auth.signIn(email, password), []);
+
+  /*
+   * THE RIGHT TO WAKE, READ AND RE-READ. Three calls on 27 Sep 2026 whose
+   * push Google accepted and the handset never woke for. The reading is
+   * taken when a session exists and again every time the app returns to the
+   * foreground -- which is also what happens when Android's allow dialog
+   * closes, so the request's outcome is observed rather than presumed.
+   */
+  useEffect(() => {
+    if (state.status !== 'signed-in') {
+      setRinging(null);
+      return undefined;
+    }
+    const read = (): void => setRinging(readRingingReadiness(videofyCall, MANUFACTURER));
+    read();
+    void SecureStore.getItemAsync(RINGING_NOT_NOW_KEY)
+      .then((value) => setRingingNotNow(value === '1'))
+      .catch(() => setRingingNotNow(false));
+    const subscription = AppState.addEventListener('change', (next) => {
+      if (next === 'active') read();
+    });
+    return () => subscription.remove();
+  }, [state.status]);
+
+  /** Android's own dialog, or its settings page where the dialog cannot be launched. The next foreground reads the answer. */
+  const allowBackground = useCallback(() => {
+    if (!videofyCall.requestBatteryExemption()) void Linking.openSettings().catch(() => undefined);
+  }, []);
+  const openAppSettings = useCallback(() => {
+    void Linking.openSettings().catch(() => undefined);
+  }, []);
+  const dismissRingingBanner = useCallback(() => {
+    setRingingNotNow(true);
+    void SecureStore.setItemAsync(RINGING_NOT_NOW_KEY, '1').catch(() => undefined);
+  }, []);
+  const onTranslatedVoice = useCallback((voice: TranslatedVoice) => {
+    auth.rememberTranslatedVoice(voice);
+    setTranslatedVoice(voice);
+  }, []);
 
   /*
    * THE PHONE'S BACK BUTTON (founder 30 Aug: "nav back button exits the app,
@@ -849,6 +919,7 @@ function AppInner(): JSX.Element {
           displayName={callName ?? state.accountId}
           {...(callLanguages.speak === undefined ? {} : { speakLanguage: callLanguages.speak })}
           {...(callLanguages.hear === undefined ? {} : { hearLanguage: callLanguages.hear })}
+          {...(translatedVoice === null ? {} : { translatedVoice })}
           sessionToken={auth.callSessionToken()}
           onRing={
             ringPeer === null
@@ -979,13 +1050,24 @@ function AppInner(): JSX.Element {
       />
       <View style={styles.tabContent}>
         {tab === 'chats' && (
-          <ConversationsScreen
-            api={api}
-            selfId={state.accountId}
-            onOpen={setChatWith}
-            onOpenPerson={setViewingPerson}
-            onFindContacts={() => setTab('people')}
-          />
+          <>
+            {/*
+              THE MOMENT THAT MAKES SENSE: the first screen after sign-in, once
+              this phone is registered for pushes -- it can now be pushed, and
+              this is the remaining reason it might not wake. Drawn only while
+              Android has been READ as not exempt, and only until "Not now".
+            */}
+            {ringing !== null && deviceOutcome?.ok === true && shouldOfferExemption(ringing, ringingNotNow) && (
+              <RingingBanner readiness={ringing} onAllow={allowBackground} onOpenSettings={openAppSettings} onDismiss={dismissRingingBanner} />
+            )}
+            <ConversationsScreen
+              api={api}
+              selfId={state.accountId}
+              onOpen={setChatWith}
+              onOpenPerson={setViewingPerson}
+              onFindContacts={() => setTab('people')}
+            />
+          </>
         )}
         {tab === 'people' && (
           <ContactsScreen
@@ -1022,6 +1104,11 @@ function AppInner(): JSX.Element {
               void appLock.setBiometricsPreferred(on);
             }}
             sessionToken={() => auth.callSessionToken()}
+            translatedVoice={translatedVoice}
+            onTranslatedVoice={onTranslatedVoice}
+            ringing={ringing}
+            onAllowBackground={allowBackground}
+            onOpenAppSettings={openAppSettings}
             probeAvatar={async (accountId) => {
               try {
                 const response = await authorizedFetch(`/avatars/${encodeURIComponent(accountId)}`);

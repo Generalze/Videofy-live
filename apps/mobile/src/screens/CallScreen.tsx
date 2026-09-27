@@ -109,6 +109,7 @@ import {
 import { Icon } from '../ui/icons';
 import { videofyCall } from '../native/videofyCall';
 import { reportRingTimeline } from '../call/ringTimeline';
+import type { TranslatedVoice } from '../call/translatedVoice';
 import {
   CallConnection,
   type CallTranslatedAudioDiagnostic,
@@ -188,6 +189,8 @@ export interface CallScreenProps {
   readonly displayName: string;
   readonly speakLanguage?: string;
   readonly hearLanguage?: string;
+  /** The voice this account's translated words are spoken in (call/translatedVoice); absent = the shared default. */
+  readonly translatedVoice?: TranslatedVoice;
   /** Null is valid: it means this client can JOIN but not CREATE a call. */
   readonly sessionToken: string | null;
   /**
@@ -213,6 +216,7 @@ export function CallScreen({
   displayName,
   speakLanguage,
   hearLanguage,
+  translatedVoice,
   sessionToken,
   onRing,
   onLeave,
@@ -420,6 +424,7 @@ export function CallScreen({
       },
       ...(speakLanguage === undefined ? {} : { speakLanguage }),
       ...(hearLanguage === undefined ? {} : { hearLanguage }),
+      ...(translatedVoice === undefined ? {} : { translatedVoice }),
       sessionToken,
       ...(iceOverride().length > 0 ? { iceServers: iceOverride() } : {}),
       onRemoteStream: (id, stream: RemoteStream) => {

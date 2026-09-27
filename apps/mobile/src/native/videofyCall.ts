@@ -39,8 +39,21 @@ interface NativeModuleShape {
   setAudioRoute(callId: string, speaker: boolean): boolean;
   timeline(callId: string): Record<string, unknown>;
   canUseFullScreenIntent(): boolean;
+  batteryExemption(): string;
+  requestBatteryExemption(): boolean;
+  standbyBucket(): number;
   addListener(event: string, listener: (payload: Record<string, unknown>) => void): EventSubscription;
 }
+
+/**
+ * Whether Android has this app exempt from battery optimisation, AS READ.
+ *
+ * `unknown` is a real answer: a build without the native layer cannot read
+ * it, and a screen that showed "granted" there would be stating something
+ * nobody measured. `not-applicable` is Android 5 and older, which has no
+ * such setting.
+ */
+export type BatteryExemption = 'granted' | 'not-granted' | 'not-applicable' | 'unknown';
 
 const native = requireOptionalNativeModule<NativeModuleShape>('VideofyCall');
 
@@ -99,6 +112,25 @@ export const videofyCall = {
   },
   canUseFullScreenIntent(): boolean {
     return native?.canUseFullScreenIntent() ?? false;
+  },
+  /*
+   * THE RIGHT TO WAKE (27 Sep 2026). Three calls whose push Google accepted
+   * and the handset never woke for. The exemption is READ from the platform
+   * every time it is asked for -- after the request, on every foreground --
+   * and never remembered as granted because the dialog was shown.
+   */
+  batteryExemption(): BatteryExemption {
+    const read = native?.batteryExemption();
+    return read === 'granted' || read === 'not-granted' || read === 'not-applicable' ? read : 'unknown';
+  },
+  /** Opens Android's own allow dialog. True means the dialog was launched, and nothing about the answer. */
+  requestBatteryExemption(): boolean {
+    return native?.requestBatteryExemption() ?? false;
+  },
+  /** The raw UsageStatsManager bucket code; null where the build or the platform has none. */
+  standbyBucket(): number | null {
+    const code = native?.standbyBucket();
+    return typeof code === 'number' && code >= 0 ? code : null;
   },
   onIncoming(listener: (call: NativeCallDescriptor) => void): EventSubscription | null {
     return native?.addListener('incoming', (payload) => {

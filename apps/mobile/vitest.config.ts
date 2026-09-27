@@ -38,5 +38,12 @@ export default defineConfig({
   test: {
     environment: 'node',
     include: ['src/**/*.test.ts', 'src/**/*.test.tsx'],
+    /*
+     * Metro resolves a bundled image through `require('...png')` (ui/c7.tsx
+     * does this for the launcher logo). That is a real CommonJS require, so a
+     * module alias cannot catch it and node would parse the bytes as a script;
+     * the setup file teaches node's loader that a .png is an opaque source.
+     */
+    setupFiles: ['src/__tests__/stubs/image-asset.ts'],
   },
 });

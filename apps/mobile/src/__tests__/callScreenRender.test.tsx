@@ -136,6 +136,7 @@ async function mount(
     readonly onCallBack?: (() => void) | undefined;
     readonly onMessagePeer?: (() => void) | undefined;
     readonly onRing?: ((callId: string) => Promise<number | null>) | undefined;
+    readonly translatedVoice?: 'male' | 'female' | undefined;
   } = {},
 ): Promise<Mounted> {
   const onLeave = vi.fn();
@@ -145,6 +146,7 @@ async function mount(
       <CallScreen
         call={{ kind: 'direct', callId: 'call-1', peer: PEER }}
         displayName="Zoe"
+        {...(props.translatedVoice === undefined ? {} : { translatedVoice: props.translatedVoice })}
         sessionToken="session"
         onRing={props.onRing ?? (async () => 1)}
         onLeave={onLeave}
@@ -1068,6 +1070,27 @@ describe('the speech bars, whose mouth', () => {
     // The peer's caption comes back and the attribution returns with it.
     await call.fire('onCaption', caption({ sequence: 2, isFinal: true }), { self: false });
     expect(labels(call.tree())).toContain('Tunde is quiet');
+    await call.unmount();
+  });
+});
+
+/**
+ * THE VOICE REACHES THE CONNECTION. The session holds the account's choice
+ * and the connection puts it on the join; the screen is the inch between
+ * them, and an inch nobody tests is where this repository's seams have gone
+ * missing before (27 Sep 2026: every mobile join spoke in the default).
+ */
+describe('the account’s translated voice is handed to the connection', () => {
+  it('passes the choice through as translatedVoice', async () => {
+    const call = await mount({ translatedVoice: 'male' });
+    expect(held.options?.['translatedVoice']).toBe('male');
+    await call.unmount();
+  });
+
+  it('passes NOTHING when the session holds no choice, so the shared default applies openly', async () => {
+    const call = await mount();
+    expect(held.options).not.toBeNull();
+    expect('translatedVoice' in (held.options ?? {})).toBe(false);
     await call.unmount();
   });
 });

@@ -1,8 +1,11 @@
 package com.consummate7.videofy.call
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.core.app.NotificationManagerCompat
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -20,6 +23,9 @@ import org.json.JSONObject
  *   reportMediaConnected(callId)          T11: two-way audio proven
  *   timeline(callId)                      the device's T4..T11 stamps, then forgotten
  *   canUseFullScreenIntent()              Android 14+: the permission a person can revoke
+ *   batteryExemption()                    "granted" | "not-granted" | "not-applicable", READ from PowerManager now
+ *   requestBatteryExemption()             opens Android's own allow dialog; true = the dialog was launched, nothing more
+ *   standbyBucket()                       the UsageStatsManager bucket code, -1 where there is none
  *   translatedAudio*()                    streaming PCM16 out; see TranslatedAudioTrack
  *
  * Events: 'incoming' (the native ring is up; the app may show its own
@@ -96,6 +102,46 @@ class VideofyCallModule : Module() {
     Function("canUseFullScreenIntent") {
       if (Build.VERSION.SDK_INT >= 34) NotificationManagerCompat.from(context()).canUseFullScreenIntent() else true
     }
+
+    /*
+     * THE RIGHT TO WAKE (27 Sep 2026). Three calls rang nobody because the
+     * handset never woke for the push; see DeviceStandby for the reading.
+     * These three are the whole of what the platform lets an app do about
+     * it: read the exemption, ask for it, and read which bucket the app is
+     * in. The vendor battery managers on Samsung and the Chinese OEMs are
+     * beyond every one of them.
+     */
+    Function("batteryExemption") {
+      when (DeviceStandby.batteryExempt(context())) {
+        true -> "granted"
+        false -> "not-granted"
+        null -> "not-applicable"
+      }
+    }
+    /**
+     * Android's own "Allow app to run in the background?" dialog. Returns
+     * whether the dialog was LAUNCHED, which says nothing about the answer:
+     * JS re-reads batteryExemption() when the app returns to the foreground,
+     * and never assumes the request succeeded because it was made.
+     */
+    Function("requestBatteryExemption") {
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+        false
+      } else {
+        try {
+          val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+            data = Uri.parse("package:${context().packageName}")
+          }
+          val activity = appContext.currentActivity
+          if (activity != null) activity.startActivity(intent)
+          else context().startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+          true
+        } catch (_: Exception) {
+          false
+        }
+      }
+    }
+    Function("standbyBucket") { DeviceStandby.standbyBucket(context()) }
 
     /*
      * TRANSLATED SPEECH OUT. Five plain functions over one AudioTrack; every

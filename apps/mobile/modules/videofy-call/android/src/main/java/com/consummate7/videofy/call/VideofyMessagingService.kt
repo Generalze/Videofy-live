@@ -68,6 +68,20 @@ class VideofyMessagingService : FirebaseMessagingService() {
     val expiresAt = data["expiresAt"]?.toLongOrNull() ?: 0L
     val store = RingStore(this)
     store.mark(callId, "t4_push_received")
+    /*
+     * WHAT THE PHONE'S STANDING WAS WHEN THE PUSH ARRIVED. The absence of T4
+     * is what proved the 27 Sep defect; these two stamps are what tells the
+     * next one apart. A T4 that arrives late with the bucket at RARE or
+     * RESTRICTED says "delivered, but rationed"; no T4 at all still says
+     * "never delivered". Both travel to the gateway with the timeline as
+     * plain numbers (the timing route keeps any numeric stamp), so a person
+     * diagnosing a ringing complaint reads them from one log line.
+     */
+    val bucket = DeviceStandby.standbyBucket(this)
+    val exempt = DeviceStandby.batteryExempt(this)
+    store.note(callId, "t4_standby_bucket", bucket.toLong())
+    store.note(callId, "t4_battery_exempt", when (exempt) { true -> 1L; false -> 0L; null -> -1L })
+    Log.i(TAG, "call push arrived; standby bucket=$bucket batteryExempt=$exempt")
     if (expiresAt > 0 && System.currentTimeMillis() > expiresAt) {
       // Stale: the ringing window has already closed. Post-and-cancel keeps
       // the high-priority quota honest without ringing anybody.
