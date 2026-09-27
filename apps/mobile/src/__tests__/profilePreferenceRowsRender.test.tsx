@@ -153,6 +153,28 @@ describe('the ringing banner', () => {
     expect(labels(tree)).not.toContain('Open app settings');
   });
 
+  it('KEEPS the vendor sentence once the exemption is granted, and drops only the request', () => {
+    // Granting Android's exemption changes nothing about the Samsung
+    // setting; the first version made the whole warning vanish at exactly
+    // this moment.
+    const granted = readiness({ exemption: 'granted', bucket: 'active', vendor: { vendor: 'Samsung', where: 'Battery > Background usage limits' } });
+    const { tree } = render(<RingingBanner readiness={granted} onAllow={() => {}} onOpenSettings={() => {}} onDismiss={() => {}} />);
+    expect(textsOf(tree).join(' ')).toContain('Samsung phones have a second setting no app can reach');
+    expect(labels(tree)).toContain('Open app settings');
+    expect(labels(tree)).not.toContain('Allow background use');
+  });
+
+  it('says a FAILED read failed and still offers the request, rather than a clean bill of health', async () => {
+    let allowed = 0;
+    const unreadable = readiness({ exemption: 'unreadable', bucket: null });
+    const { tree } = render(<RingingBanner readiness={unreadable} onAllow={() => (allowed += 1)} onOpenSettings={() => {}} onDismiss={() => {}} />);
+    const texts = textsOf(tree);
+    expect(texts).toContain('The battery setting could not be read');
+    expect(texts.join(' ')).not.toMatch(/no battery budget|nothing to allow/iu);
+    await press(() => tree, (node) => node.props['accessibilityLabel'] === 'Allow background use');
+    expect(allowed).toBe(1);
+  });
+
   it('never promises that calls will now always ring', () => {
     const { tree } = render(<RingingBanner readiness={readiness()} onAllow={() => {}} onOpenSettings={() => {}} onDismiss={() => {}} />);
     for (const text of textsOf(tree)) expect(text).not.toMatch(/always ring|will ring|now ring/iu);
@@ -189,5 +211,26 @@ describe('the ringing row on the profile', () => {
     const { tree } = render(<RingingRow readiness={readiness({ exemption: 'unknown', bucket: null })} onAllow={() => {}} onOpenSettings={() => {}} open onToggle={() => {}} />);
     expect(textsOf(tree)).toContain('This build cannot read the battery setting');
     expect(labels(tree)).not.toContain('Allow background use');
+  });
+
+  it('says a FAILED read failed, offers the request, and does not say the Android has no such setting', async () => {
+    let allowed = 0;
+    const { tree } = render(<RingingRow readiness={readiness({ exemption: 'unreadable', bucket: 'restricted' })} onAllow={() => (allowed += 1)} onOpenSettings={() => {}} open onToggle={() => {}} />);
+    const texts = textsOf(tree);
+    expect(texts).toContain('The battery setting could not be read');
+    expect(texts).not.toContain('This Android version has no battery budget for apps');
+    // The bucket was read by the same layer, so it is still shown.
+    expect(texts.join(' ')).toContain('restricted');
+    await press(() => tree, (node) => node.props['accessibilityLabel'] === 'Allow background use');
+    expect(allowed).toBe(1);
+  });
+
+  it('is where both the request and the vendor sentence live at any time, banner or no banner', () => {
+    // Not exempt, on a Tecno: both the button and the sentence, from the profile alone.
+    const both = readiness({ exemption: 'not-granted', vendor: { vendor: 'Tecno', where: 'Phone Master > Auto-start management' } });
+    const { tree } = render(<RingingRow readiness={both} onAllow={() => {}} onOpenSettings={() => {}} open onToggle={() => {}} />);
+    expect(labels(tree)).toContain('Allow background use');
+    expect(labels(tree)).toContain('Open app settings');
+    expect(textsOf(tree).join(' ')).toContain('Tecno phones have a second setting no app can reach');
   });
 });

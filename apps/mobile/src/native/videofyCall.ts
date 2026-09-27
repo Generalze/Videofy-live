@@ -38,6 +38,8 @@ interface NativeModuleShape {
   reportOutgoingCall(callId: string, peerName: string): boolean;
   setAudioRoute(callId: string, speaker: boolean): boolean;
   timeline(callId: string): Record<string, unknown>;
+  pendingTimelines(): string;
+  forgetTimeline(callId: string): void;
   canUseFullScreenIntent(): boolean;
   batteryExemption(): string;
   requestBatteryExemption(): boolean;
@@ -48,12 +50,22 @@ interface NativeModuleShape {
 /**
  * Whether Android has this app exempt from battery optimisation, AS READ.
  *
- * `unknown` is a real answer: a build without the native layer cannot read
- * it, and a screen that showed "granted" there would be stating something
- * nobody measured. `not-applicable` is Android 5 and older, which has no
- * such setting.
+ * Five answers, and the two that are not readings are distinct on purpose:
+ *   `not-applicable`  Android 5 and older, which has no such setting. The
+ *                     ONLY answer that means there is nothing to allow.
+ *   `unreadable`      the platform has the setting and the native read
+ *                     could not be performed (no PowerManager, or the read
+ *                     threw). Not a clean bill of health; the request is
+ *                     still worth making. The first version of this bridge
+ *                     let the native layer fold this into `not-applicable`,
+ *                     so a failed read told the person their phone was fine.
+ *   `unknown`         this build has no native layer to ask with at all.
+ * A screen that showed "granted" for any of the last three would be stating
+ * something nobody measured.
  */
-export type BatteryExemption = 'granted' | 'not-granted' | 'not-applicable' | 'unknown';
+export type BatteryExemption = 'granted' | 'not-granted' | 'not-applicable' | 'unreadable' | 'unknown';
+
+const BATTERY_EXEMPTION_WORDS: readonly BatteryExemption[] = ['granted', 'not-granted', 'not-applicable', 'unreadable'];
 
 const native = requireOptionalNativeModule<NativeModuleShape>('VideofyCall');
 
@@ -110,6 +122,38 @@ export const videofyCall = {
     for (const [key, value] of Object.entries(raw)) if (typeof value === 'number') out[key] = value;
     return out;
   },
+  /*
+   * A PUSH THAT ARRIVED AND RANG NOBODY (27 Sep 2026 review). `timeline()`
+   * above is read by the call screen's teardown, so a push that arrived and
+   * never rang -- the exact failure being diagnosed -- reported nothing,
+   * because no call screen ever mounted. These two let the app report every
+   * timeline still on the device at its next opportunity, and forget each
+   * one only once the gateway has said it has it (push/unreportedTimelines).
+   */
+  /** Every call with stamps still on the device, by call id; numbers only, nothing forgotten. */
+  pendingTimelines(): Record<string, NativeCallTimeline> {
+    const raw = native?.pendingTimelines();
+    if (typeof raw !== 'string' || raw.length === 0) return {};
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      return {};
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return {};
+    const out: Record<string, NativeCallTimeline> = {};
+    for (const [callId, stamps] of Object.entries(parsed as Record<string, unknown>)) {
+      if (stamps === null || typeof stamps !== 'object') continue;
+      const numeric: Record<string, number> = {};
+      for (const [key, value] of Object.entries(stamps as Record<string, unknown>)) if (typeof value === 'number') numeric[key] = value;
+      out[callId] = numeric;
+    }
+    return out;
+  },
+  /** After the gateway confirmed it has this call's stamps. */
+  forgetTimeline(callId: string): void {
+    native?.forgetTimeline(callId);
+  },
   canUseFullScreenIntent(): boolean {
     return native?.canUseFullScreenIntent() ?? false;
   },
@@ -121,7 +165,7 @@ export const videofyCall = {
    */
   batteryExemption(): BatteryExemption {
     const read = native?.batteryExemption();
-    return read === 'granted' || read === 'not-granted' || read === 'not-applicable' ? read : 'unknown';
+    return BATTERY_EXEMPTION_WORDS.find((word) => word === read) ?? 'unknown';
   },
   /** Opens Android's own allow dialog. True means the dialog was launched, and nothing about the answer. */
   requestBatteryExemption(): boolean {

@@ -87,9 +87,16 @@ class IncomingCallService : Service() {
 
     val store = RingStore(this)
     executor.execute {
+      /*
+       * EVERY EXIT THAT IS NOT A RING IS STAMPED (RingStore.notRung), so a
+       * push that arrived and rang nobody leaves its reason on the device
+       * for the next foreground to report. Before this the only report
+       * came from the call screen's teardown, which never ran here.
+       */
       val credential = store.credential()
       if (credential == null) {
         Log.i(TAG, "no bound ring credential; the call is not for this phone")
+        store.notRung(callId, NOT_RUNG_NO_CREDENTIAL)
         handler.post { finish(callId, "no-credential") }
         return@execute
       }
@@ -98,6 +105,14 @@ class IncomingCallService : Service() {
       store.mark(callId, "t5_validated")
       if (verdict == null || !verdict.ring) {
         if (verdict?.unauthorized == true) store.clearAll()
+        store.notRung(
+          callId,
+          when {
+            verdict == null -> NOT_RUNG_UNREACHABLE
+            verdict.unauthorized -> NOT_RUNG_UNAUTHORIZED
+            else -> NOT_RUNG_NOT_RINGING
+          },
+        )
         handler.post { finish(callId, if (verdict == null) "unreachable" else verdict.state) }
         return@execute
       }
@@ -106,6 +121,7 @@ class IncomingCallService : Service() {
       val live = validator.ackRinging(callId)
       store.mark(callId, "t6_ringing_acked")
       if (!live) {
+        store.notRung(callId, NOT_RUNG_ACK_REFUSED)
         handler.post { finish(callId, "not-live") }
         return@execute
       }
@@ -365,6 +381,13 @@ class IncomingCallService : Service() {
      */
     private const val RING_POLL_MS = 1_000L
 
+    /** RingStore.notRung reason codes stamped by this service; the table lives on RingStore.notRung. */
+    private const val NOT_RUNG_NO_CREDENTIAL = 1L
+    private const val NOT_RUNG_UNREACHABLE = 2L
+    private const val NOT_RUNG_UNAUTHORIZED = 3L
+    private const val NOT_RUNG_NOT_RINGING = 4L
+    private const val NOT_RUNG_ACK_REFUSED = 5L
+
     const val ACTION_RING = "com.consummate7.videofy.call.RING"
     const val ACTION_STOP = "com.consummate7.videofy.call.STOP"
     const val EXTRA_CALL_ID = "callId"
@@ -438,7 +461,9 @@ class IncomingCallService : Service() {
         .build()
       manager.notify(NOTIFICATION_ID + 1, notification)
       manager.cancel(NOTIFICATION_ID + 1)
-      RingStore(context).forgetTimeline(callId)
+      // The timeline is NOT forgotten here any more: an expired push is a
+      // diagnosis, and it is reported at the next foreground and forgotten
+      // only once the gateway has it (src/push/unreportedTimelines.ts).
     }
 
     fun payload(callId: String, callerId: String, callerName: String, mode: String): JSONObject =

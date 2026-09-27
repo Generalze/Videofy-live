@@ -22,8 +22,10 @@ import org.json.JSONObject
  *   reportCallEnded(callId)               MANDATORY on every exit: stops the ring if still ringing, ends Telecom
  *   reportMediaConnected(callId)          T11: two-way audio proven
  *   timeline(callId)                      the device's T4..T11 stamps, then forgotten
+ *   pendingTimelines()                    every call with stamps still on the device, as JSON; nothing forgotten
+ *   forgetTimeline(callId)                after the gateway confirmed it has the stamps
  *   canUseFullScreenIntent()              Android 14+: the permission a person can revoke
- *   batteryExemption()                    "granted" | "not-granted" | "not-applicable", READ from PowerManager now
+ *   batteryExemption()                    "granted" | "not-granted" | "not-applicable" | "unreadable", READ from PowerManager now
  *   requestBatteryExemption()             opens Android's own allow dialog; true = the dialog was launched, nothing more
  *   standbyBucket()                       the UsageStatsManager bucket code, -1 where there is none
  *   translatedAudio*()                    streaming PCM16 out; see TranslatedAudioTrack
@@ -99,6 +101,18 @@ class VideofyCallModule : Module() {
       store.forgetTimeline(callId)
       out
     }
+    /*
+     * A PUSH THAT ARRIVED AND RANG NOBODY (27 Sep 2026 review). The stamps a
+     * push leaves at T4 used to reach the gateway only through the call
+     * screen's teardown -- so the one case being diagnosed, a push that
+     * arrived and never rang, reported nothing, because no call screen ever
+     * mounted. JS reads every timeline still on the device at each foreground
+     * (src/push/unreportedTimelines.ts), posts them, and forgets each one
+     * only once the gateway has said it has it. A JSON string rather than a
+     * bundle of bundles: the one shape that needs no marshalling assumption.
+     */
+    Function("pendingTimelines") { RingStore(context()).pendingTimelines().toString() }
+    Function("forgetTimeline") { callId: String -> RingStore(context()).forgetTimeline(callId) }
     Function("canUseFullScreenIntent") {
       if (Build.VERSION.SDK_INT >= 34) NotificationManagerCompat.from(context()).canUseFullScreenIntent() else true
     }
@@ -110,14 +124,12 @@ class VideofyCallModule : Module() {
      * it: read the exemption, ask for it, and read which bucket the app is
      * in. The vendor battery managers on Samsung and the Chinese OEMs are
      * beyond every one of them.
+     *
+     * Four words, straight from DeviceStandby: a read that could not be
+     * performed is "unreadable", and never "not-applicable" -- the second
+     * would tell the person their phone has no problem.
      */
-    Function("batteryExemption") {
-      when (DeviceStandby.batteryExempt(context())) {
-        true -> "granted"
-        false -> "not-granted"
-        null -> "not-applicable"
-      }
-    }
+    Function("batteryExemption") { DeviceStandby.batteryExemption(context()) }
     /**
      * Android's own "Allow app to run in the background?" dialog. Returns
      * whether the dialog was LAUNCHED, which says nothing about the answer:

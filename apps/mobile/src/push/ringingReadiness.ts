@@ -18,12 +18,27 @@
  * TWO RULES THIS FILE OBEYS, because the alternative is the lie this codebase
  * keeps having to remove:
  *   - NEVER CLAIM A STATE THAT WAS NOT READ. Every word here is derived from
- *     a reading the native layer took from Android; `unknown` is a real
- *     answer and is shown as one.
+ *     a reading the native layer took from Android. A read that could not be
+ *     performed is `unreadable` and is shown as exactly that, with the
+ *     request still on offer: an unknown is not a clean bill of health. The
+ *     first version of this file folded a failed read into "this Android
+ *     version has no battery budget" and hid the button -- the very defect
+ *     it was written to stop. Only a genuine pre-Android-6 device may say
+ *     there is nothing to allow.
  *   - THE EXEMPTION IS NOT ENOUGH. Samsung and the Chinese OEMs run a
  *     second battery manager no API can reach. Where the manufacturer is
  *     known to have one, the words name it and say only the person can
- *     change it -- never "calls will now always ring".
+ *     change it -- whether or not the exemption was granted, because
+ *     granting it changes nothing about that setting -- and never "calls
+ *     will now always ring".
+ *
+ * TWO DECISIONS, KEPT APART. Whether to OFFER THE REQUEST depends on the
+ * exemption alone. Whether to NAME THE VENDOR SETTING depends on the
+ * manufacturer alone. The Chats banner shows while either has something to
+ * say; the profile row shows both at any time. The first version gated the
+ * banner on the request only, so the moment a Samsung owner granted the
+ * exemption the sentence about the setting that STILL blocked their calls
+ * disappeared, and they were left believing it solved.
  *
  * Pure: the readings come in, the words come out, nothing here touches the
  * platform. That is what lets a mutant be caught without a handset.
@@ -69,6 +84,24 @@ const BUCKET_CODES: readonly [number, StandbyBucket][] = [
 export function bucketFromCode(code: number | null): StandbyBucket | null {
   if (code === null) return null;
   return BUCKET_CODES.find(([known]) => known === code)?.[1] ?? null;
+}
+
+/**
+ * How the ring timeline carries the exemption at T4, as a plain number
+ * (DeviceStandby.batteryExemptionCode, transcribed): 1 granted, 0 not
+ * granted, -1 not applicable, -2 unreadable. The Kotlin cannot be run from
+ * this workstation; this table is where the mapping is proven, and it is the
+ * key for reading `t4_battery_exempt` off a gateway log line.
+ */
+export const TIMELINE_EXEMPTION_CODES: readonly [number, BatteryExemption][] = [
+  [1, 'granted'],
+  [0, 'not-granted'],
+  [-1, 'not-applicable'],
+  [-2, 'unreadable'],
+];
+
+export function exemptionFromTimelineCode(code: number): BatteryExemption {
+  return TIMELINE_EXEMPTION_CODES.find(([known]) => known === code)?.[1] ?? 'unknown';
 }
 
 /**
@@ -138,13 +171,35 @@ export function readRingingReadiness(reads: RingingReads, manufacturer: string |
 }
 
 /**
- * Whether to put the request in front of the person now. Only when Android
- * has been READ as not exempt, and only until they have said not now: an
- * app that asks on every launch is one people learn to swipe past.
+ * THE REQUEST: offered while the exemption is missing, and while it could
+ * not be read -- an unreadable answer is not "granted", and Android's own
+ * dialog is the one thing that can settle it. Not offered where the answer
+ * was granted, where the platform has no such setting, or where this build
+ * has no native layer to ask with (`unknown`: nothing here can launch it).
  */
-export function shouldOfferExemption(readiness: RingingReadiness | null, dismissed: boolean): boolean {
-  if (readiness === null || dismissed) return false;
-  return readiness.exemption === 'not-granted';
+export function shouldOfferExemption(readiness: RingingReadiness | null): boolean {
+  if (readiness === null) return false;
+  return readiness.exemption === 'not-granted' || readiness.exemption === 'unreadable';
+}
+
+/**
+ * THE VENDOR SENTENCE: on a phone whose manufacturer ships a second battery
+ * manager, whether or not Android's exemption was granted -- granting it
+ * changes nothing about that setting.
+ */
+export function shouldNameVendorSetting(readiness: RingingReadiness | null): boolean {
+  return readiness !== null && readiness.vendor !== null;
+}
+
+/**
+ * The card above Chats: while either the request or the vendor sentence has
+ * something to say, and until the person has said not now. An app that
+ * asks on every launch is one people learn to swipe past, so "Not now" is
+ * remembered per install; the profile row keeps showing both regardless.
+ */
+export function shouldShowRingingBanner(readiness: RingingReadiness | null, dismissed: boolean): boolean {
+  if (dismissed) return false;
+  return shouldOfferExemption(readiness) || shouldNameVendorSetting(readiness);
 }
 
 export interface ReadinessWords {
@@ -170,7 +225,8 @@ const BUCKET_WORDS: Record<StandbyBucket, string> = {
 /**
  * The words, and nothing the reading did not say. The headline states the
  * measured fact; the detail says what it means for a telephone; the vendor
- * line, when there is one, is the honest limit of what any app can do.
+ * line, when there is one, is the honest limit of what any app can do, and
+ * it is present for every exemption answer alike.
  */
 export function readinessWords(readiness: RingingReadiness): ReadinessWords {
   const bucketLine =
@@ -193,6 +249,15 @@ export function readinessWords(readiness: RingingReadiness): ReadinessWords {
         headline: 'Calls may not ring when the app has been closed for a while',
         detail:
           'Android puts an app you have not opened recently on a battery budget. A call push can sit in that queue, or arrive and be barred from starting the ring. Allow Videofy Live to run in the background so a call can wake it.',
+        bucketLine,
+        vendorLine,
+        tone: 'warn',
+      };
+    case 'unreadable':
+      return {
+        headline: 'The battery setting could not be read',
+        detail:
+          'Android did not answer when this app asked whether it may run in the background. That is not a clean bill of health: a call may still fail to wake this app. You can allow background use anyway, and the answer is read again the next time the app comes to the front.',
         bucketLine,
         vendorLine,
         tone: 'warn',

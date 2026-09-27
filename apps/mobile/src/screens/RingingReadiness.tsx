@@ -12,10 +12,15 @@
  * NOTHING HERE PROMISES A RINGING PHONE. The words come from
  * push/ringingReadiness, which derives them from a reading and, for the
  * vendors that run a second battery manager, says that no app can reach it.
+ *
+ * TWO THINGS, DECIDED SEPARATELY (push/ringingReadiness): the REQUEST is
+ * offered while the exemption is missing or could not be read; the VENDOR
+ * SENTENCE is drawn on a vendor phone whatever the exemption says, because
+ * granting it changes nothing about that setting.
  */
 import type { JSX } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
-import { readinessWords, type RingingReadiness } from '../push/ringingReadiness';
+import { readinessWords, shouldNameVendorSetting, shouldOfferExemption, type RingingReadiness } from '../push/ringingReadiness';
 import { C7, GlassCard } from '../ui/c7';
 
 export interface RingingReadinessActions {
@@ -31,12 +36,12 @@ export function RingingReadinessBody({ readiness, onAllow, onOpenSettings }: Rin
     <View style={styles.body}>
       <Text style={words.tone === 'warn' ? styles.warn : styles.hint}>{words.detail}</Text>
       {words.bucketLine !== null && <Text style={styles.hint}>{words.bucketLine}</Text>}
-      {readiness.exemption === 'not-granted' && (
+      {shouldOfferExemption(readiness) && (
         <Pressable onPress={onAllow} accessibilityRole="button" accessibilityLabel="Allow background use" style={[styles.smallButton, styles.selfStart]}>
           <Text style={styles.smallButtonLabel}>Allow background use</Text>
         </Pressable>
       )}
-      {words.vendorLine !== null && (
+      {shouldNameVendorSetting(readiness) && words.vendorLine !== null && (
         <>
           <Text style={styles.warn}>{words.vendorLine}</Text>
           <Pressable onPress={onOpenSettings} accessibilityRole="button" accessibilityLabel="Open app settings" style={styles.quiet}>
@@ -49,9 +54,10 @@ export function RingingReadinessBody({ readiness, onAllow, onOpenSettings }: Rin
 }
 
 /**
- * The card above Chats. Drawn only while Android has been read as NOT
- * exempt and the person has not said not now (push/ringingReadiness
- * decides; App.tsx obeys). The headline is the measured fact.
+ * The card above Chats. Drawn while the request or the vendor sentence has
+ * something to say and the person has not said not now
+ * (push/ringingReadiness.shouldShowRingingBanner decides; App.tsx obeys).
+ * The headline is the measured fact.
  */
 export function RingingBanner({ readiness, onAllow, onOpenSettings, onDismiss }: RingingReadinessActions & { readonly readiness: RingingReadiness; readonly onDismiss: () => void }): JSX.Element {
   const words = readinessWords(readiness);

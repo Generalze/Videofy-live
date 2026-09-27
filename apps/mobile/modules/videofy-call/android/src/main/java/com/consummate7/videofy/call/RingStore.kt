@@ -104,6 +104,41 @@ class RingStore(context: Context) {
     return out
   }
 
+  /**
+   * THE PUSH THAT ARRIVED AND RANG NOBODY, STAMPED. Every exit from the ring
+   * path that is not a ring leaves the moment and a reason code beside the T4
+   * stamps, so the gateway log can tell "never delivered" from "delivered and
+   * refused here". The codes are transcribed and proven in
+   * src/push/unreportedTimelines.ts (NOT_RUNG_REASONS):
+   *   1 no bound credential   2 gateway unreachable   3 credential rejected
+   *   4 the call was no longer ringing   5 the ringing ack was refused
+   *   6 expired before arrival   7 Android refused to start the ring service
+   */
+  fun notRung(callId: String, reason: Long) {
+    mark(callId, "t5_not_rung")
+    note(callId, "t5_not_rung_reason", reason)
+  }
+
+  /**
+   * Every call that still has stamps on this device, keyed by call id. Read
+   * at each foreground and posted to the gateway; nothing here forgets --
+   * that happens per call, once the gateway has answered.
+   */
+  fun pendingTimelines(): JSONObject {
+    val out = JSONObject()
+    for ((key, value) in prefs.all) {
+      if (!key.startsWith("t:") || value !is Long) continue
+      val rest = key.removePrefix("t:")
+      val split = rest.lastIndexOf(':')
+      if (split <= 0) continue
+      val callId = rest.substring(0, split)
+      val point = rest.substring(split + 1)
+      val stamps = out.optJSONObject(callId) ?: JSONObject().also { out.put(callId, it) }
+      stamps.put(point, value)
+    }
+    return out
+  }
+
   fun forgetTimeline(callId: String) {
     val editor = prefs.edit()
     for (key in prefs.all.keys) if (key.startsWith("t:$callId:")) editor.remove(key)

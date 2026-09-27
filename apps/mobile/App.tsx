@@ -73,7 +73,9 @@ import { videofyCall } from './src/native/videofyCall';
 import { createAppLock } from './src/auth/appLock';
 import { LockScreen } from './src/screens/LockScreen';
 import type { TranslatedVoice } from './src/call/translatedVoice';
-import { readRingingReadiness, shouldOfferExemption, type RingingReadiness } from './src/push/ringingReadiness';
+import { createTranslatedVoiceSeam } from './src/call/translatedVoiceSeam';
+import { readRingingReadiness, shouldShowRingingBanner, type RingingReadiness } from './src/push/ringingReadiness';
+import { flushUnreportedTimelines } from './src/push/unreportedTimelines';
 import { RingingBanner } from './src/screens/RingingReadiness';
 
 /** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. */
@@ -98,6 +100,14 @@ const auth = new AuthSessionManager({
 });
 
 const authorizedFetch = (path: string, init?: RequestInit) => auth.authorizedFetch(path, init);
+
+/*
+ * THE VOICE ON THE JOIN IS NOT DECIDED HERE. The seam reads the session,
+ * hands the call screen its props and takes the profile's change; this file
+ * only passes those through (call/translatedVoiceSeam, and the guard in
+ * src/__tests__/appShellSeams.test.ts that holds it to that).
+ */
+const translatedVoiceSeam = createTranslatedVoiceSeam(auth);
 
 /**
  * Who made this phone, for the one thing no API reaches: the vendor battery
@@ -351,13 +361,13 @@ function AppInner(): JSX.Element {
     hear?: string;
   }>({});
   /**
-   * The voice this account's translated words are spoken in, as the session
-   * holds it (AuthSessionManager reads it from every sign-in and every
-   * launch). Goes on every join; null means not known and the shared
-   * default applies. Until 27 Sep 2026 nothing on the phone carried this
-   * and every speaker was rendered in the default voice.
+   * The voice this account's translated words are spoken in, as the seam
+   * reports it -- a render copy for the profile row and nothing more. The
+   * join reads the seam directly. Until 27 Sep 2026 nothing on the phone
+   * carried this and every speaker was rendered in the default voice.
    */
-  const [translatedVoice, setTranslatedVoice] = useState<TranslatedVoice | null>(null);
+  const [translatedVoice, setTranslatedVoice] = useState<TranslatedVoice | null>(translatedVoiceSeam.current());
+  useEffect(() => translatedVoiceSeam.watch(setTranslatedVoice), []);
   /**
    * WHETHER ANDROID WILL WAKE THIS APP FOR A CALL, as read from the
    * platform -- on sign-in and on every return to the foreground, so the
@@ -631,6 +641,7 @@ function AppInner(): JSX.Element {
       devices.stopWatchingForRotation();
       setDeviceOutcome(null);
       setEmailVerified(null);
+      translatedVoiceSeam.refresh();
       return;
     }
     void devices.register().then(setDeviceOutcome);
@@ -638,7 +649,7 @@ function AppInner(): JSX.Element {
     void api.verification().then((result) => {
       if (result.ok) setEmailVerified(result.value.email === 'verified');
     });
-    setTranslatedVoice(auth.translatedVoice());
+    translatedVoiceSeam.refresh();
     void api.me().then((result) => {
       if (result.ok) setMe(result.value);
       if (result.ok) {
@@ -662,13 +673,27 @@ function AppInner(): JSX.Element {
    * taken when a session exists and again every time the app returns to the
    * foreground -- which is also what happens when Android's allow dialog
    * closes, so the request's outcome is observed rather than presumed.
+   *
+   * THE SAME MOMENTS ARE THE APP'S NEXT OPPORTUNITY TO REPORT a push that
+   * arrived and rang nobody: every timeline still on the device goes to the
+   * gateway from here (push/unreportedTimelines), because the call screen's
+   * teardown -- the only other reporter -- never runs for a call that never
+   * reached a screen.
    */
   useEffect(() => {
     if (state.status !== 'signed-in') {
       setRinging(null);
       return undefined;
     }
-    const read = (): void => setRinging(readRingingReadiness(videofyCall, MANUFACTURER));
+    const read = (): void => {
+      setRinging(readRingingReadiness(videofyCall, MANUFACTURER));
+      void flushUnreportedTimelines({
+        store: videofyCall,
+        gatewayUrl: GATEWAY_BASE_URL,
+        sessionToken: auth.callSessionToken(),
+        liveCallIds: liveCallIds.current,
+      });
+    };
     read();
     void SecureStore.getItemAsync(RINGING_NOT_NOW_KEY)
       .then((value) => setRingingNotNow(value === '1'))
@@ -689,10 +714,6 @@ function AppInner(): JSX.Element {
   const dismissRingingBanner = useCallback(() => {
     setRingingNotNow(true);
     void SecureStore.setItemAsync(RINGING_NOT_NOW_KEY, '1').catch(() => undefined);
-  }, []);
-  const onTranslatedVoice = useCallback((voice: TranslatedVoice) => {
-    auth.rememberTranslatedVoice(voice);
-    setTranslatedVoice(voice);
   }, []);
 
   /*
@@ -769,6 +790,9 @@ function AppInner(): JSX.Element {
    */
   const inCallRef = useRef(false);
   inCallRef.current = activeCall !== null || incomingCall !== null;
+  /** The calls on screen right now, whose own teardown reports their timeline; the sweep leaves them alone. */
+  const liveCallIds = useRef<string[]>([]);
+  liveCallIds.current = [activeCall?.callId, incomingCall?.callId].filter((id): id is string => typeof id === 'string');
   useEffect(() => {
     if (state.status !== 'signed-in') {
       setLocked(false);
@@ -919,7 +943,7 @@ function AppInner(): JSX.Element {
           displayName={callName ?? state.accountId}
           {...(callLanguages.speak === undefined ? {} : { speakLanguage: callLanguages.speak })}
           {...(callLanguages.hear === undefined ? {} : { hearLanguage: callLanguages.hear })}
-          {...(translatedVoice === null ? {} : { translatedVoice })}
+          {...translatedVoiceSeam.joinProps()}
           sessionToken={auth.callSessionToken()}
           onRing={
             ringPeer === null
@@ -1054,10 +1078,11 @@ function AppInner(): JSX.Element {
             {/*
               THE MOMENT THAT MAKES SENSE: the first screen after sign-in, once
               this phone is registered for pushes -- it can now be pushed, and
-              this is the remaining reason it might not wake. Drawn only while
-              Android has been READ as not exempt, and only until "Not now".
+              this is the remaining reason it might not wake. Drawn while the
+              request or the vendor sentence has something to say
+              (push/ringingReadiness decides), and only until "Not now".
             */}
-            {ringing !== null && deviceOutcome?.ok === true && shouldOfferExemption(ringing, ringingNotNow) && (
+            {ringing !== null && deviceOutcome?.ok === true && shouldShowRingingBanner(ringing, ringingNotNow) && (
               <RingingBanner readiness={ringing} onAllow={allowBackground} onOpenSettings={openAppSettings} onDismiss={dismissRingingBanner} />
             )}
             <ConversationsScreen
@@ -1105,7 +1130,7 @@ function AppInner(): JSX.Element {
             }}
             sessionToken={() => auth.callSessionToken()}
             translatedVoice={translatedVoice}
-            onTranslatedVoice={onTranslatedVoice}
+            onTranslatedVoice={translatedVoiceSeam.accept}
             ringing={ringing}
             onAllowBackground={allowBackground}
             onOpenAppSettings={openAppSettings}
