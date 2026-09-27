@@ -84,6 +84,13 @@ import {
 import { parseCaption } from './callCaption';
 import { directLanguagePair, type CallLanguagePair } from './callLanguages';
 import {
+  CONNECT_DEADLINE_SAMPLES,
+  allMoving,
+  nextSilenceStreak,
+  peersThatNeverConnected,
+  peersToRebuild,
+} from './videoSilenceWatch';
+import {
   createMobileTranslatedAudio,
   remoteOriginalsSuppressed,
   type MobileTranslatedAudio,
@@ -327,7 +334,20 @@ export type CallVideoDiagnostic =
   | { readonly kind: 'attached'; readonly participantId: string; readonly outcome: string }
   | { readonly kind: 'attach-failed'; readonly participantId: string; readonly error: string }
   | { readonly kind: 'outbound'; readonly participantId: string; readonly frames: number; readonly bytes: number }
-  | { readonly kind: 'outbound-silent'; readonly participantId: string; readonly rebuilt: boolean }
+  | {
+      readonly kind: 'outbound-silent';
+      readonly participantId: string;
+      readonly rebuilt: boolean;
+      /**
+       * The peer's state when the verdict was reached. Present so the next
+       * reader can tell the two cases apart WITHOUT re-deriving them: a
+       * connected peer that sent nothing is a fault the rebuild addresses,
+       * and one still short of `connected` is negotiation that never
+       * finished, which the rebuild only restarts. Optional so nothing that
+       * merely logs this event has to change.
+       */
+      readonly connectionState?: string;
+    }
   | {
       readonly kind: 'rebuild-verdict';
       readonly participantId: string;
@@ -544,29 +564,79 @@ export class CallConnection {
     return stream;
   }
 
-  /** Two seconds, four samples: outbound video must move, or the peer is rebuilt once. */
+  /**
+   * ZERO FRAMES FROM A PEER THAT HAS NOT CONNECTED IS NOT SILENCE.
+   *
+   * MEASURED ON TWO PHONES. Video worked when the camera was turned on about
+   * fifty seconds into a settled call -- 52 frames arrived -- and failed when
+   * it was turned on early: 621 frames left one side and none reached the
+   * other, with `video_peer_closed` four times, `video_rebuild_verdict` three
+   * times and `video_rebuild_recovered` ZERO.
+   *
+   * This watch caused that. It gave the peer two seconds to produce frames and
+   * then rebuilt it, testing nothing but `outboundFrames === 0`. A peer still
+   * negotiating looks exactly like a peer that is connected and mute, and
+   * negotiation through a relay routinely takes longer than two seconds. So
+   * the remedy fired on a HEALTHY connection, the rebuild restarted the very
+   * negotiation it was waiting for, the next sample found nothing again, and
+   * it rebuilt until it ran out of attempts. Turning the camera on late worked
+   * only because the peer had settled long before the watch could reach it.
+   *
+   * It is the house mistake: a number read without the context that gives it
+   * meaning -- the same shape as a full pre-open buffer once being read as an
+   * outage when it was an ordinary handshake. Both signals needed were already
+   * on the row and both were ignored. `connectionState` says whether there is
+   * yet anything to be silent about, and `measured` says, in its own words,
+   * that zero counters can mean NOTHING WAS COUNTED rather than nothing moved.
+   *
+   * So the clock now starts when the peer connects, not when the camera opens,
+   * and a peer that never connects is reported rather than rebuilt -- it has a
+   * different fault and the rebuild was never its remedy.
+   */
   private async watchOutboundVideo(mesh: CallVideoMesh): Promise<void> {
     const rebuilt = new Set<string>();
-    for (let sample = 0; sample < 4; sample += 1) {
+    const streaks = new Map<string, number>();
+    const everConnected = new Set<string>();
+
+    for (let sample = 0; sample < CONNECT_DEADLINE_SAMPLES; sample += 1) {
       await new Promise((resolve) => setTimeout(resolve, 500));
       if (this.mesh !== mesh || this.camera === null) return;
       const stats = await mesh.videoStats();
-      let allMoving = stats.length > 0;
+
       for (const row of stats) {
         this.options.onVideoDiagnostic?.({ kind: 'outbound', participantId: row.participantId, frames: row.outboundFrames, bytes: row.outboundBytes });
         this.options.onVideoDiagnostic?.({ kind: 'inbound', participantId: row.participantId, frames: row.inboundFrames, bytes: row.inboundBytes });
-        if (row.outboundFrames === 0 && row.outboundBytes === 0) allMoving = false;
+        if (row.connectionState === 'connected') everConnected.add(row.participantId);
+        streaks.set(row.participantId, nextSilenceStreak(streaks.get(row.participantId) ?? 0, row));
       }
-      if (allMoving) return;
-      if (sample === 3) {
-        for (const row of stats) {
-          if (row.outboundFrames === 0 && row.outboundBytes === 0 && !rebuilt.has(row.participantId)) {
-            rebuilt.add(row.participantId);
-            const done = mesh.rebuildPeer(row.participantId);
-            this.options.onVideoDiagnostic?.({ kind: 'outbound-silent', participantId: row.participantId, rebuilt: done });
-          }
-        }
+      if (allMoving(stats)) return;
+
+      for (const participantId of peersToRebuild(stats, streaks, rebuilt)) {
+        rebuilt.add(participantId);
+        const done = mesh.rebuildPeer(participantId);
+        this.options.onVideoDiagnostic?.({
+          kind: 'outbound-silent',
+          participantId,
+          rebuilt: done,
+          connectionState: 'connected',
+        });
       }
+    }
+
+    /*
+     * The deadline passed. A peer that never reached `connected` is reported
+     * as what it is -- negotiation that did not finish -- and NOT rebuilt: the
+     * rebuild restarts negotiation, which is the thing that already failed.
+     */
+    const finalStats = await mesh.videoStats();
+    for (const participantId of peersThatNeverConnected(finalStats, everConnected, rebuilt)) {
+      const row = finalStats.find((entry) => entry.participantId === participantId);
+      this.options.onVideoDiagnostic?.({
+        kind: 'outbound-silent',
+        participantId,
+        rebuilt: false,
+        connectionState: row?.connectionState ?? 'unknown',
+      });
     }
     if (rebuilt.size > 0) await this.verifyRebuiltVideo(mesh, rebuilt);
   }

@@ -75,10 +75,22 @@ describe('a terminal state records both its arrival and its render', () => {
  * camera stays on.
  */
 describe('the rebuild recovery is bounded', () => {
-  it('rebuilds a given peer at most once per camera activation', () => {
-    expect(source).toContain('const rebuilt = new Set<string>();');
-    expect(source).toContain('!rebuilt.has(row.participantId)');
-    expect(source).toContain('rebuilt.add(row.participantId);');
+  /*
+   * THE BOUND IS NOW MEASURED, NOT READ OFF THE SOURCE.
+   *
+   * This used to assert three literal strings, including
+   * `!rebuilt.has(row.participantId)`. On 27 Sep the watch was rewritten to
+   * fix the defect that turning the camera on early destroyed a healthy peer,
+   * and the rewrite kept the property while changing the wording -- so the
+   * test failed for the one reason a test should never fail. The decision now
+   * lives in ../call/videoSilenceWatch.ts and
+   * __tests__/videoSilenceWatch.test.ts drives it: "is never rebuilt twice in
+   * one camera activation" asserts the bound against the function rather than
+   * against how it is spelled.
+   */
+  it('keeps the bound where it can be exercised', () => {
+    expect(source).toContain('peersToRebuild(stats, streaks, rebuilt)');
+    expect(source).toContain('rebuilt.add(participantId);');
   });
 
   it('never rebuilds from inside the verification pass', () => {
