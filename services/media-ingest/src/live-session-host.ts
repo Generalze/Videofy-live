@@ -130,6 +130,12 @@ export interface LiveSessionHostDeps {
   readonly translationFor: (
     serviceCategory: 'call' | 'programme',
   ) => TimestampedTranslationProvider;
+  /**
+   * For decisions that leave a participant hearing nothing. Kept separate
+   * from `log` because this host's `log` is a debug channel and a silenced
+   * call is not a debug event. See the pipeline's `warn`.
+   */
+  readonly warn?: (line: string, detail?: Record<string, unknown>) => void;
   /** Null means captions only: nothing is translated into speech. */
   readonly synthesis: StreamingSpeechSynthesisProvider | null;
   readonly mintSegmentId: (open: IngressOpen) => string;
@@ -349,6 +355,17 @@ export class LiveSessionHost implements IngressStreamHandler {
         // approvals, which is the distinction the route document exists to
         // record and which this service ignored until 28 Sep 2026.
         translation: deps.translationFor(open.context.serviceCategory),
+        /*
+         * A DECISION THAT LEAVES SOMEBODY IN SILENCE IS NOT DEBUG CHATTER.
+         *
+         * `log` below is wired to `logger.debug` and that is right for the
+         * chatter of a working stream. It was also, until 28 Sep 2026, the
+         * only channel the pipeline had -- so "nothing will be spoken for
+         * this segment" was written at debug on a box running at info, and
+         * the 55-second silent call left no trace of the one line that
+         * explained it.
+         */
+        ...(deps.warn === undefined ? {} : { warn: deps.warn }),
         synthesis,
         // Straight back down the same socket the audio came up. The LANGUAGE
         // travels with every frame: several pipelines share this socket and a

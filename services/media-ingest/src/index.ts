@@ -2491,6 +2491,15 @@ if (streamingTranscription !== null) {
         : { speech: { createDetector: createSpeechDetector } }),
       onCaption: (event) => ingest.acceptLiveTranscript(event),
       log: (line, detail) => logger.debug(line, detail ?? {}),
+      /*
+       * THE LINE THAT WAS THROWN AWAY. A translated call went silent for 55
+       * seconds on 28 Sep 2026 and the pipeline said so on every segment --
+       * through `log`, which is `logger.debug`, on a box running
+       * LOG_LEVEL=info. Nothing was broken about the reporting except the
+       * level it spoke at, and that was enough to send the investigation
+       * elsewhere. Anything that decides a participant hears nothing warns.
+       */
+      warn: (line, detail) => logger.warn(line, detail ?? {}),
     }),
     log: (line, detail) => logger.warn(line, detail ?? {}),
   });

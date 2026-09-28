@@ -386,3 +386,89 @@ describe('confidence floor on synthesis', () => {
     expect(DEFAULT_MIN_SPOKEN_CONFIDENCE).toBeLessThan(1);
   });
 });
+
+/**
+ * THE REPORT MUST SURVIVE THE DEPLOYMENT'S LOG LEVEL.
+ *
+ * 28 Sep 2026. A French call produced no audio for 55 seconds in each
+ * direction. The route gate was refusing every segment, the guard below
+ * reported it on every segment exactly as written, and the report went to
+ * `log` -- which the live session host wires to `logger.debug` -- on a box
+ * running `LOG_LEVEL=info`. Every line was written and discarded.
+ *
+ * The investigation then read the empty log as "the guard fired 0 times" and
+ * spent its time elsewhere. That is this project's other signature defect: a
+ * number, or an absence, read without the context that gives it meaning. An
+ * event below a threshold is not an event that did not happen.
+ *
+ * So the decisions that leave somebody hearing nothing go to `warn`, a
+ * separate seam, and these pin WHICH seam rather than merely that something
+ * was said. A test asserting "it logged" would have passed throughout the
+ * outage.
+ */
+describe('a decision that silences a participant is not debug chatter', () => {
+  function seams() {
+    const debug: string[] = [];
+    const warned: string[] = [];
+    return {
+      debug,
+      warned,
+      wiring: {
+        log: (line: string) => void debug.push(line),
+        warn: (line: string) => void warned.push(line),
+      },
+    };
+  }
+
+  it('warns when the gate declines, and does not merely whisper it', async () => {
+    const s = seams();
+    const { pipeline } = rig({
+      ...s.wiring,
+      translation: {
+        name: 'gated:mock-mt',
+        // What the gate hands back when it refuses: the ORIGINAL, flagged.
+        translate: async (input) => ({
+          translatedText: input.sourceText,
+          providerName: 'gated:mock-mt',
+          translated: false,
+        }),
+      },
+    });
+    await pipeline.onTranscriptEvent(transcript());
+    expect(s.warned).toContain('translation declined; nothing will be spoken for this segment');
+    expect(s.debug).not.toContain('translation declined; nothing will be spoken for this segment');
+  });
+
+  it('warns when the engine fails', async () => {
+    const s = seams();
+    const { pipeline } = rig({
+      ...s.wiring,
+      translation: {
+        name: 'mock-mt',
+        translate: async () => { throw new Error('provider exploded'); },
+      },
+    });
+    await pipeline.onTranscriptEvent(transcript());
+    expect(s.warned).toContain('translation failed');
+    expect(s.debug).not.toContain('translation failed');
+  });
+
+  it('warns when the confidence floor withholds a voice', async () => {
+    const s = seams();
+    const { pipeline } = rig(s.wiring);
+    await pipeline.onTranscriptEvent(
+      transcript({ provider: { name: 'mock', confidence: 0.2 } }),
+    );
+    expect(s.warned).toContain('below the confidence floor; captioned but NOT spoken');
+    expect(s.debug).not.toContain('below the confidence floor; captioned but NOT spoken');
+  });
+
+  it('leaves the chatter of a working stream where it was', async () => {
+    // A stream that works must not start warning on every segment, or the
+    // channel stops meaning anything and the next outage hides in the noise.
+    const s = seams();
+    const { pipeline } = rig(s.wiring);
+    await pipeline.onTranscriptEvent(transcript());
+    expect(s.warned).toEqual([]);
+  });
+});
