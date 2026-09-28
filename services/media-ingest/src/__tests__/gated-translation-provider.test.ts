@@ -128,8 +128,11 @@ describe('the provider is not invoked for a refused route', () => {
 describe('a missing or invalid registry refuses, and still does not invoke', () => {
   async function withWiring(loadRegistry: () => never | { ok: false; problems: [] }) {
     const spy = spyProvider();
-    const wiring = buildTranslationGate({ scope: 'programme-live', loadRegistry: loadRegistry as never });
-    const provider = new GatedTranslationProvider({ inner: spy.provider, gate: wiring.gate });
+    const wiring = buildTranslationGate({ loadRegistry: loadRegistry as never });
+    const provider = new GatedTranslationProvider({
+      inner: spy.provider,
+      gate: wiring.gateFor('programme-live'),
+    });
     const r = await provider.translate(input());
     return { calls: spy.calls, text: r.translatedText, wiring };
   }

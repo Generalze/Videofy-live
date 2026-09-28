@@ -60,6 +60,7 @@ import {
   type SpeechProbabilityDetector,
 } from '@videofy-live/speech-activity';
 import { buildTranslationGate } from './translation-gate-wiring.js';
+import { scopeForServiceCategory } from './translation-gate.js';
 import { registerQualityRoutes } from './quality-routes.js';
 import {
   nigerianReadiness,
@@ -314,7 +315,11 @@ registerVoiceNoteTranslationRoute(app, {
       timeoutMs: config.transcriptionTimeoutMs,
     },
   }),
-  translation: ingest.liveTranslation,
+  // A VOICE NOTE IS A MESSAGE. It is recorded, sent and read at the
+  // recipient's convenience; nothing about it is a broadcast. It asked the
+  // programme question until 28 Sep 2026 and was refused for every language
+  // approved for messaging but not for programmes -- which is all of them.
+  translation: ingest.translationForScope('messaging'),
   synthesis: () => streamingSynthesis,
   voiceIdFor: (targetLanguage) =>
     voiceNoteVoiceIds.get(targetLanguage) ?? config.textToSpeechDefaultVoiceId,
@@ -661,6 +666,18 @@ app.post('/microphone/sessions/:sessionId/stop', operatorOnly, (req, res) => {
  * message and are filled with a fixed marker rather than invented per call:
  * they exist for stream diagnostics this path does not produce.
  */
+/*
+ * MESSAGING SCOPE, named once for this route.
+ *
+ * The account service already asks its own registry whether this direction is
+ * approved for `messaging` before it calls here. This service then asked a
+ * SECOND question -- was it approved for `programme-live`? -- and refused on
+ * the answer, handing back the original text with `translated: false`. Two
+ * gates, one correct and one about a different product, and the second one
+ * won.
+ */
+const messageTranslation = ingest.translationForScope('messaging');
+
 app.post('/internal/text-translation', async (req, res) => {
   if (!assertInternalWebRtcRequest(req, res)) return;
   const body = (req.body ?? {}) as {
@@ -715,7 +732,7 @@ app.post('/internal/text-translation', async (req, res) => {
         const piece = raw.trim();
         if (piece.length === 0) return { text: '', translated: true };
         try {
-          const result = await ingest.liveTranslation.translate({
+          const result = await messageTranslation.translate({
             sessionId: 'internal-text',
             streamId: 'internal-text',
             segmentId: `internal-text-${index}`,
@@ -1456,22 +1473,45 @@ if (!liveEngine.real) {
  * failed closed says so, and one with no approved directions says that too
  * rather than looking identical to a working one.
  */
-const translationGate = buildTranslationGate({
-  scope: 'programme-live',
-  ...(process.env['TRANSLATION_ROUTES_DOCUMENT']
+const translationGate = buildTranslationGate(
+  process.env['TRANSLATION_ROUTES_DOCUMENT']
     ? { documentPath: process.env['TRANSLATION_ROUTES_DOCUMENT'] }
-    : {}),
-});
-logger.info('Translation route gate ready', {
-  scope: 'programme-live',
-  failedClosed: translationGate.failedClosed,
-  approvedDirections: translationGate.approvedDirections.length,
-  directions: translationGate.approvedDirections,
-  detail: translationGate.description,
-  ...(translationGate.failedClosed
-    ? { warning: 'every direction refuses; the ORIGINAL is still delivered untranslated' }
-    : {}),
-});
+    : {},
+);
+/*
+ * EVERY SCOPE, SAID SEPARATELY.
+ *
+ * This line used to name one scope, `programme-live`, and print
+ * `approvedDirections: 0, directions: []` for it -- on every deployment that
+ * has ever run, including ones whose document approved routes, because it
+ * read an `approvedDirections()` method the registry has never had. So the
+ * line was simultaneously reporting the wrong scope and reporting nothing
+ * about it, and it is the exact line where somebody should have caught a
+ * production call going silent.
+ *
+ * Three scopes, counted by asking the registry. `null` means the loaded
+ * object could not be enumerated and says so, rather than showing a zero.
+ */
+for (const scope of ['messaging', 'programme-live', 'call-live'] as const) {
+  const directions = translationGate.approvedDirectionsFor(scope);
+  logger.info('Translation route gate ready', {
+    scope,
+    failedClosed: translationGate.failedClosed,
+    approvedDirections: directions === null ? 'cannot-enumerate' : directions.length,
+    directions: directions ?? 'cannot-enumerate',
+    detail: translationGate.description,
+    ...(translationGate.failedClosed
+      ? { warning: 'every direction refuses; the ORIGINAL is still delivered untranslated' }
+      : {}),
+    ...(!translationGate.failedClosed && directions !== null && directions.length === 0
+      ? {
+          warning:
+            `no direction is approved for ${scope}; ` +
+            'every such request is delivered untranslated and a CALL is delivered silent',
+        }
+      : {}),
+  });
+}
 
 /*
  * THE QUALITY SURFACE. Registered from the SAME gate instance above, so the
@@ -2399,7 +2439,16 @@ if (streamingTranscription !== null) {
     auth: config.internalIngressAuth,
     openStream: createLiveStreamOpener({
       transcription: streamingTranscription,
-      translation: ingest.liveTranslation,
+      /*
+       * THE JOIN THIS SERVICE WAS MISSING. `'call-live'` appeared nowhere in
+       * media-ingest except its own type definition: every gate in the
+       * process was built for programmes, so a native call's translation was
+       * judged against broadcast approval and refused. The realtime ingress
+       * carries both kinds of stream and is the one place that knows which
+       * it has.
+       */
+      translationFor: (serviceCategory) =>
+        ingest.translationForScope(scopeForServiceCategory(serviceCategory)),
       // Captions still work without synthesis. A session with no synthesiser
       // must not fall back to a default voice speaking the wrong language.
       synthesis: streamingSynthesis,

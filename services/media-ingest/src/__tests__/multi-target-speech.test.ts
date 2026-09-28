@@ -63,7 +63,7 @@ async function rig(plans: LiveSpeechPlan[]) {
     { sendTranslatedAudio: (audio) => { sent.push(audio); return true; } },
     {
       transcription: provider,
-      translation,
+      translationFor: () => translation,
       synthesis,
       mintSegmentId: () => 'seg_1',
       speechPlansFor: () => plans,

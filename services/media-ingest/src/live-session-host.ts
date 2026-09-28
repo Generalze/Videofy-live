@@ -117,7 +117,19 @@ export function planSpeechTargets(input: {
 
 export interface LiveSessionHostDeps {
   readonly transcription: StreamingTranscriptionProvider;
-  readonly translation: TimestampedTranslationProvider;
+  /**
+   * The translator for THIS stream's service category, asked per stream.
+   *
+   * A FUNCTION, NOT A PROVIDER. It was a provider, and the one this host was
+   * handed had a `programme-live` gate baked into it -- so a native call's
+   * every segment was judged against broadcast approval. Measured 28 Sep
+   * 2026: a 55-second French call, both directions, zero translated frames,
+   * no error. The category is on the OPEN frame and sits three lines from
+   * here; the join was simply never made.
+   */
+  readonly translationFor: (
+    serviceCategory: 'call' | 'programme',
+  ) => TimestampedTranslationProvider;
   /** Null means captions only: nothing is translated into speech. */
   readonly synthesis: StreamingSpeechSynthesisProvider | null;
   readonly mintSegmentId: (open: IngressOpen) => string;
@@ -332,7 +344,11 @@ export class LiveSessionHost implements IngressStreamHandler {
         targetLanguage: plan.targetLanguage,
         voiceId: plan.voiceId,
         minSpokenConfidence: deps.minSpokenConfidence ?? DEFAULT_MIN_SPOKEN_CONFIDENCE,
-        translation: deps.translation,
+        // The SAME category the pipeline is given on the line above. A call is
+        // judged against call approvals and a programme against programme
+        // approvals, which is the distinction the route document exists to
+        // record and which this service ignored until 28 Sep 2026.
+        translation: deps.translationFor(open.context.serviceCategory),
         synthesis,
         // Straight back down the same socket the audio came up. The LANGUAGE
         // travels with every frame: several pipelines share this socket and a

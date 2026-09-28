@@ -94,7 +94,8 @@ async function openProgramme(options: {
   const lines: { line: string; detail?: unknown }[] = [];
   const opener = createLiveStreamOpener({
     transcription: novaProviderCapturingUrl(dialled),
-    translation: { translate: async () => ({ text: '', detectedSourceLanguage: 'en' }) } as never,
+    translationFor: () =>
+      ({ translate: async () => ({ text: '', detectedSourceLanguage: 'en' }) }) as never,
     synthesis: null,
     mintSegmentId: () => 'seg_1',
     speechPlansFor: () => [{ targetLanguage: 'yo' }] as never,

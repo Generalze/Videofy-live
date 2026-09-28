@@ -45,6 +45,27 @@ import {
 } from './translation-gate.js';
 
 /**
+ * THE WIRING HAS NO SCOPE OF ITS OWN. Measured in production, 28 Sep 2026.
+ *
+ * It used to take one at construction, and this service built exactly one:
+ * `programme-live`. Every path then asked that question regardless of what it
+ * was doing. A native call asked whether French was approved for PROGRAMMES;
+ * a chat message asked the same. On the production document `en->fr` is
+ * approved for `messaging` and `call-live` and unapproved for `programme-live`
+ * -- which is correct, nobody has reviewed it for broadcast -- so the gate
+ * refused, the pipeline honoured the refusal, and a 55-second translated call
+ * produced zero frames of audio in both directions with no error anywhere.
+ *
+ * The gate was working. It was being asked the wrong question, by a caller
+ * that had the right answer sitting next to it: the OPEN frame carries
+ * `serviceCategory`, and the pipeline holds it.
+ *
+ * So scope moved to the point of use. One document is loaded once -- two loads
+ * of one file are two answers waiting to disagree after an edit -- and each
+ * caller names the scope it is actually operating in.
+ */
+
+/**
  * The full-fidelity registry, for surfaces that must EXPLAIN a decision rather
  * than merely obey it.
  *
@@ -78,10 +99,29 @@ export interface RouteEvidenceSource {
 }
 
 export interface GateWiring {
-  readonly gate: ReturnType<typeof createTranslationGate>;
+  /**
+   * The gate for ONE scope, built off the single loaded document.
+   *
+   * A function rather than a value because approval is directional AND
+   * scoped: `en->fr` may be approved for a call and not for a broadcast, and
+   * a caller that cannot name its scope cannot be given a correct answer.
+   * Cheap to call -- it wraps the already-loaded registry.
+   */
+  gateFor(scope: TranslationScope): ReturnType<typeof createTranslationGate>;
   /** For the boot line and /health: what was loaded, and from where. */
   readonly description: string;
-  readonly approvedDirections: readonly string[];
+  /**
+   * Every direction this document approves for `scope`, as `en->fr`.
+   *
+   * NULL MEANS "CANNOT ENUMERATE", NOT "NONE". The previous version read an
+   * `approvedDirections()` method off the loaded object; the real registry has
+   * never had one, so the boot line printed `approvedDirections: 0` on every
+   * deployment that had ever run -- including ones with approved routes. A
+   * zero that means "I did not ask" is indistinguishable from a zero that
+   * means "nothing is approved", and that line is exactly where somebody
+   * should have seen this defect months ago. Null is printed as an admission.
+   */
+  approvedDirectionsFor(scope: TranslationScope): readonly string[] | null;
   readonly failedClosed: boolean;
   /**
    * The loaded registry, or null when none was. Null is not "allow": a surface
@@ -102,7 +142,6 @@ function hasFullEvidence(candidate: unknown): candidate is RouteEvidenceSource {
 }
 
 export interface WiringOptions {
-  readonly scope: TranslationScope;
   readonly documentPath?: string | undefined;
   readonly maxCharacters?: number | undefined;
   /** Injected in tests; production passes nothing and reads the real package. */
@@ -112,7 +151,15 @@ export interface WiringOptions {
 export interface RegistryLoad {
   readonly ok: boolean;
   readonly registry?: RouteGate & {
-    approvedDirections?: () => readonly string[];
+    /**
+     * Every direction the document NAMES, approved or not. Optional because a
+     * test double is allowed to be a bare `RouteGate`; absent means the boot
+     * line reports that it cannot enumerate rather than reporting zero.
+     */
+    directions?: () => readonly {
+      readonly sourceLanguage: string;
+      readonly targetLanguage: string;
+    }[];
   };
   readonly problems?: readonly { readonly message: string }[];
 }
@@ -141,30 +188,79 @@ export function buildTranslationGate(options: WiringOptions): GateWiring {
   }
 
   const registry = result.registry;
-  const approved = registry.approvedDirections?.() ?? [];
+  /*
+   * ONE GATE PER SCOPE, built at most once and kept.
+   *
+   * Memoised so a per-segment caller does not rebuild a gate for every
+   * sentence, and so every path in this process that names the same scope is
+   * demonstrably holding the same object -- there is no second copy to drift.
+   */
+  const gates = new Map<TranslationScope, ReturnType<typeof createTranslationGate>>();
   return {
-    gate: createTranslationGate({
-      gate: registry,
-      scope: options.scope,
-      ...(options.maxCharacters === undefined ? {} : { maxCharacters: options.maxCharacters }),
-    }),
-    description:
-      `route document loaded; ${approved.length} approved direction(s) for ${options.scope}`,
-    approvedDirections: approved,
+    gateFor(scope: TranslationScope) {
+      const existing = gates.get(scope);
+      if (existing !== undefined) return existing;
+      const built = createTranslationGate({
+        gate: registry,
+        scope,
+        ...(options.maxCharacters === undefined ? {} : { maxCharacters: options.maxCharacters }),
+      });
+      gates.set(scope, built);
+      return built;
+    },
+    approvedDirectionsFor(scope: TranslationScope) {
+      return enumerateApproved(registry, scope);
+    },
+    description: 'route document loaded',
     failedClosed: false,
     registry: hasFullEvidence(registry) ? registry : null,
   };
 }
 
+/**
+ * Which directions this scope actually admits, asked of the registry rather
+ * than read off a method that never existed.
+ *
+ * Returns null when the loaded object cannot list its directions. A caller
+ * printing this must print the null, not flatten it to an empty list: the
+ * whole reason this defect survived is a zero nobody could distinguish from an
+ * unasked question.
+ */
+function enumerateApproved(
+  registry: RegistryLoad['registry'] & object,
+  scope: TranslationScope,
+): readonly string[] | null {
+  if (typeof registry.directions !== 'function') return null;
+  return registry
+    .directions()
+    .filter((d) => registry.mayTranslate(d.sourceLanguage, d.targetLanguage, scope).allowed)
+    .map((d) => `${d.sourceLanguage}->${d.targetLanguage}`);
+}
+
 function closed(options: WiringOptions, why: string): GateWiring {
+  const refusing = refuseEverything(`Translation is unavailable: ${why}`);
+  const gates = new Map<TranslationScope, ReturnType<typeof createTranslationGate>>();
   return {
-    gate: createTranslationGate({
-      gate: refuseEverything(`Translation is unavailable: ${why}`),
-      scope: options.scope,
-      ...(options.maxCharacters === undefined ? {} : { maxCharacters: options.maxCharacters }),
-    }),
+    gateFor(scope: TranslationScope) {
+      const existing = gates.get(scope);
+      if (existing !== undefined) return existing;
+      const built = createTranslationGate({
+        gate: refusing,
+        scope,
+        ...(options.maxCharacters === undefined ? {} : { maxCharacters: options.maxCharacters }),
+      });
+      gates.set(scope, built);
+      return built;
+    },
+    /*
+     * EMPTY, not null. Nothing was loaded, so nothing is approved for any
+     * scope, and that is a real answer rather than an unasked question. The
+     * null above means "I could not enumerate"; this means "there is nothing
+     * to enumerate", and a deployment reading its boot line needs to be able
+     * to tell those apart.
+     */
+    approvedDirectionsFor: () => [],
     description: `FAILED CLOSED -- ${why}`,
-    approvedDirections: [],
     failedClosed: true,
     // Nothing was loaded, so there is no evidence to show. The quality surface
     // reports "cannot answer" rather than an empty list of healthy routes.
