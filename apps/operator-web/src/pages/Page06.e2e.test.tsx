@@ -67,12 +67,31 @@ function route(over: Record<string, unknown> = {}): Record<string, unknown> {
   };
 }
 
+/**
+ * WHO SIGNED IT. Required by the document validator on any route with an
+ * approved scope, and these fixtures did not carry it -- so every case here
+ * that served an approved route threw "document invalid" instead of
+ * rendering, and this suite went red on the branch without anybody's console
+ * code changing. An approval nobody signed is not auditable, which is exactly
+ * the rule; the fixtures simply had not caught up with it.
+ *
+ * The scopes named here must cover every scope the fixture approves.
+ */
+const SIGNED_FOR_PROGRAMME = {
+  approval: {
+    approvedBy: 'fixture-operator',
+    approvedAt: '2026-09-20T00:00:00.000Z',
+    scopes: ['programme-live'],
+  },
+};
+
 /** Approved, measured, human-cleared: the shape a usable route really has. */
 const EN_FR_QUALIFIED = route({
   productionApproved: true,
   technicalEvidence: MEASURED,
   humanReviewStatus: 'passed',
   serviceScopes: scopes({ 'programme-live': 'approved' }),
+  ...SIGNED_FOR_PROGRAMME,
 });
 
 /** The strongest a Nigerian route may legitimately be: measured, unreviewed. */
@@ -264,6 +283,7 @@ describe('unsupported speech recognition reaches the operator as UNAVAILABLE', (
         productionApproved: true, technicalEvidence: MEASURED,
         humanReviewStatus: 'passed',
         serviceScopes: scopes({ 'programme-live': 'approved' }),
+        ...SIGNED_FOR_PROGRAMME,
       })],
       [
         capability({
@@ -291,6 +311,7 @@ describe('a fallback voice reaches the operator as DEGRADED', () => {
         productionApproved: true, technicalEvidence: MEASURED,
         humanReviewStatus: 'passed',
         serviceScopes: scopes({ 'programme-live': 'approved' }),
+        ...SIGNED_FOR_PROGRAMME,
       })],
       [
         capability({ language: 'en' }),
