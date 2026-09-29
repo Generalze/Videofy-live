@@ -203,7 +203,46 @@ describe('the playlist describes the cursor, not the encoder', () => {
     // next forty-five seconds of a protected broadcast.
     expect(reply.text).not.toContain(live.spool);
     expect(reply.text).not.toContain('.m4s');
-    expect(reply.text).toContain('/programmes/run_1/segments/');
+    expect(reply.text).toContain('segments/run_1_seg_');
+  });
+
+  /*
+   * THE FRAGMENT REFERENCE MUST SURVIVE A MOUNT PREFIX.
+   *
+   * FOUND BY AUDIT, 29 Sep 2026. This emitted `/programmes/<run>/segments/<id>`
+   * -- root-absolute. Behind the edge the service is mounted under `/media`
+   * with the prefix stripped, and the manifest the client holds came from
+   * `/media/programmes/<run>/playlist.m3u8`. A root-absolute reference throws
+   * the `/media` away, so the player asked the WEBSITE for every fragment and
+   * got the page shell back with a 200.
+   *
+   * The old test asserted `toContain('/programmes/run_1/segments/')`, which
+   * the correct relative form also satisfies as a substring, against an app
+   * with no prefix at all. It could not fail either way. This mounts the
+   * routes under a prefix and resolves the reference the way a player does.
+   */
+  it('names fragments relative to the playlist, so a mount prefix survives', async () => {
+    const live = rig();
+    live.produce(180_000);
+
+    const mounted = express();
+    mounted.use('/media', live.app);
+    const playlistPath = '/media/programmes/run_1/playlist.m3u8';
+    const reply = await request(mounted, playlistPath);
+
+    const reference = reply.text
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .find((line) => line !== '' && !line.startsWith('#'));
+    expect(reference, 'the manifest names no fragment at all').toBeDefined();
+
+    // Exactly what a player does with the reference it just read.
+    const resolved = new URL(reference as string, `https://example.test${playlistPath}`);
+    expect(resolved.pathname).toBe('/media/programmes/run_1/segments/run_1_seg_0');
+
+    // And the bytes really are there at the address the manifest gave.
+    const fragment = await request(mounted, resolved.pathname);
+    expect(fragment.status).toBe(200);
   });
 
   it('is never cacheable, because it describes a moving cursor', async () => {

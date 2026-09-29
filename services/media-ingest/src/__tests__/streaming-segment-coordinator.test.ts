@@ -11,6 +11,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   StreamingSegmentCoordinator,
   commitPolicyForService,
+  DEFAULT_MAX_UTTERANCE_MS,
   type SegmentTimers,
   type StreamingSegmentCoordinatorDeps,
 } from '../streaming-segment-coordinator.js';
@@ -24,27 +25,72 @@ import {
   toTranscriptEvents,
 } from '../transcription-provider.js';
 
+/**
+ * A manual clock that RESPECTS DELAYS.
+ *
+ * It did not, and that is part of why the max-utterance backstop went
+ * unnoticed for so long: `fire()` ran every pending handler at once whatever
+ * its delay, so a 300 ms stabilization window and a 15 s backstop were
+ * indistinguishable here. A harness that cannot tell them apart cannot show
+ * that one of them was never armed, and cannot show that the other fires
+ * first in real life.
+ *
+ * `fire()` now advances to the EARLIEST pending deadline and runs only what
+ * is due then, which is what a real event loop does. `fire(ms)` advances by a
+ * stated amount for a test that wants to reach a later timer deliberately.
+ */
 function manualTimers() {
-  const pending = new Map<number, () => void>();
+  interface Pending {
+    readonly dueAt: number;
+    readonly handler: () => void;
+  }
+  const pending = new Map<number, Pending>();
   let next = 1;
+  let nowMs = 0;
   const timers: SegmentTimers = {
-    setTimer: (handler) => {
+    setTimer: (handler, delayMs) => {
       const id = next++;
-      pending.set(id, handler);
+      pending.set(id, { dueAt: nowMs + delayMs, handler });
       return id;
     },
     clearTimer: (handle) => {
       pending.delete(handle as number);
     },
   };
+  const runDue = (): void => {
+    // Snapshot first: a handler may schedule another timer, and that one
+    // belongs to a later tick rather than this one.
+    const due = [...pending.entries()].filter(([, entry]) => entry.dueAt <= nowMs);
+    for (const [id] of due) pending.delete(id);
+    for (const [, entry] of due) entry.handler();
+  };
   return {
     timers,
-    fire: () => {
-      const entries = [...pending.entries()];
-      pending.clear();
-      for (const [, handler] of entries) handler();
+    /** Advance to the next deadline, or by `ms` when one is given. */
+    fire: (ms?: number) => {
+      if (ms !== undefined) {
+        nowMs += ms;
+        runDue();
+        return;
+      }
+      const deadlines = [...pending.values()].map((entry) => entry.dueAt);
+      if (deadlines.length === 0) return;
+      nowMs = Math.min(...deadlines);
+      runDue();
     },
     pendingCount: () => pending.size,
+    /**
+     * How many timers are due within `ms` from now.
+     *
+     * A test about the stabilization window used to count ALL pending timers,
+     * which was only ever right because the window was the only timer that
+     * existed. Once the max-utterance backstop is armed -- as it always
+     * should have been on a programme -- that count says two and the test
+     * reads it as "the window was restarted". This lets a case name the
+     * timer it means by its deadline rather than by being the only one.
+     */
+    pendingWithin: (ms: number) =>
+      [...pending.values()].filter((entry) => entry.dueAt <= nowMs + ms).length,
   };
 }
 
@@ -189,8 +235,8 @@ describe('provider endpointing is input, not authority', () => {
     // only the final's text let a mutant survive that never cancelled it: the
     // timer still fired and still committed the right words, for the wrong
     // reason.
-    expect(r.clock.pendingCount()).toBe(0);
-    r.clock.fire();
+    expect(r.clock.pendingWithin(300)).toBe(0);
+    r.clock.fire(300);
     expect(r.events.filter((e) => e.kind === 'final')).toHaveLength(0);
     expect(r.coordinator.openSegmentId).toBe('seg_1');
 
@@ -466,17 +512,90 @@ describe('corroborating boundary signals do not delay the commit', () => {
     r.coordinator.noteProviderSignal(partial('all done'));
     // Provider says the utterance ended...
     r.coordinator.noteProviderSignal({ kind: 'endpoint' });
-    expect(r.clock.pendingCount()).toBe(1);
+    expect(r.clock.pendingWithin(300)).toBe(1);
     // ...and local VAD agrees. That is corroboration, not a later boundary.
     // Restarting here would mean the more evidence the platform had that speech
     // had ended, the longer it waited before saying so.
     r.coordinator.noteSpeechEnd(900);
-    expect(r.clock.pendingCount()).toBe(1);
+    expect(r.clock.pendingWithin(300)).toBe(1);
 
     r.clock.fire();
     expect(r.events.at(-1)!.kind).toBe('final');
     // The trigger recorded is the FIRST signal, which is the one that opened
     // the window and is the earliest evidence of the boundary.
     expect(r.coordinator.commits.at(-1)!.trigger).toBe('provider-endpoint');
+  });
+});
+
+/**
+ * A PRESENTER WHO NEVER PAUSES STILL PRODUCES SEGMENTS.
+ *
+ * FOUND BY AUDIT, 29 Sep 2026. `maxUtteranceMs` was plumbed through the
+ * coordinator, the live stream pipeline and the session host, and the
+ * composition root passed it at none of them -- so the backstop was armed on
+ * no stream this service has ever run.
+ *
+ * Under `stabilized`, which is what a PROGRAMME uses, a segment closes only
+ * after a 300 ms gap and every incoming partial cancels the pending boundary.
+ * A presenter in full flow produces partials faster than that, so the segment
+ * never closes and nothing at all reaches translation or synthesis for the
+ * length of the monologue. Captions keep flowing, because captions ARE the
+ * partials, so every health signal reports a working broadcast.
+ *
+ * The fix does not ask a caller to remember: the commit policy already knows
+ * whether a backstop is needed, so it supplies one.
+ */
+describe('a segment cannot stay open forever', () => {
+  it('arms a backstop under stabilized without being asked to', () => {
+    const r = rig({ commitPolicy: 'stabilized' });
+    r.coordinator.noteSpeechStart(0);
+    // The defect: nothing pending, so nothing can ever close this segment.
+    expect(r.clock.pendingCount()).toBeGreaterThan(0);
+  });
+
+  it('commits a monologue that never yields a gap', () => {
+    const r = rig({ commitPolicy: 'stabilized' });
+    r.coordinator.noteSpeechStart(0);
+    // Continuous speech: every partial cancels the boundary, as it should.
+    for (let i = 0; i < 40; i += 1) {
+      r.coordinator.noteAudio(i * 250);
+      r.coordinator.noteProviderSignal(partial(`clause ${i}`));
+    }
+    // Only the backstop is left to fire, and it must produce a real segment.
+    r.clock.fire(DEFAULT_MAX_UTTERANCE_MS);
+    const finals = r.events.filter((event) => event.kind === 'final');
+    expect(finals).toHaveLength(1);
+    expect(r.coordinator.commits.map((commit) => commit.trigger)).toEqual(['max-utterance']);
+  });
+
+  it('does not arm one under aggressive, which cannot hang', () => {
+    // A call commits on the first boundary signal, so a backstop would only
+    // be a timer nobody needs.
+    const r = rig({ commitPolicy: 'aggressive' });
+    r.coordinator.noteSpeechStart(0);
+    expect(r.clock.pendingCount()).toBe(0);
+  });
+
+  it('still lets a caller disable it deliberately', () => {
+    const r = rig({ commitPolicy: 'stabilized', maxUtteranceMs: 0 });
+    r.coordinator.noteSpeechStart(0);
+    expect(r.clock.pendingCount()).toBe(0);
+  });
+
+  it('still lets a caller choose their own bound', () => {
+    const r = rig({ commitPolicy: 'stabilized', maxUtteranceMs: 4_000 });
+    r.coordinator.noteSpeechStart(0);
+    expect(r.clock.pendingCount()).toBeGreaterThan(0);
+  });
+
+  it('prefers a real gap to the backstop when speech actually stops', () => {
+    // The backstop must not become the normal path: ordinary speech still
+    // commits on its boundary, not fifteen seconds later.
+    const r = rig({ commitPolicy: 'stabilized' });
+    r.coordinator.noteSpeechStart(0);
+    r.coordinator.noteProviderSignal(final('good afternoon'));
+    r.coordinator.noteSpeechEnd(1_000);
+    r.clock.fire();
+    expect(r.coordinator.commits.map((commit) => commit.trigger)).not.toContain('max-utterance');
   });
 });

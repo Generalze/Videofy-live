@@ -46,6 +46,7 @@ import {
   type ChannelAssignedPayload,
   type OperatorChannelSettingsPayload,
   SOCKET_EVENTS,
+  SOCKET_ERROR_CODES,
   type TranslatedAudioFramePayload,
   WEBRTC_BACKEND_MEDIA_PEER_ID,
   WEBRTC_SIGNALLING_LIMITS,
@@ -1070,6 +1071,15 @@ export class Gateway {
         });
         socket.emit(SOCKET_EVENTS.ERROR, {
           message: 'This programme is locked. Check the link and code you were given.',
+          /*
+           * THE HALF THE CLIENT BRANCHES ON. The player used to decide
+           * whether to show the join-code prompt by searching this sentence
+           * for the word "private", which this sentence has never contained
+           * since the three-tier vocabulary landed -- so the prompt could
+           * never appear and a locked channel was unenterable from the web.
+           * The sentence is now free to change; the code is not.
+           */
+          code: SOCKET_ERROR_CODES.CHANNEL_LOCKED,
         });
         return;
       }

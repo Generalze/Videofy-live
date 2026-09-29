@@ -228,16 +228,46 @@ const ingest = new IngestService(config, {
    * is NOT released from memory here: an audience is still forty-five seconds
    * behind and has to be able to fetch what was just published.
    */
+  /*
+   * AND THE RECORDING IS FINISHED HERE, which it was not until 29 Sep 2026.
+   *
+   * This handler drained the buffer and stopped. The only code that finalised
+   * a recording was `DELETE /programmes/:runId/media-origin`, and an audit
+   * found that route is called by NOTHING -- not the console, not the
+   * gateway, not a script. The professional path had a second exit, because
+   * the encoder exiting triggers `finish()`; the WebRTC path, which is the
+   * one this product actually uses, installs an `exited` promise that never
+   * resolves, so that exit does not exist either.
+   *
+   * So every recording production has ever made would have been begun and
+   * never finished: permanently `recording`, permanently 409 on playback, and
+   * permanently ineligible for expiry because the sweeper only considers
+   * settled recordings. The retention an operator chose would never have been
+   * applied to anything.
+   *
+   * ORDER MATTERS. `stop` collects the fragments produced between the last
+   * poll and the stop, then finalises; `programmeClosed` projects whatever
+   * that finalisation turned out to be into history. Reversing them writes
+   * history about a recording that has not settled yet.
+   *
+   * BOTH ARE NO-OPS WHERE THEY DO NOT APPLY. `stop` returns immediately for a
+   * run it is not producing, and `replayComposition` is null when Replay is
+   * off -- which is every deployment today. This must never throw into the
+   * socket handler, so the whole thing is caught: a broadcast that has ALREADY
+   * ENDED must not be able to fail.
+   */
   onProgrammeRunEnded: (runId) => {
     const buffer = programmeTimelines.buffer(runId);
-    if (buffer === null) return;
-    buffer.drain();
-    const released = buffer.advance();
-    logger.info('Programme run ended; draining what the buffer still held', {
-      runId,
-      releasedEvents: released.length,
-      publicOutputTimeMs: programmeTimelines.status(runId)?.cursor.publicOutputTimeMs ?? null,
-    });
+    if (buffer !== null) {
+      buffer.drain();
+      const released = buffer.advance();
+      logger.info('Programme run ended; draining what the buffer still held', {
+        runId,
+        releasedEvents: released.length,
+        publicOutputTimeMs: programmeTimelines.status(runId)?.cursor.publicOutputTimeMs ?? null,
+      });
+    }
+    void settleProgrammeRecording(runId);
   },
   /*
    * WHO HAS ACTUALLY JUDGED THIS LANGUAGE, asked of the route document.
@@ -380,11 +410,47 @@ let programmeSpoolPressure: SpoolPressure | null = null;
  * runs after this handler is registered -- and a captured `null` would report
  * Replay as off on a deployment where it is running perfectly.
  */
-function replayBackendState(): { readonly state: string; readonly detail?: string } {
-  if (replayBackend !== null) return { state: 'ready' };
-  return replayDegraded === null
-    ? { state: 'off' }
-    : { state: 'degraded', detail: replayDegraded };
+function replayBackendState(): {
+  readonly state: string;
+  readonly detail?: string;
+  readonly begun?: number;
+  readonly settled?: number;
+  readonly unsettled?: number;
+  readonly warning?: string;
+} {
+  if (replayBackend === null) {
+    return replayDegraded === null
+      ? { state: 'off' }
+      : { state: 'degraded', detail: replayDegraded };
+  }
+  /*
+   * `ready` MEANT ONLY "A BACKEND OBJECT WAS CONSTRUCTED AT BOOT".
+   *
+   * It never asked whether a policy had ever resolved, a recording had ever
+   * begun, or -- the defect that made this matter -- whether a single one had
+   * ever been finished. Until 29 Sep 2026 none ever was, and this said
+   * `ready` throughout. That is the same shape as the backup that was
+   * completely dead behind green signals.
+   *
+   * These two numbers are the cheapest honest thing available: a recording
+   * that is begun and never settled makes `unsettled` climb and stay there.
+   */
+  const unsettled = recordingsBegun - recordingsSettled;
+  return {
+    state: 'ready',
+    begun: recordingsBegun,
+    settled: recordingsSettled,
+    unsettled,
+    // One in flight is a broadcast that is simply still on air. A backlog is
+    // not, and the run-ended signal is the thing to look at.
+    ...(unsettled > 1
+      ? {
+          warning:
+            `${unsettled} recordings have begun and not settled; ` +
+            'an unsettled recording never becomes playable and never expires',
+        }
+      : {}),
+  };
 }
 
 app.get('/health', (_req, res) => {
@@ -1784,6 +1850,51 @@ const programmeOrigin = new ProgrammeMediaOrigin({
       }),
 });
 
+/*
+ * BEGUN MINUS SETTLED, so this gap cannot recur in silence.
+ *
+ * The defect these count was not that finalisation was wrong. It was that
+ * finalisation never happened and NOTHING anywhere disagreed: the recording
+ * sat in `recording`, playback answered 409, expiry skipped it, and every
+ * health signal said ready. An audit found it by reading, which is the
+ * expensive way.
+ *
+ * A run that is begun and never settled now shows up as a number that only
+ * goes up, on /health, where a person or a probe can see it.
+ */
+let recordingsBegun = 0;
+let recordingsSettled = 0;
+
+/**
+ * The broadcast is over: stop producing, finalise the recording, and write
+ * down that the airing ended.
+ *
+ * A `function` declaration on purpose -- it is called from the
+ * `onProgrammeRunEnded` handler built hundreds of lines above this, and
+ * hoisting is what lets the handler sit next to the rest of the ingest
+ * wiring instead of being moved down here away from its siblings.
+ *
+ * NEVER THROWS. It runs on a socket event for a broadcast that has already
+ * ended; there is no caller left to handle a failure and nothing useful to
+ * do with one except say so.
+ */
+async function settleProgrammeRecording(runId: string): Promise<void> {
+  try {
+    // Collects the fragments produced since the last poll, THEN finalises.
+    await programmeOrigin.stop(runId);
+    // Projects whatever that finalisation turned out to be into history.
+    await replayComposition?.programmeClosed(runId, Date.now());
+    recordingsSettled += 1;
+  } catch (error) {
+    logger.error('the recording for a finished broadcast could not be settled', {
+      runId,
+      reason: error instanceof Error ? error.message : 'unknown',
+      consequence:
+        'the replay stays unfinished: playback will refuse it and retention will not expire it',
+    });
+  }
+}
+
 /** The gate's answer for a run this deployment is not recording. */
 function replayUnavailable(runId: string): {
   ok: false;
@@ -1815,6 +1926,7 @@ if (replayComposition !== null) {
      * the composition is written so that every failure inside it is a
      * diagnostic rather than an exception.
      */
+    recordingsBegun += 1;
     void replayComposition?.programmeOpened(identity, Date.now());
   });
 }
@@ -1949,14 +2061,17 @@ app.delete('/programmes/:runId/media-origin', operatorOnly, (req, res) => {
       res.status(400).json({ error: 'Not a run id.' });
       return;
     }
-    await programmeOrigin.stop(runId);
     /*
-     * THE BROADCAST IS OVER. The producer has already finalised the recording
-     * -- it knows when the last fragment landed and this does not -- so what
-     * happens here is bookkeeping: project whatever the finalisation turned out
-     * to be into history, and write down that the airing ended.
+     * THE SAME PATH THE RUN-ENDED SIGNAL TAKES, deliberately.
+     *
+     * These were two copies of the finalisation sequence, and only this one
+     * existed -- which mattered because nothing calls this route. Keeping one
+     * function means the operator's explicit stop and the gateway's
+     * end-of-run signal can never drift into doing different things, and
+     * settling twice is harmless: `stop` returns immediately for a run it is
+     * no longer producing.
      */
-    await replayComposition?.programmeClosed(runId, Date.now());
+    await settleProgrammeRecording(runId);
     res.status(200).json({ runId, producing: false });
   })();
 });
