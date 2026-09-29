@@ -1620,10 +1620,14 @@ check "mutating paths install machinery only through transaction_begin" \
 # The one bare call is `state`, which is read-only and takes no lock.
 check "the only unlocked ship is the read-only state path" \
   "$(sed -n "$((BARE_SHIP-8)),${BARE_SHIP}p" "$SCRIPT" | grep -c 'READ-ONLY')" "1"
-if grep -q 'if ! remote_finalize "$SHA" "$PREVIOUS_RECORDED"' "$SCRIPT"; then
+# Through the CONFIRMING wrapper since 28 Sep 2026: a reset connection made a
+# finalize that had already written DEPLOY-STATE.md report that it had not.
+# The guard is unchanged -- an unrecorded deploy still exits nonzero -- but the
+# question it asks is now "did the box record it", not "did the reply arrive".
+if grep -q 'if ! finalize_with_confirmation "$SHA" "$PREVIOUS_RECORDED"' "$SCRIPT"; then
   ok "the top-level deploy checks remote finalisation explicitly"
 else bad "the top-level deploy does not guard remote finalisation" "a failed DEPLOY-STATE write could exit zero"; fi
-FINALIZE_BLOCK="$(grep -n -A5 'if ! remote_finalize "$SHA" "$PREVIOUS_RECORDED"' "$SCRIPT")"
+FINALIZE_BLOCK="$(grep -n -A5 'if ! finalize_with_confirmation "$SHA" "$PREVIOUS_RECORDED"' "$SCRIPT")"
 case "$FINALIZE_BLOCK" in
   *"exit 1"* ) ok "and finalisation failure exits nonzero before DEPLOYED" ;;
   *) bad "the finalisation failure path does not exit nonzero" "$FINALIZE_BLOCK" ;;
@@ -2609,6 +2613,102 @@ drop_rig; PATH="$SAVED_PATH"
 rm -rf "$PA_PREFIX"
 [ -n "${MUTDIR:-}" ] && rm -rf "$MUTDIR"
 [ -n "${MUTINST:-}" ] && rm -rf "$MUTINST"
+
+# --------------------------------- what a dropped transport must NOT look like
+#
+# MEASURED IN PRODUCTION, 28 Sep 2026. A deploy published, restarted, proved
+# every unit was running the release, passed the public smoke, and wrote
+# DEPLOY-STATE.md -- then the ssh connection carrying the acknowledgement was
+# reset. The script announced "DEPLOY FINALIZATION FAILED: DEPLOY-STATE.md was
+# not updated" about a file that had just been updated correctly, and exited 1
+# on a deployment that was entirely fine.
+#
+# Under it sat "LOCKHOLD[1]: ambiguous redirect", which reads like the cause
+# and is not. These pin both, and the second only after the first guess about
+# it turned out to be wrong: `|| true` DOES catch the bad close and the EXIT
+# trap DOES finish. The only cost is the stray line. A test written from the
+# guess would have asserted a cleanup that never actually broke.
+
+# 1. The bad fd close: cleanup still runs, but it leaks a misleading line.
+lockclose_probe() {
+  # $1: 'broken' = the old subscript form, 'fixed' = the shipped one.
+  # $2: 'out' or 'err'.
+  local script='
+set -euo pipefail
+FORM="$1"
+LOCK_HELD=no
+coproc LOCKHOLD { exit 0; }
+LOCK_HELD=yes
+sleep 0.3
+jobs >/dev/null 2>&1 || true      # let bash reap it, which UNSETS the array
+cleanup_transaction_tooling() { echo "CLEANED"; }
+release_transaction_lock() {
+  [ "${LOCK_HELD:-no}" = yes ] || return 0
+  if [ "$FORM" = broken ]; then
+    exec {LOCKHOLD[1]}>&- 2>/dev/null || true
+  else
+    local hold="${LOCKHOLD[1]:-}"
+    if [ -n "$hold" ]; then exec {hold}>&- 2>/dev/null || true; fi
+  fi
+  LOCK_HELD=no
+  return 0
+}
+trap "release_transaction_lock; cleanup_transaction_tooling" EXIT
+exit 0
+'
+  if [ "$2" = err ]; then
+    bash -c "$script" _ "$1" 2>&1 >/dev/null | tr -d '\r'
+  else
+    bash -c "$script" _ "$1" 2>/dev/null | tr -d '\r'
+  fi
+}
+
+# The correction to my own first theory, kept as an assertion so nobody
+# re-derives it: the trap was never aborted, by either form.
+check "the old close still let the EXIT trap finish" \
+  "$(lockclose_probe broken out)" "CLEANED"
+check "so does the shipped close" \
+  "$(lockclose_probe fixed out)" "CLEANED"
+# What actually differs, and the whole reason to fix it.
+case "$(lockclose_probe broken err)" in
+  *"ambiguous redirect"*) ok "the old close leaks a line that reads like the cause" ;;
+  *) bad "the old close leaks a line that reads like the cause" "no such message" ;;
+esac
+check "the shipped close is silent on a dead coprocess" \
+  "$(lockclose_probe fixed err)" ""
+check "no fd is closed through an array subscript any more" \
+  "$(grep -c 'exec {LOCKHOLD\[1\]}' "$HERE/../atomic-deploy.sh" || true)" "0"
+
+# 2. A lost acknowledgement is not a failed finalize.
+#
+# `finalize_with_confirmation` retries, and then reads the record directly.
+# Driven with stubs because the trigger is a transport that dies between the
+# action and its reply, which no amount of filesystem setup produces.
+finalize_confirm_probe() {
+  # $1: how many times the finalize channel drops before answering, or
+  #     'always' to never answer.
+  bash -c '
+set -uo pipefail
+DROPS="$1"; ATTEMPT=0; ENV_NAME=production; SHA=abc123
+remote_finalize() {
+  ATTEMPT=$((ATTEMPT + 1))
+  if [ "$DROPS" = always ] || [ "$ATTEMPT" -le "$DROPS" ]; then return 1; fi
+  echo "DEPLOYED $SHA"; return 0
+}
+remote_active_record() { [ "$DROPS" = always ] && printf "%s" "${RECORDED:-}"; }
+'"$(sed -n '/^finalize_with_confirmation() {/,/^}/p' "$HERE/../atomic-deploy.sh")"'
+if finalize_with_confirmation "$SHA" prev >/dev/null 2>&1; then echo RECORDED; else echo FAILED; fi
+' _ "$1"
+}
+
+check "a finalize that answers first time is recorded" \
+  "$(finalize_confirm_probe 0)" "RECORDED"
+check "a finalize whose FIRST answer is lost is still recorded" \
+  "$(finalize_confirm_probe 1)" "RECORDED"
+check "a box that recorded the sha is believed even when the channel never answers" \
+  "$(export RECORDED=abc123; finalize_confirm_probe always)" "RECORDED"
+check "a box that did NOT record it still fails, so this is not a rubber stamp" \
+  "$(export RECORDED=something-else; finalize_confirm_probe always)" "FAILED"
 
 # ============================================================ report
 
