@@ -43,6 +43,27 @@ export interface PendingPayload {
  */
 export const MAX_PENDING_PAYLOADS = 5_000;
 
+/**
+ * WHAT MAKES ONE HELD PAYLOAD DIFFERENT FROM ANOTHER.
+ *
+ * The map was keyed on the reference alone, and a caption and the translated
+ * audio for the same sentence share one: the segment id. So on every
+ * programme the generated-audio payload silently replaced the caption
+ * payload for that sentence, and whichever timeline event was released first
+ * emitted whichever payload happened to be there.
+ *
+ * Found by audit 29 Sep 2026. A direct call was unaffected, because a call
+ * has no cursor and no pump -- which is why it never showed anywhere.
+ *
+ * The kind is part of the identity because a broadcast genuinely produces
+ * several things at one programme moment, and they are all owed.
+ */
+function keyFor(kind: ProgrammeTimelineEvent['kind'], reference: string): string {
+  // A separator that cannot occur in either half: event kinds are words and
+  // segment ids are restricted to letters, digits, dot, dash and underscore.
+  return `${kind}|${reference}`;
+}
+
 export class ProgrammeOutputPump {
   private readonly pending = new Map<string, PendingPayload>();
   private dropped = 0;
@@ -60,7 +81,7 @@ export class ProgrammeOutputPump {
    * is correct: if it is not on the timeline it is not part of the broadcast.
    */
   hold(reference: string, payload: PendingPayload): void {
-    this.pending.set(reference, payload);
+    this.pending.set(keyFor(payload.kind, reference), payload);
     if (this.pending.size <= MAX_PENDING_PAYLOADS) return;
     const oldest = this.pending.keys().next();
     if (oldest.done === true) return;
@@ -81,9 +102,10 @@ export class ProgrammeOutputPump {
   tick(): readonly ProgrammeTimelineEvent[] {
     const released = this.buffer.advance();
     for (const event of released) {
-      const payload = this.pending.get(event.reference);
+      const key = keyFor(event.kind, event.reference);
+      const payload = this.pending.get(key);
       if (payload === undefined) continue;
-      this.pending.delete(event.reference);
+      this.pending.delete(key);
       payload.emit();
     }
     return released;

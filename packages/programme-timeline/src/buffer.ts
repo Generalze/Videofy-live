@@ -121,6 +121,24 @@ export class ProgrammeOutputBuffer {
    * starting at zero would skip it forever.
    */
   private releasedThroughMs = -1;
+  /**
+   * Which events have actually been handed to the audience.
+   *
+   * EXACTLY ONCE BY IDENTITY, not by time window. `advance` used to return
+   * `timeline.between(releasedThroughMs, to)`, and an event appended at a
+   * programme time the cursor had already passed fell outside that window
+   * for ever. That is not a rare case -- the timeline's own `append`
+   * documents it as normal: "a translation of a sentence lands after later
+   * audio has already been written". An audit on 29 Sep 2026 found every
+   * `generated-audio` event on every programme was authored behind the
+   * cursor and released to nobody.
+   *
+   * A watermark would not do. An event with a low sequence and a future
+   * programme time is not yet due, and releasing a later one would step the
+   * watermark over it. So the set is the state, bounded by the number of
+   * events in one run, which the timeline is already holding anyway.
+   */
+  private readonly released = new Set<number>();
   private state: BufferState = 'inactive';
   private everActive = false;
   private failure: string | null = null;
@@ -220,7 +238,13 @@ export class ProgrammeOutputBuffer {
       this.state === 'draining' ? edge : Math.max(0, edge - this.configuredDelayMs);
     // Never backwards. An audience does not un-see a programme.
     const to = Math.max(this.releasedThroughMs, target);
-    const released = this.timeline.between(this.releasedThroughMs, to);
+    /*
+     * Everything DUE, minus everything already sent. A late arrival at an
+     * earlier programme time is due the moment it is written, and this is
+     * what lets it out; the set is what stops anybody hearing it twice.
+     */
+    const released = this.timeline.dueBy(to).filter((event) => !this.released.has(event.sequence));
+    for (const event of released) this.released.add(event.sequence);
     const moved = to !== this.releasedThroughMs;
     this.releasedThroughMs = to;
     // Only when it actually moved: a tick that releases nothing is the normal
@@ -242,6 +266,17 @@ export class ProgrammeOutputBuffer {
   restoreReleasedThrough(releasedThroughMs: number): void {
     if (releasedThroughMs <= this.releasedThroughMs) return;
     this.releasedThroughMs = releasedThroughMs;
+    /*
+     * AND EVERYTHING UP TO THERE COUNTS AS SENT.
+     *
+     * Emission is exactly-once by identity now, so moving the cursor alone
+     * is no longer enough: without this the first tick after a recovery
+     * would find every event before the restored position missing from the
+     * released set and replay the whole programme so far to an audience
+     * that has already heard it. The cursor and the set have to be restored
+     * together or they describe different broadcasts.
+     */
+    for (const event of this.timeline.dueBy(releasedThroughMs)) this.released.add(event.sequence);
     this.reassess();
   }
 
@@ -259,7 +294,28 @@ export class ProgrammeOutputBuffer {
    */
   fail(reason: string): void {
     this.failure = reason;
-    this.state = this.policy.onLoss === 'fail-closed' ? 'failed' : 'degraded';
+    /*
+     * FAIL CLOSED PROTECTS A PROMISE. WITH NO DELAY THERE IS NO PROMISE.
+     *
+     * `failed` makes `advance` return nothing for the rest of the run, and
+     * the only thing that clears it is `configure`, which no service calls.
+     * That is the right trade when a compliance delay is at stake: holding
+     * material back is exactly what the operator asked for, and releasing it
+     * unprotected would break the undertaking the delay exists to keep.
+     *
+     * It is the wrong trade at zero delay, which is how this product is
+     * deployed today. Nothing is being protected, so a single transient
+     * journal write failure -- a disk hiccup, a lost writer lease -- ended
+     * captions, adverts and translated audio for the remainder of the
+     * broadcast, permanently, with no recovery short of restarting the run.
+     * The audience lost the programme to protect a promise nobody had made.
+     *
+     * Found by audit 29 Sep 2026. Degraded still says loudly what happened;
+     * it just does not take the broadcast down with it.
+     */
+    const protectingADelay = this.configuredDelayMs > 0;
+    this.state =
+      protectingADelay && this.policy.onLoss === 'fail-closed' ? 'failed' : 'degraded';
   }
 
   status(): BufferStatus {
