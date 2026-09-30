@@ -16,6 +16,8 @@
  * all as an empty table.
  */
 
+import { operatorAuthorization } from './ingestClient';
+
 export interface StagePerformanceView {
   readonly stage: string;
   readonly samples: number;
@@ -100,8 +102,27 @@ export async function fetchProgrammeRuntime(
   try {
     const response = await fetchImpl(
       `${ingestUrl.replace(/\/+$/u, '')}/programmes/${encodeURIComponent(runId)}/runtime`,
-      { cache: 'no-store' },
+      {
+        cache: 'no-store',
+        /*
+         * THE SESSION, WHICH THIS DID NOT SEND.
+         *
+         * The runtime route was the one operator route on the media service
+         * with no guard, and this is why: the console never presented a
+         * token, so adding one would have broken the panel. It is guarded
+         * now -- it reports a protected broadcast's safety-buffer depth --
+         * so the console has to authenticate like every other call it makes.
+         *
+         * Bare when there is no session, exactly as `ingestClient` does: the
+         * service's own "Sign in to operate." then comes back as the error
+         * the panel shows, rather than this inventing one.
+         */
+        headers: operatorAuthorization(),
+      },
     );
+    if (response.status === 401 || response.status === 403) {
+      return { kind: 'unreachable', reason: 'sign in to see this programme’s runtime' };
+    }
     if (response.status === 404) return { kind: 'not-here' };
     if (!response.ok) return { kind: 'unreachable', reason: `the media service answered ${response.status}` };
     return { kind: 'runtime', runtime: (await response.json()) as ProgrammeRuntime };

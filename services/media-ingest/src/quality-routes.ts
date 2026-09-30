@@ -17,7 +17,7 @@
  * nothing.
  */
 
-import type { Express, Request, Response } from 'express';
+import type { Express, Request, RequestHandler, Response } from 'express';
 import {
   deriveRouteQuality,
   type RouteQualityRow,
@@ -33,6 +33,20 @@ export interface QualityRoutesDeps {
   readonly catalogue: () => readonly TargetLanguageCapability[];
   /** The scope this service runs under. Never widened by a query parameter. */
   readonly scope: ServiceScope;
+  /**
+   * The operator guard, REQUIRED.
+   *
+   * This surface was open until 29 Sep 2026, which an audit found and a probe
+   * from the public internet confirmed: it reached its handler and answered
+   * 400 for a malformed query rather than 401. It reports which language
+   * pairs this deployment may translate, which model is behind each, and what
+   * review evidence exists -- C7's account of its own supply chain, and the
+   * neighbouring readiness surface is guarded for exactly that reason.
+   *
+   * Required rather than optional so registering this without a guard is a
+   * compile error rather than an omission nobody notices for a month.
+   */
+  readonly operatorOnly: RequestHandler;
 }
 
 /** Comma-separated tags, emptied of blanks. Never defaulted to "everything". */
@@ -45,7 +59,7 @@ function parseLanguages(raw: unknown): readonly string[] {
 }
 
 export function registerQualityRoutes(app: Express, deps: QualityRoutesDeps): void {
-  app.get('/quality/routes', (req: Request, res: Response) => {
+  app.get('/quality/routes', deps.operatorOnly, (req: Request, res: Response) => {
     const sourceLanguage = String(req.query['source'] ?? '').trim().toLowerCase();
     const targets = parseLanguages(req.query['targets']);
 

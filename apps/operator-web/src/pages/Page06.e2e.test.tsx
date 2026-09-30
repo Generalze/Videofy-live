@@ -149,6 +149,10 @@ async function serve(
 
   const app = express();
   registerQualityRoutes(app, {
+    // The quality surface became operator-only on 29 Sep 2026. These cases
+    // are about what the console RENDERS, so the guard admits everybody and
+    // the refusal is covered where it lives, in media-ingest.
+    operatorOnly: (_req, _res, next) => next(),
     registry,
     catalogue: () => catalogue,
     scope: 'programme-live',

@@ -32,6 +32,8 @@ import {
 } from './account-authentication.js';
 import { reconcileVoiceMaterial } from './voice-material-reconciliation.js';
 import { VoiceProfileStore } from './voice-profile-store.js';
+import { createProgrammeSessionGuard } from './programme-session-guard.js';
+import type { ProgrammeAudienceAccess } from './programme-egress-routes.js';
 import { registerSourceMediaDeliveryRoute } from './source-media-delivery-route.js';
 import { registerViewerReadyMediaDeliveryRoute } from './viewer-ready-media-delivery-route.js';
 import { IngestService, buildTextToSpeechVoiceIdsByLanguage } from './ingest-service.js';
@@ -1180,7 +1182,41 @@ app.post('/internal/voice-cleanups/retry', async (req, res) => {
  * protected run is ungoverned, which is the correct answer for a programme
  * that holds nothing back.
  */
-registerGeneratedAudioDeliveryRoute(app, ingest, {
+/*
+ * THE AUDIENCE DOOR, SHARED WITH THE SESSION-KEYED ROUTES.
+ *
+ * Assigned where it is built, hundreds of lines below, because it needs the
+ * channel-visibility client. Read through a function so the guard registered
+ * here binds late -- and answers NO rather than yes if it is somehow asked
+ * before that assignment, which no request can do but which must not be a
+ * yes if one ever could.
+ */
+let programmeAudience: ProgrammeAudienceAccess | null = null;
+/**
+ * The audience door, or a loud failure.
+ *
+ * Every surface that admits a viewer reads it through here, so there is one
+ * policy object rather than several constructions of the same arguments
+ * drifting apart -- which is how one of them ends up being the only one that
+ * was hardened. Throwing is right: it can only be null during module
+ * initialisation, when nothing is serving, so a null here means the order of
+ * this file changed and somebody needs to know at boot rather than at the
+ * first locked broadcast.
+ */
+function audienceDoor(): ProgrammeAudienceAccess {
+  if (programmeAudience === null) {
+    throw new Error('the programme audience door was read before it was built');
+  }
+  return programmeAudience;
+}
+
+const programmeSessionAudience = createProgrammeSessionGuard({
+  runForSession: (sessionId) => programmeTimelines.runForSession(sessionId),
+  mayView: (runId, request) =>
+    programmeAudience === null ? 'forbidden' : programmeAudience.mayView(runId, request),
+});
+
+registerGeneratedAudioDeliveryRoute(app, ingest, programmeSessionAudience, {
   assess: (sessionId, segmentId) => {
     const runId = programmeTimelines.runForSession(sessionId);
     if (runId === null) return 'not-governed';
@@ -1199,8 +1235,13 @@ registerGeneratedAudioDeliveryRoute(app, ingest, {
     return event.programmeTimeMs <= status.cursor.publicOutputTimeMs ? 'public' : 'not-yet-public';
   },
 });
-registerSourceMediaDeliveryRoute(app, ingest);
-registerViewerReadyMediaDeliveryRoute(app, ingest);
+/*
+ * BOTH GUARDED SINCE 29 Sep 2026. These serve a broadcast's ORIGINAL file and
+ * its viewer encode, and until now asked nothing about who was asking -- on a
+ * delayed broadcast the original file is also the future.
+ */
+registerSourceMediaDeliveryRoute(app, ingest, programmeSessionAudience);
+registerViewerReadyMediaDeliveryRoute(app, ingest, programmeSessionAudience);
 
 // Records first, then the sweep, and only then the port. Serving before
 // hydration would let a call resolve a personal voice from an empty store and
@@ -1593,6 +1634,11 @@ registerProgrammeRuntimeRoutes(app, {
   performance: programmePerformance,
   timelines: programmeTimelines,
   /*
+   * The guard this surface always claimed to be behind and was not. Required
+   * by the deps type now, so a future composition cannot omit it silently.
+   */
+  operatorOnly,
+  /*
    * So the console can tell an operator who decides their adverts. Counts and
    * a source only: a broadcaster reading which campaigns are held would be
    * reading something commercially useful about somebody else.
@@ -1656,16 +1702,27 @@ const channelVisibility =
       })
     : VISIBILITY_UNRESOLVABLE;
 
+/*
+ * BUILT ONCE AND SHARED. The playlist and segment routes below ask it, and so
+ * do the three session-keyed media routes registered much earlier -- those
+ * asked nothing at all until 29 Sep 2026, which let a locked broadcast's
+ * original file be fetched by anyone holding a session id the gateway
+ * broadcasts to every listener.
+ */
+programmeAudience = createProgrammeAudienceAccess({
+  channelOf: (runId) => programmeTimelines.channelOf(runId),
+  visibility: channelVisibility,
+  authenticate,
+  entitlement: operatorEntitlement,
+  internalTokenAllowed: (presented) =>
+    internalIngressRequestAllowed(config.internalIngressAuth, presented),
+  // The audience door does not honour insecure mode; see its own docblock.
+  internalAuthEnforced: () => config.internalIngressAuth.mode === 'enforced',
+});
+
 registerProgrammeEgressRoutes(app, {
   egress: programmeEgress,
-  access: createProgrammeAudienceAccess({
-    channelOf: (runId) => programmeTimelines.channelOf(runId),
-    visibility: channelVisibility,
-    authenticate,
-    entitlement: operatorEntitlement,
-    internalTokenAllowed: (presented) =>
-      internalIngressRequestAllowed(config.internalIngressAuth, presented),
-  }),
+  access: audienceDoor(),
   spoolRoot: programmeMediaSpool,
   onFuturePeek: () => {
     /*
@@ -1950,14 +2007,10 @@ if (replayBackend !== null) {
     archive: replayBackend.archive,
     delivery: replayBackend.delivery,
     access: createReplayAudienceAccess({
-      channel: createProgrammeAudienceAccess({
-        channelOf: (runId) => programmeTimelines.channelOf(runId),
-        visibility: channelVisibility,
-        authenticate,
-        entitlement: operatorEntitlement,
-        internalTokenAllowed: (presented) =>
-          internalIngressRequestAllowed(config.internalIngressAuth, presented),
-      }),
+      // THE SAME DOOR the live path uses. This was a second construction of
+      // the identical arguments, which is how the insecure-mode hardening
+      // could have been applied to one and not the other.
+      channel: audienceDoor(),
       authenticate,
       entitlement: operatorEntitlement,
     }),
@@ -2500,6 +2553,9 @@ registerQualityRoutes(app, {
   registry: translationGate.registry,
   catalogue: () => ingest.targetLanguageCatalogue,
   scope: 'programme-live',
+  // This names models and review evidence -- C7's supply chain, not a
+  // viewer's business. The readiness surface beside it was already guarded.
+  operatorOnly,
 });
 logger.info('Route quality surface ready', {
   scope: 'programme-live',

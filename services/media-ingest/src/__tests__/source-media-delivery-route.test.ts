@@ -22,6 +22,17 @@ afterEach(async () => {
   await Promise.all(tempDirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
 });
 
+/**
+ * An audience door that admits everybody, so these cases measure the ROUTE.
+ *
+ * Stated rather than absent: until 29 Sep 2026 these routes took no audience
+ * guard at all, which let a locked broadcast's media be fetched by anyone
+ * holding a session id. The dependency is required now, so a test has to say
+ * which door it is using. The refusal itself is covered in
+ * programme-session-guard.test.ts.
+ */
+const admitEveryone: express.RequestHandler = (_req, _res, next) => next();
+
 describe('source-media delivery route', () => {
   it('serves uploaded source media with browser range support', async () => {
     const temp = await tempDir();
@@ -72,7 +83,7 @@ describe('source-media delivery route', () => {
 
 async function startDeliveryApp(service: SourceMediaDeliveryService): Promise<string> {
   const app = express();
-  registerSourceMediaDeliveryRoute(app, service);
+  registerSourceMediaDeliveryRoute(app, service, admitEveryone);
   const server = createServer(app);
   servers.push(server);
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

@@ -51,6 +51,27 @@ export interface ProgrammeAudienceAccessDeps {
   readonly entitlement: OperatorEntitlement;
   /** True when the presented internal token is this deployment's. */
   readonly internalTokenAllowed: (presented: string | undefined) => boolean;
+  /**
+   * True only when this deployment actually ENFORCES the internal token.
+   *
+   * WHY THE DOOR NEEDS TO KNOW. `internalIngressRequestAllowed` returns true
+   * for every caller, header or not, when the resolution is
+   * `insecure-explicit` -- which is correct for what that mode is FOR:
+   * letting a developer inject media without provisioning a secret. It is
+   * catastrophic here. The internal-token branch below runs BEFORE the
+   * visibility question, so in that mode every anonymous request to every
+   * run was answered `allow`, including a locked one, and the visibility
+   * model was inert.
+   *
+   * Found by audit 29 Sep 2026. Production and staging both set the token,
+   * so nothing was leaking -- but the flag's own documentation warns only
+   * about media injection and says nothing about audience access, which is
+   * how somebody reasoning carefully would have enabled it.
+   *
+   * So the audience door does not honour insecure mode at all. Watching
+   * somebody's locked broadcast is not a convenience worth a dev shortcut.
+   */
+  readonly internalAuthEnforced: () => boolean;
 }
 
 export function createProgrammeAudienceAccess(
@@ -65,8 +86,20 @@ export function createProgrammeAudienceAccess(
        * The gateway, presenting the credential it already uses to create
        * sessions and inject audio. It is the trusted front door, and a probe
        * holding this token can already do more than watch.
+       *
+       * ONLY WHERE THE TOKEN IS ENFORCED, and only when one was actually
+       * PRESENTED. Both halves matter: in `insecure-explicit` mode the
+       * allowance function answers yes to everybody, so without the first
+       * check this branch admitted every anonymous caller to every locked
+       * broadcast; and a deployment that enforces should still not treat a
+       * caller who sent no credential as though they had.
        */
-      if (deps.internalTokenAllowed(request.header(INTERNAL_TOKEN_HEADER) ?? undefined)) {
+      const presented = request.header(INTERNAL_TOKEN_HEADER) ?? undefined;
+      if (
+        deps.internalAuthEnforced() &&
+        presented !== undefined &&
+        deps.internalTokenAllowed(presented)
+      ) {
         return 'allow';
       }
 
