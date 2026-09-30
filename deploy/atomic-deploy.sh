@@ -293,13 +293,33 @@ cat >/dev/null
 HOLD
   local answer=""
   # The far end answers once, before it starts waiting.
-  IFS= read -r -t 60 answer <&"${LOCKHOLD[0]}" || true
+  #
+  # READ THROUGH A LOCAL COPY, for the same reason the close does.
+  #
+  # `${LOCKHOLD[0]}` is unbound the moment bash reaps the coprocess, and under
+  # `set -u` an unbound expansion is fatal. That is not a rare path: the
+  # coprocess dies exactly when the far end refuses or the connection drops,
+  # which is precisely when this block runs. Seen on 30 Sep 2026 -- a deploy
+  # correctly refused a busy lock, printed who held it, and then died with
+  # "LOCKHOLD[0]: unbound variable" instead of its own explanation, so the
+  # operator got a stack noise line where the remedy should have been.
+  #
+  # Same family as the close below, and missed there because only the write
+  # descriptor was fixed.
+  local reader="${LOCKHOLD[0]:-}"
+  if [ -n "$reader" ]; then
+    IFS= read -r -t 60 answer <&"$reader" || true
+  fi
   if [ "$answer" != "LOCK_HELD" ]; then
-    echo "REFUSED: could not take the deployment transaction lock ($answer)." >&2
+    echo "REFUSED: could not take the deployment transaction lock (${answer:-no answer})." >&2
     echo "  prepare, deploy and rollback are one transaction each and cannot" >&2
     echo "  interleave. Another operation owns it; wait, or inspect with:" >&2
     echo "    bash deploy/atomic-deploy.sh $ENV_NAME state" >&2
-    while IFS= read -r -t 2 answer <&"${LOCKHOLD[0]}"; do echo "  $answer" >&2; done
+    echo "  A holder left behind by a dropped connection is killed by PROCESS" >&2
+    echo "  GROUP -- kill -TERM -<pgid> -- never by matching a command line." >&2
+    if [ -n "$reader" ]; then
+      while IFS= read -r -t 2 answer <&"$reader"; do echo "  $answer" >&2; done
+    fi
     return 1
   fi
   LOCK_HELD=yes
