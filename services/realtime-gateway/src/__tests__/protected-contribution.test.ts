@@ -104,20 +104,57 @@ describe('what the host refuses', () => {
 });
 
 describe('a contribution that comes and goes', () => {
-  it('interrupts rather than ending, so the run survives a reconnect', () => {
+  /*
+   * THIS CASE USED TO ASSERT A JSDOC COMMENT.
+   *
+   * It read host.ts and required three strings, the last of them
+   * `/** The contribution is back. Same run, same clock, same encoder. *\/`.
+   * Its NAME claimed a runtime property -- "the run survives a reconnect" --
+   * that was provably false: an audit on 29 Sep 2026 found nothing in the
+   * gateway called `interrupt` or `resume` at all, so the run did not
+   * survive anything. The test was green against the defect it named, which
+   * is the worst state a test can be in.
+   *
+   * What is true, and now asserted by behaviour: the host CAN interrupt and
+   * resume without discarding the run. Whether the gateway uses that is a
+   * separate question, and the honest answer today is that it does not --
+   * pinned below so the gap is visible instead of implied.
+   */
+  it('keeps the run, its clock and its encoder across an interruption', () => {
+    const live = new ProgrammeContributionHost({ spoolRoot: '' });
+    // A run exists once a frame has been pushed for it.
+    live.pushVideo('run_1', { width: 1280, height: 720, data: new Uint8Array(16) });
+    const before = live.status('run_1');
+    expect(before).not.toBeNull();
+
+    live.interrupt('run_1', 'the broadcaster dropped');
+    live.resume('run_1');
+
+    const after = live.status('run_1');
+    expect(after).not.toBeNull();
     /*
-     * A WebRTC reconnect replaces the transport, not the programme. Tearing
-     * the encoder down on every network hiccup would produce a new generation,
-     * a new initialisation object and a discontinuity for something that
-     * lasted two seconds -- and would reset a clock that must not reset.
+     * Same run, not a replacement. The clock is the evidence: `elapsedMs`
+     * measures how far into the BROADCAST the contribution has reached, so
+     * a run that had been torn down and rebuilt would be back at zero and
+     * the audience would get a new initialisation object and a
+     * discontinuity for a two-second hiccup.
      */
-    const source = readFileSync(
-      fileURLToPath(new URL('../../../../packages/programme-contribution/src/host.ts', import.meta.url)),
-      'utf8',
-    );
-    expect(source).toContain('interrupt(runId: string, reason: string): void {');
-    expect(source).toContain('bridge.interrupt(reason)');
-    expect(source).toContain('/** The contribution is back. Same run, same clock, same encoder. */');
+    expect(after?.elapsedMs).toBeGreaterThanOrEqual(before?.elapsedMs ?? 0);
+    expect(live.hosts('run_1')).toBe(true);
+  });
+
+  it('is released by the gateway when the broadcast ends, so no encoder outlives it', () => {
+    /*
+     * The leak this replaces: teardown closed the peers, the bridge, the
+     * store, the run binding, the relay session and the channel binding, and
+     * never touched the contribution host. Every dropped connection left an
+     * ffmpeg child and a 10 ms interval running for the life of the process,
+     * and the reconnect started a second one against a second spool.
+     */
+    expect(GATEWAY).toContain('this.contributionHost?.release(endedRun.runId)');
+    // And the run's delivery policy is forgotten with it, rather than
+    // accumulating one entry per airing for ever.
+    expect(GATEWAY).toContain('this.relay.forgetRun(endedRun.runId)');
   });
 
   it('rotates the encoder generation on a format change, keeping the run', () => {

@@ -1,6 +1,7 @@
 // FIRST import: loads .env before any module below reads process.env.
 import '@videofy-live/service-env/auto';
 import { createServer } from 'node:http';
+import { internalIngressRequestAllowed } from '@videofy-live/service-env';
 import { AdapterAuthority } from '@videofy-live/adapter-authority';
 import { AdapterControlPlane } from './adapter-control-plane.js';
 import { createAdapterControlRouter } from './adapter-control-routes.js';
@@ -166,6 +167,21 @@ const gateway = new Gateway(server, config.corsOrigins, {
   livePathProfile: config.livePathProfile,
   mediaIngestPublicUrl: config.mediaIngestPublicUrl,
   internalWebRtcToken: config.internalIngressAuth.token,
+  /*
+   * WHO MAY CLAIM TO BE THE MEDIA SERVICE. The `ingest` and `worker` roles
+   * were taken on the socket's word until 29 Sep 2026, and an ingest socket
+   * sets the delivery policy for protected broadcasts.
+   *
+   * ENFORCED MODE ONLY. `internalIngressRequestAllowed` answers yes to
+   * everybody in `insecure-explicit`, which is the point of that mode for
+   * local media injection and is not a reason to hand a stranger the relay
+   * policy. A deployment without a token gets a gateway that refuses
+   * internal roles, and says so on every attempt.
+   */
+  internalServiceAllowed: (presented) =>
+    config.internalIngressAuth.mode === 'enforced' &&
+    presented !== undefined &&
+    internalIngressRequestAllowed(config.internalIngressAuth, presented),
   webRtcTranscriptionChunkMs: config.webRtcTranscriptionChunkMs,
   webRtcTranscriptionRequestTimeoutMs: config.webRtcTranscriptionRequestTimeoutMs,
   vad: config.webRtcVadEnabled

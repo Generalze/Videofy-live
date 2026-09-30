@@ -164,6 +164,14 @@ describe('gateway Socket.IO integration', () => {
   beforeEach(async () => {
     server = createServer(createApp());
     gateway = new Gateway(server, ['http://localhost:5173', 'http://localhost:5174'], {
+    /*
+     * These rigs connect as the media service and the speech worker. Both
+     * roles became authenticated on 29 Sep 2026 -- they were previously a
+     * query parameter anybody could type, while an ingest socket sets the
+     * delivery policy for protected broadcasts. The refusal itself is
+     * covered in internal-role-admission.test.ts.
+     */
+    internalServiceAllowed: () => true,
     call: { authorizeHost: async () => true },
       operator: { authSecret: OPERATOR_SECRET },
     });
@@ -896,6 +904,8 @@ describe('gateway public media ingest URL', () => {
     const server = createServer(createApp());
     new Gateway(server, ['http://localhost:5173'], {
     call: { authorizeHost: async () => true },
+      // This rig connects as the media service; see the note above.
+      internalServiceAllowed: () => true,
       mediaIngestUrl: 'http://internal-ingest:3002',
       mediaIngestPublicUrl: 'https://media.example.com',
       operator: { authSecret: OPERATOR_SECRET },

@@ -618,6 +618,24 @@ export class IngestService {
 
     this.socket = io(this.config.gatewayUrl, {
       query: { role: 'ingest' },
+      /*
+       * THE CREDENTIAL THIS SOCKET NEVER PRESENTED.
+       *
+       * The gateway authenticated only the `operator` role, so `ingest` was
+       * a query parameter anybody could type -- and an ingest socket sets
+       * the programme delivery policy, which decides whether a protected
+       * broadcast's tracks may be relayed live. Both services already hold
+       * this token and already present it on every internal HTTP call
+       * between them; the socket simply never did.
+       *
+       * In `auth` rather than `query` because a query string reaches proxy
+       * and browser logs and an auth payload does not. Undefined where no
+       * token is configured, which the gateway then refuses -- the honest
+       * outcome for a deployment with no shared secret.
+       */
+      ...(this.config.internalIngressAuth.token === null
+        ? {}
+        : { auth: { token: this.config.internalIngressAuth.token } }),
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionDelay: 2000,

@@ -223,6 +223,8 @@ export class Gateway {
    * before there is an incident rather than after.
    */
   private readonly operatorAuthority: OperatorAuthority;
+  /** Whether a socket claiming an internal role presented the right secret. */
+  private readonly internalServiceAllowed: (presented: string | undefined) => boolean;
   private readonly operatorAccounts = new Map<string, string>();
   private readonly activeWorkers = new Set<string>();
   private readonly activeIngestClients = new Set<string>();
@@ -449,6 +451,29 @@ export class Gateway {
         /** Approved to translate this direction on a live call. Absent refuses. */
         callLiveRouteApproved?: (sourceLanguage: string, targetLanguage: string) => boolean;
       };
+      /**
+       * Whether a socket claiming to be an internal service really is one.
+       *
+       * OMITTED MEANS TRUST NOBODY. Until 29 Sep 2026 the `ingest` and
+       * `worker` roles were taken from a query parameter and authenticated by
+       * nothing -- `operator` was the only role with an admission check, and
+       * its own comment said so while listing exactly the reason the others
+       * needed one: those roles CONTROL a live broadcast.
+       *
+       * What an unauthenticated `ingest` socket could do: set the programme
+       * delivery policy, which the relay authority's own header calls
+       * safety-critical because it decides whether an unbound session's
+       * tracks may be relayed live. One frame announcing `live` on a
+       * protected broadcast releases the studio feed the compliance delay
+       * exists to hold back. A conflicting frame sets a policy-conflict flag
+       * that has no reset path anywhere in the code, so every subsequent
+       * programme is refused until the process restarts -- a permanent denial
+       * of service from one message.
+       *
+       * Absent in tests and embedders, which then get a gateway that refuses
+       * internal roles rather than one that trusts them.
+       */
+      internalServiceAllowed?: (presented: string | undefined) => boolean;
       operator?: {
         authSecret?: string | undefined;
         requireEntitlement?: boolean;
@@ -468,6 +493,7 @@ export class Gateway {
     this.channelLiveHook = options.onChannelLive ?? null;
     this.channelSalt = options.operator?.channelSalt ?? 'videofy-live-channel';
     this.channelIdentity = options.channelIdentity ?? NULL_CHANNEL_IDENTITY;
+    this.internalServiceAllowed = options.internalServiceAllowed ?? (() => false);
     this.operatorAuthority = createOperatorAuthority({
       secret: options.operator?.authSecret,
       ...(options.operator?.requireEntitlement === undefined
@@ -967,20 +993,37 @@ export class Gateway {
         });
         break;
       }
+      /*
+       * BOTH INTERNAL ROLES ARE ADMITTED BEFORE THEY ARE WIRED.
+       *
+       * `operator` used to be the only authenticated role, and its comment
+       * explained why in terms that applied just as well to these: a
+       * listener joins and receives, but an ingest socket SETS THE DELIVERY
+       * POLICY for a protected broadcast. Until 29 Sep 2026 that was a query
+       * parameter anybody could type.
+       *
+       * Refused before joining the room, so a rejected socket never receives
+       * an internal broadcast on its way out -- the same ordering, for the
+       * same reason.
+       */
       case 'worker':
-        void socket.join(WORKER_ROOM);
-        this.activeWorkers.add(socket.id);
-        this.handleWorkerSocket(socket);
-        this.broadcastServiceStatus('speech-worker', 'healthy', socket.id);
-        logger.info('Speech worker connected', { socketId: socket.id });
+      case 'ingest': {
+        if (!this.admitInternalService(socket, role)) return;
+        if (role === 'worker') {
+          void socket.join(WORKER_ROOM);
+          this.activeWorkers.add(socket.id);
+          this.handleWorkerSocket(socket);
+          this.broadcastServiceStatus('speech-worker', 'healthy', socket.id);
+          logger.info('Speech worker connected', { socketId: socket.id });
+        } else {
+          void socket.join(INGEST_ROOM);
+          this.activeIngestClients.add(socket.id);
+          this.handleIngestSocket(socket);
+          this.broadcastServiceStatus('media-ingest', 'healthy', socket.id);
+          logger.info('Media ingest connected', { socketId: socket.id });
+        }
         break;
-      case 'ingest':
-        void socket.join(INGEST_ROOM);
-        this.activeIngestClients.add(socket.id);
-        this.handleIngestSocket(socket);
-        this.broadcastServiceStatus('media-ingest', 'healthy', socket.id);
-        logger.info('Media ingest connected', { socketId: socket.id });
-        break;
+      }
       case 'broadcaster':
         this.handleWebRtcSocket(socket, role);
         logger.info('WebRTC broadcaster signalling socket connected', { socketId: socket.id });
@@ -1006,6 +1049,35 @@ export class Gateway {
       this.operatorOwnChannels.delete(socket.id);
       this.handleDisconnect(socket);
     });
+  }
+
+  /**
+   * Is this socket really the media service, or the speech worker?
+   *
+   * The credential is the shared internal token both services already hold
+   * and already present on every internal HTTP call. It is read from the
+   * handshake's auth payload first and the query second, because a query
+   * string reaches proxy logs and an auth payload does not.
+   *
+   * ONE ANSWER FOR EVERY REFUSAL. No token, a wrong token and a deployment
+   * with no secret configured all get the same sentence, for the reason the
+   * operator gate gives: distinguishing them tells somebody probing which
+   * half they got right.
+   */
+  private admitInternalService(socket: Socket, role: ClientRole): boolean {
+    const auth = socket.handshake.auth as Record<string, unknown> | undefined;
+    const fromAuth = typeof auth?.['token'] === 'string' ? (auth['token'] as string) : undefined;
+    const fromQuery =
+      typeof socket.handshake.query['token'] === 'string'
+        ? (socket.handshake.query['token'] as string)
+        : undefined;
+    if (this.internalServiceAllowed(fromAuth ?? fromQuery)) return true;
+    logger.warn('Internal service socket refused', { socketId: socket.id, role });
+    socket.emit(SOCKET_EVENTS.ERROR, {
+      message: 'This gateway does not accept that connection.',
+    });
+    socket.disconnect(true);
+    return false;
   }
 
   private resolveRole(socket: Socket): ClientRole {
@@ -1464,8 +1536,47 @@ export class Gateway {
       this.io.to(INGEST_ROOM).emit(SOCKET_EVENTS.PROGRAMME_RUN_ENDED, { runId: endedRun.runId });
       logger.info('Programme run ended', { runId: endedRun.runId, reason });
     }
+    /*
+     * AND THE ENCODER STOPS, which it did not until 29 Sep 2026.
+     *
+     * `ProgrammeContributionHost` appeared at exactly three places in this
+     * file -- the field, the construction, and `contributeToProtectedRun`,
+     * which only ever pushes frames. Teardown closed the media peers, the
+     * transcription bridge, the generated-audio store, the run binding, the
+     * relay session and the channel binding, and never touched the host.
+     *
+     * So a broadcaster whose connection dropped for four seconds left an
+     * ffmpeg child and a 10 ms interval running for the life of the process,
+     * then started a SECOND one against a second spool on reconnect, because
+     * a reconnect mints a new run id. The audience's manifest still pointed
+     * at the dead run. On a CPU-only box a day of flaky connectivity is a
+     * pile of orphaned encoders.
+     *
+     * Released here rather than interrupted: this is teardown, and the run
+     * id is gone by the next line. The `interrupt`/`resume` pair that would
+     * let a run survive a brief reconnect is a separate capability with no
+     * caller, and giving it one is a behaviour change rather than a leak
+     * fix -- so it stays unused and stays honest.
+     *
+     * Not awaited, and its failure cannot fail a teardown: the broadcast is
+     * already over and there is nothing left to abandon.
+     */
+    if (endedRun !== undefined) {
+      void this.contributionHost?.release(endedRun.runId).catch((error: unknown) => {
+        logger.warn('the contribution encoder for a finished run could not be stopped', {
+          runId: endedRun.runId,
+          reason: error instanceof Error ? error.message : 'unknown',
+        });
+      });
+    }
     this.programmeRuns.delete(sessionId);
     this.relay.releaseSession(sessionId);
+    /*
+     * The run's delivery policy goes with the run. It is a map keyed by run
+     * id that only ever grew, one entry per airing, for the life of the
+     * process.
+     */
+    if (endedRun !== undefined) this.relay.forgetRun(endedRun.runId);
     this.programmeSessionConfigs.delete(sessionId);
     this.generatedAudioStore.resetSession(sessionId);
     this.invalidateProgrammeMediaState(sessionId);
