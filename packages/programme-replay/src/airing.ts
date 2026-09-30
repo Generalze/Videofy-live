@@ -69,6 +69,7 @@ const FAILURE_SUMMARIES: Readonly<Record<ReplayFailureReason, string>> = {
   'segment-invalid': 'Programme media was not fit to be replayed.',
   'segment-conflict': 'Two producers disagreed about a segment of this programme.',
   'initialisation-missing': 'Replay initialisation material was missing.',
+  'initialisation-empty': 'Replay initialisation material was empty, so nothing would play.',
   'initialisation-conflict': 'Two producers disagreed about this replay initialisation material.',
   'no-media-retained': 'No programme media was retained for this replay.',
   'archive-unavailable': 'The replay archive was unavailable.',

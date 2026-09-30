@@ -6,6 +6,8 @@
  * programme -- they silently overwrote the first, mid-broadcast, and nothing
  * anywhere reported it. These tests exist so that cannot come back.
  */
+import { readFileSync } from 'node:fs';
+import { fileURLToPath, URL } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { ChannelProfile } from '../channel-identity.js';
 import {
@@ -421,5 +423,56 @@ describe('the programme on air', () => {
 
     channels.setMediaState('alice', stateFor('y'));
     expect(channels.directory()[0]?.currentProgramme).toBeNull();
+  });
+});
+
+/**
+ * ONE GUESSER MUST NOT LOCK OUT THE REAL AUDIENCE.
+ *
+ * `mayJoin` has always taken a client key and its comment has always said
+ * the attempts are "keyed per client so one guesser cannot lock a channel's
+ * real audience out". The gateway never passed one, so every attempt shared
+ * the key `<channelId>` plus `anonymous` -- and the lockout is checked
+ * BEFORE the code is compared, so a viewer holding the correct code was
+ * refused along with the guesser. Found by audit 29 Sep 2026; no test
+ * exercised the lockout at all.
+ */
+describe('the join-code limiter bounds one client, not the channel', () => {
+  function locked(): ProgrammeChannels {
+    const channels = new ProgrammeChannels();
+    channels.setVisibility('chan_1', 'locked');
+    channels.setAccessCode('chan_1', 'the-real-code');
+    return channels;
+  }
+
+  it('refuses a guesser after enough wrong attempts', () => {
+    const channels = locked();
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      channels.mayJoin('chan_1', 'wrong', 'guesser');
+    }
+    expect(channels.mayJoin('chan_1', 'wrong', 'guesser')).toBe(false);
+  });
+
+  /*
+   * THE DEFECT, DIRECTLY. With no client key both callers share one bucket
+   * and this returns false -- the real viewer, holding the real code, turned
+   * away by somebody else's failures.
+   */
+  it('still admits a different client holding the right code', () => {
+    const channels = locked();
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      channels.mayJoin('chan_1', 'wrong', 'guesser');
+    }
+    expect(channels.mayJoin('chan_1', 'the-real-code', 'a-real-viewer')).toBe(true);
+  });
+
+  it('is passed a per-socket key by the gateway', () => {
+    // The limiter was correct throughout; the call site was not, so this is
+    // the half worth pinning.
+    const gateway = readFileSync(
+      fileURLToPath(new URL('../gateway.ts', import.meta.url)),
+      'utf8',
+    );
+    expect(gateway).toContain('this.channels.mayJoin(request.channelId, request.code, socket.id)');
   });
 });

@@ -1136,7 +1136,24 @@ export class Gateway {
        * already on -- a failed attempt to enter a private programme must not
        * cost somebody the one they were already watching.
        */
-      if (!this.channels.mayJoin(request.channelId, request.code)) {
+      /*
+       * THE CLIENT KEY, WHICH THIS CALL OMITTED.
+       *
+       * `mayJoin` rate-limits guessing, and its own comment says the attempts
+       * are "keyed per client so one guesser cannot lock a channel's real
+       * audience out". The third argument was never passed, so every attempt
+       * shared one key per channel under the literal client name "anonymous".
+       * Five wrong guesses from anybody locked the channel for sixty seconds,
+       * and the lockout is checked BEFORE the code is compared, so a viewer
+       * holding the CORRECT code was turned away with them. One guesser could
+       * keep a locked programme shut.
+       *
+       * The socket id is the key. It is per connection rather than per
+       * person, which is the honest bound available here -- a determined
+       * guesser can reconnect -- and it is enough for the property the limiter
+       * is actually for: one client's failures never cost another client.
+       */
+      if (!this.channels.mayJoin(request.channelId, request.code, socket.id)) {
         logger.warn('Listener refused a private channel', {
           socketId: socket.id,
           channelId: request.channelId,

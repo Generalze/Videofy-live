@@ -116,7 +116,7 @@
 	# with no Cache-Control at all and fell straight back into heuristic caching.
 	# A fix that names its subjects individually has to be revisited every time a
 	# subject is added, and that revisit is what was missed.
-	@spa_shell path /call/ /call/index.html /listen/ /listen/index.html /streams/* /operator/ /operator/index.html / /index.html /app/ /app/* /videofy/ /videofy/index.html /videofy/live/ /videofy/live/index.html
+	@spa_shell path /call/ /call/index.html /listen/ /listen/index.html /listen/c/* /streams/* /operator/ /operator/index.html / /index.html /app/ /app/* /videofy/ /videofy/index.html /videofy/live/ /videofy/live/index.html
 	header @spa_shell Cache-Control "no-cache, must-revalidate"
 
 	# /assets/* is the ecosystem site's own bundle directory, served from the root.
