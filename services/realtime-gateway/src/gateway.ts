@@ -2052,8 +2052,36 @@ export class Gateway {
         programmeConfig?.programmeSourceType,
         stateEvent.streamStatus,
       );
+      /*
+       * THE RUN AND ITS DELIVERY MODE SURVIVE EVERY LATER STATE.
+       *
+       * Both were attached in `broadcastProgrammeSessionConfig` and nowhere
+       * else, and this rebuilds the payload from the media service's event --
+       * which carries neither. So the first state after the config silently
+       * dropped them, and the retained copy a late listener receives had
+       * neither either.
+       *
+       * Two audience-visible consequences, measured by audit 29 Sep 2026.
+       * With no delivery mode a player decides the programme is realtime,
+       * detaches the delayed player and waits for a peer the gateway is
+       * refusing to build: a black screen, without even the "protected
+       * programme unavailable" message. And with no run id every advert is
+       * rejected, because adverts are matched against it.
+       *
+       * Recomputed here rather than carried forward from the retained state,
+       * so a delivery mode that CHANGES mid-broadcast is reflected rather
+       * than frozen at whatever it was when the session was configured.
+       */
+      const enrichedRun =
+        typeof stateEvent.processingSessionId === 'string'
+          ? this.programmeRuns.get(stateEvent.processingSessionId)
+          : undefined;
+      const enrichedDelivery =
+        enrichedRun === undefined ? undefined : this.relay.deliveryFor(enrichedRun.runId);
       const enriched: MediaStateEvent = {
         ...stateEvent,
+        ...(enrichedRun === undefined ? {} : { programmeRunId: enrichedRun.runId }),
+        ...(enrichedDelivery === undefined ? {} : { mediaDelivery: enrichedDelivery }),
         ...(programmeConfig
           ? {
               streamId: programmeConfig.broadcastId,
@@ -2519,6 +2547,34 @@ export class Gateway {
           runId: delivery.programmeRunId,
           readiness: delivery.readiness,
         });
+      }
+
+      /*
+       * AND THE AUDIENCE IS TOLD, which they were not.
+       *
+       * This tore the peers down and published nothing, so a listener
+       * already watching kept the delivery mode they were last sent -- or,
+       * after the enrichment dropped it, none at all -- and went on waiting
+       * for a realtime peer this gateway had just decided never to build.
+       * Their screen stays black and no message explains it.
+       *
+       * Republished from the retained state so late joiners get the new
+       * answer too: the retained copy is what a listener receives on join,
+       * and leaving it stale would mean the mode is correct for whoever
+       * happened to be connected at the moment it changed and wrong for
+       * everybody after.
+       */
+      const channelId = this.channels.channelForSession(sessionId);
+      const retained = this.channels.mediaState(channelId);
+      if (retained !== null) {
+        const nowDelivering = this.relay.deliveryFor(run.runId);
+        const restated: MediaStateEvent = {
+          ...retained,
+          programmeRunId: run.runId,
+          ...(nowDelivering === undefined ? {} : { mediaDelivery: nowDelivering }),
+        };
+        this.channels.setMediaState(channelId, restated);
+        this.publishMediaState(channelId, restated);
       }
     }
   }
