@@ -331,12 +331,46 @@ export class LiveSessionHost implements IngressStreamHandler {
      * which from a participant's seat is captions with silence, identical to
      * broken synthesis.
      */
-    deps.log?.('live speech plans resolved', {
+    /*
+     * AND IT IS SAID AT A LEVEL SOMEBODY CAN HEAR.
+     *
+     * The comment above called zero "an invisible failure" and then reported
+     * it through `log`, which the composition root wires to `logger.debug`,
+     * on deployments running at LOG_LEVEL=info. So the one line that
+     * distinguishes "this call is captions-only by design" from "this call
+     * will have captions and silence" was written and discarded.
+     *
+     * Measured twice. On 28 Sep a translated call produced no audio and the
+     * investigation went looking in the gate. On 2 Oct another one did, and
+     * this line -- which would have answered it in a second -- was again
+     * invisible, so the service had to be put into debug on a live box to
+     * find out. That is two outages explained by a log level.
+     *
+     * Zero plans with nothing asked for is captions-only and unremarkable.
+     * Zero plans when the stream DID ask to be spoken is a participant
+     * hearing nothing, and it warns.
+     */
+    const detail = {
       sessionId: open.sessionId,
+      serviceCategory: open.context.serviceCategory,
       synthesisConfigured: deps.synthesis !== null,
       planCount: plans.length,
       languages: plans.map((plan) => plan.targetLanguage),
-    });
+    };
+    if (plans.length === 0) {
+      deps.warn?.('no language will be SPOKEN on this stream; captions only', {
+        ...detail,
+        consequence:
+          'every participant hears the original and nothing is synthesised, which is ' +
+          'indistinguishable from broken synthesis from their seat',
+        likelyCause:
+          deps.synthesis === null
+            ? 'no synthesis stack is configured on this deployment'
+            : 'every target language was marked text-only, or carried no voice id',
+      });
+    } else {
+      deps.log?.('live speech plans resolved', detail);
+    }
     const speech = new Map<string, LiveTranslationPipeline>();
 
     for (const plan of plans) {

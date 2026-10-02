@@ -44,6 +44,54 @@ interface VoicesResponse {
  * A report shaped for the Nigerian seam, because that is the surface that has
  * to be able to say who speaks these four languages and whether it can.
  */
+
+/**
+ * Can this deployment speak at all? Asked by speaking.
+ *
+ * ONE CHARACTER, the cheapest model, and the answer thrown away. Listing a
+ * catalogue and synthesising a word are different permissions and different
+ * billing states: on 2 Oct 2026 production listed 29 voices happily while
+ * every sentence of every call came back 401 `payment_issue`. The boot line
+ * said the vendor was fine, and it was fine at everything except the one
+ * thing the product needs.
+ *
+ * NEVER THROWS and never names the key. A probe that could fail a boot would
+ * turn a vendor's outage into ours -- the same rule the rest of this file
+ * follows.
+ */
+async function probeSynthesis(
+  base: string,
+  apiKey: string,
+  voiceId: string,
+  doFetch: typeof fetch,
+  signal: AbortSignal | undefined,
+): Promise<{ ok: boolean | null; problem: string | null }> {
+  if (voiceId.length === 0) {
+    return { ok: null, problem: 'no voice id is configured to probe with' };
+  }
+  try {
+    const reply = await doFetch(`${base}/v1/text-to-speech/${encodeURIComponent(voiceId)}`, {
+      method: 'POST',
+      headers: { 'xi-api-key': apiKey, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: '.', model_id: 'eleven_flash_v2_5' }),
+      ...(signal === undefined ? {} : { signal }),
+    });
+    if (reply.ok) return { ok: true, problem: null };
+    /*
+     * The vendor's own sentence, trimmed. A payment failure and a revoked
+     * key both answer 401 and need completely different actions, so the
+     * body is what gets reported rather than the status alone.
+     */
+    const body = (await reply.text().catch(() => '')).slice(0, 300);
+    return { ok: false, problem: `HTTP ${reply.status}${body === '' ? '' : `: ${body}`}` };
+  } catch (error) {
+    return {
+      ok: null,
+      problem: `could not be reached: ${error instanceof Error ? error.message : 'unknown failure'}`,
+    };
+  }
+}
+
 export async function preflightElevenLabsVoices(
   config: ElevenLabsPreflightConfig,
 ): Promise<NigerianVoicePreflight> {
@@ -63,6 +111,8 @@ export async function preflightElevenLabsVoices(
       keyConfigured: false,
       reachable: false,
       voiceCatalogueChecked: false,
+      canSynthesise: null,
+      synthesisProblem: null,
       engineReady: null,
       totalSpeakers: null,
       speakerIdsByLanguage: {},
@@ -73,6 +123,14 @@ export async function preflightElevenLabsVoices(
 
   const base = (config.baseUrl ?? 'https://api.elevenlabs.io').replace(/\/+$/u, '');
   const doFetch = config.fetchImpl ?? fetch;
+
+  /*
+   * ASKED FIRST, AND INDEPENDENTLY OF THE CATALOGUE. Whether the account can
+   * speak does not depend on whether the key may list voices -- that is the
+   * whole lesson of 2 Oct 2026 -- so they are separate questions with
+   * separate answers, and every return below carries this one.
+   */
+  const spoke = await probeSynthesis(base, apiKey, defaultVoiceId, doFetch, config.signal);
 
   let response: Response;
   try {
@@ -86,6 +144,8 @@ export async function preflightElevenLabsVoices(
       keyConfigured: true,
       reachable: false,
       voiceCatalogueChecked: false,
+      canSynthesise: spoke.ok,
+      synthesisProblem: spoke.problem,
       engineReady: null,
       totalSpeakers: null,
       speakerIdsByLanguage: {},
@@ -126,6 +186,8 @@ export async function preflightElevenLabsVoices(
         // It answered. What it declined was a question about itself.
         reachable: true,
         voiceCatalogueChecked: false,
+        canSynthesise: spoke.ok,
+        synthesisProblem: spoke.problem,
         engineReady: null,
         totalSpeakers: null,
         speakerIdsByLanguage: {},
@@ -144,6 +206,8 @@ export async function preflightElevenLabsVoices(
       keyConfigured: true,
       reachable: false,
       voiceCatalogueChecked: false,
+      canSynthesise: spoke.ok,
+      synthesisProblem: spoke.problem,
       engineReady: null,
       totalSpeakers: null,
       speakerIdsByLanguage: {},
@@ -158,6 +222,8 @@ export async function preflightElevenLabsVoices(
       keyConfigured: true,
       reachable: false,
       voiceCatalogueChecked: false,
+      canSynthesise: spoke.ok,
+      synthesisProblem: spoke.problem,
       engineReady: null,
       totalSpeakers: null,
       speakerIdsByLanguage: {},
@@ -176,6 +242,8 @@ export async function preflightElevenLabsVoices(
       keyConfigured: true,
       reachable: true,
       voiceCatalogueChecked: false,
+      canSynthesise: spoke.ok,
+      synthesisProblem: spoke.problem,
       engineReady: null,
       totalSpeakers: null,
       speakerIdsByLanguage: {},
@@ -216,6 +284,8 @@ export async function preflightElevenLabsVoices(
     keyConfigured: true,
     reachable: true,
     voiceCatalogueChecked: true,
+    canSynthesise: spoke.ok,
+    synthesisProblem: spoke.problem,
     // ElevenLabs has no readiness flag: it does not scale to zero, which is the
     // whole reason this replaced a vendor that did.
     engineReady: null,
@@ -233,6 +303,24 @@ export async function preflightElevenLabsVoices(
 /** One line, for a boot log. Contains no credential and no value of one. */
 export function describeNigerianVoicePreflight(preflight: NigerianVoicePreflight): string {
   const who = preflight.providerId;
+  /*
+   * THE REFUSAL TO SPEAK OUTRANKS EVERY OTHER ANSWER, and it is checked
+   * first for that reason.
+   *
+   * On 2 Oct 2026 this function returned "reachable, 29 voice(s) in account"
+   * -- a perfectly true sentence -- about a deployment whose every call came
+   * back 401 `payment_issue`. Each clause below was accurate; together they
+   * described a vendor that worked at everything except speaking, which is
+   * the only thing it is here to do. Whatever else is true, a deployment
+   * that cannot synthesise produces captions and silence, and that is the
+   * headline.
+   */
+  if (preflight.canSynthesise === false) {
+    return (
+      `${who} preflight: CANNOT SPEAK — ${preflight.synthesisProblem ?? 'synthesis was refused'}. ` +
+      'Translated calls and programmes will deliver captions and SILENCE until this is fixed.'
+    );
+  }
   if (!preflight.keyConfigured) {
     return `${who} preflight: key absent — ha/ig/yo/pcm CANNOT be spoken by the approved voice`;
   }
@@ -256,5 +344,12 @@ export function describeNigerianVoicePreflight(preflight: NigerianVoicePreflight
     .join(' ');
   const voices = preflight.totalSpeakers ?? 0;
   const tail = preflight.problem === null ? '' : ` — ${preflight.problem}`;
-  return `${who} preflight: reachable, ${voices} voice(s) in account, ${counts}${tail}`;
+  // `canSynthesise` is null when no voice id was configured to probe with, so
+  // the happy sentence says which of the two it is rather than implying a
+  // check that did not run.
+  const spoken =
+    preflight.canSynthesise === true
+      ? ', and it can speak'
+      : `, speech NOT verified (${preflight.synthesisProblem ?? 'no probe was possible'})`;
+  return `${who} preflight: reachable, ${voices} voice(s) in account, ${counts}${spoken}${tail}`;
 }

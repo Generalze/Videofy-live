@@ -311,6 +311,8 @@ describe('the state a console and /health read', () => {
       // cannot tell a healthy approved vendor from a healthy rejected one.
       providerId: 'naijalingo',
       voiceCatalogueChecked: true,
+      canSynthesise: true,
+      synthesisProblem: null,
       keyConfigured: true,
       reachable: true,
       engineReady: true,

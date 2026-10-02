@@ -375,7 +375,20 @@ export async function preflightNigerianSpecialist(
     });
     // 9jaLingo's preflight DOES read the speaker catalogue, so that check
     // genuinely happened when this vendor is the one selected.
-    return { providerId: NIGERIAN_SPECIALIST_PROVIDER_ID, voiceCatalogueChecked: true, ...preflight };
+    /*
+     * 9jaLingo's preflight DOES read the speaker catalogue, and it has no
+     * synthesis probe of its own -- so "can it speak" is honestly unknown
+     * here rather than assumed. Null, never true: this vendor is not the one
+     * that silently stopped speaking on 2 Oct 2026, and claiming a check
+     * nobody ran is how the next one hides.
+     */
+    return {
+      providerId: NIGERIAN_SPECIALIST_PROVIDER_ID,
+      voiceCatalogueChecked: true,
+      canSynthesise: null,
+      synthesisProblem: null,
+      ...preflight,
+    };
   }
 
   return preflightElevenLabsVoices({

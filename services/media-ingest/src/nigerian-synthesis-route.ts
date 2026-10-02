@@ -104,6 +104,28 @@ export interface NigerianVoicePreflight {
    * "not checked" in those words.
    */
   readonly voiceCatalogueChecked: boolean;
+  /**
+   * Whether this deployment can actually SPEAK A WORD, asked by speaking one.
+   *
+   * THE ONLY QUESTION THAT MATTERED, AND THE ONE NOBODY ASKED. Measured in
+   * production on 2 Oct 2026: `GET /v1/voices` answered 200 with 29 voices,
+   * the boot line read "elevenlabs preflight: reachable, 29 voice(s) in
+   * account", and every sentence of every translated call came back 401
+   * `payment_issue` -- the subscription had a failed payment. Captions
+   * worked, audio did not, and the health surface said the vendor was fine
+   * for as long as nobody placed a call.
+   *
+   * Listing a catalogue and synthesising are different permissions and, as
+   * this showed, different billing states. A check that only reads cannot
+   * fail in the way that takes the product down, which is the definition of
+   * a check that cannot fail.
+   *
+   * Null means the probe was not attempted or could not be judged. False is
+   * a deployment that will produce captions and silence.
+   */
+  readonly canSynthesise: boolean | null;
+  /** Why synthesis is refused, in the vendor's own words. Never the key. */
+  readonly synthesisProblem: string | null;
   /** Null when the vendor has no readiness concept, or did not answer. */
   readonly engineReady: boolean | null;
   readonly totalSpeakers: number | null;

@@ -281,6 +281,9 @@ export class LiveTranslationPipeline {
         ...(this.deps.frameSamples === undefined ? {} : { frameSamples: this.deps.frameSamples }),
         ...(this.deps.now === undefined ? {} : { now: this.deps.now }),
         ...(this.deps.log === undefined ? {} : { log: this.deps.log }),
+        // A sentence the vendor refused to speak is a silence the listener
+        // hears; it does not belong on the debug channel.
+        ...(this.deps.warn === undefined ? {} : { warn: this.deps.warn }),
       });
       const record: SpokenSegmentRecord = {
         segmentId: event.segmentId,

@@ -32,6 +32,7 @@ import {
   readLiveProviderEnv,
   selectNigerianVoice,
 } from '../live-provider-wiring.js';
+import { describeNigerianVoicePreflight } from '../providers/elevenlabs/preflight.js';
 
 /** Never reached by the wiring tests: constructing must not call a vendor. */
 const noFetch = (async () => {
@@ -400,10 +401,21 @@ describe('the boot preflight asks the vendor that is actually routed', () => {
       envFrom({ ELEVENLABS_API_KEY: 'super-secret-value' }),
       fetchImpl,
     );
-    expect(seen[0]?.url).toMatch(/\/v1\/voices$/u);
-    expect(seen[0]?.headers['xi-api-key']).toBe('super-secret-value');
-    // A preflight that leaked its key into a boot log would be a worse failure
-    // than the one it exists to catch.
+    /*
+     * TWO REQUESTS SINCE 2 Oct 2026, and the order is deliberate: the
+     * synthesis probe runs first because "can this account speak" does not
+     * depend on whether the key may list voices. Production listed 29 voices
+     * happily while every call came back 401 payment_issue.
+     */
+    const urls = seen.map((request) => request.url);
+    expect(urls.some((url) => /\/v1\/text-to-speech\//u.test(url))).toBe(true);
+    expect(urls.some((url) => /\/v1\/voices$/u.test(url))).toBe(true);
+    // The credential travels on every one of them...
+    for (const request of seen) {
+      expect(request.headers['xi-api-key']).toBe('super-secret-value');
+    }
+    // ...and reaches none of the report. A preflight that leaked its key into
+    // a boot log would be a worse failure than the one it exists to catch.
     expect(JSON.stringify(preflight)).not.toContain('super-secret-value');
   });
 
@@ -416,5 +428,90 @@ describe('the boot preflight asks the vendor that is actually routed', () => {
     expect(preflight.keyConfigured).toBe(true);
     expect(preflight.reachable).toBe(false);
     expect(preflight.problem).toMatch(/could not be reached/u);
+  });
+});
+
+/**
+ * AN ACCOUNT THAT LISTS VOICES AND CANNOT SPEAK.
+ *
+ * MEASURED IN PRODUCTION, 2 Oct 2026. `GET /v1/voices` answered 200 with 29
+ * voices, the boot line read "elevenlabs preflight: reachable, 29 voice(s) in
+ * account, ha=1 ig=1 yo=1 pcm=1", and every sentence of every translated call
+ * came back 401 `payment_issue` -- the subscription had a failed payment.
+ *
+ * Every clause of that boot line was true. Together they described a vendor
+ * that worked at everything except speaking, which is the only thing it is
+ * there to do. The product delivered captions and silence while its health
+ * surface said the vendor was fine, because listing a catalogue and
+ * synthesising a word are different permissions and, as this showed,
+ * different billing states.
+ *
+ * A check that only reads cannot fail in the way that takes the product down.
+ */
+describe('a vendor that can list but cannot speak', () => {
+  function vendor(synthesisStatus: number, body: string) {
+    return (async (url: unknown) => {
+      if (/\/v1\/text-to-speech\//u.test(String(url))) {
+        return new Response(body, { status: synthesisStatus });
+      }
+      return new Response(
+        JSON.stringify({ voices: [{ voice_id: 'neMPCpWtBwWZhxEC8qpe' }] }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+    }) as unknown as typeof fetch;
+  }
+
+  const PAYMENT = JSON.stringify({
+    detail: { status: 'payment_issue', message: 'Complete the latest invoice to continue usage.' },
+  });
+
+  it('reports that it cannot speak, however healthy the catalogue looks', async () => {
+    const preflight = await preflightNigerianSpecialist(
+      envFrom({ ELEVENLABS_API_KEY: 'k', ELEVENLABS_DEFAULT_VOICE_ID: 'neMPCpWtBwWZhxEC8qpe' }),
+      vendor(401, PAYMENT),
+    );
+    expect(preflight.canSynthesise).toBe(false);
+    expect(preflight.synthesisProblem).toContain('401');
+  });
+
+  it('leads the boot line with the refusal, not with the voice count', () => {
+    // The sentence an operator reads at 2 a.m. must not open with good news
+    // about a deployment that will deliver silence.
+    const sentence = describeNigerianVoicePreflight({
+      providerId: 'elevenlabs',
+      keyConfigured: true,
+      reachable: true,
+      voiceCatalogueChecked: true,
+      canSynthesise: false,
+      synthesisProblem: 'HTTP 401: payment_issue',
+      engineReady: null,
+      totalSpeakers: 29,
+      speakerIdsByLanguage: { yo: ['a'] },
+      languagesWithoutSpeakers: [],
+      problem: null,
+    });
+    expect(sentence).toContain('CANNOT SPEAK');
+    expect(sentence).toContain('SILENCE');
+    expect(sentence).not.toMatch(/^elevenlabs preflight: reachable/u);
+  });
+
+  it('still says so plainly when the vendor CAN speak', async () => {
+    const preflight = await preflightNigerianSpecialist(
+      envFrom({ ELEVENLABS_API_KEY: 'k', ELEVENLABS_DEFAULT_VOICE_ID: 'neMPCpWtBwWZhxEC8qpe' }),
+      vendor(200, 'audio-bytes'),
+    );
+    expect(preflight.canSynthesise).toBe(true);
+    expect(describeNigerianVoicePreflight(preflight)).toContain('it can speak');
+  });
+
+  it('does not claim a probe it could not run', async () => {
+    // No voice id configured: unknown is a third state and must not read as
+    // either a pass or a refusal.
+    const preflight = await preflightNigerianSpecialist(
+      envFrom({ ELEVENLABS_API_KEY: 'k', ELEVENLABS_DEFAULT_VOICE_ID: '' }),
+      vendor(200, 'audio-bytes'),
+    );
+    expect(preflight.canSynthesise).toBeNull();
+    expect(describeNigerianVoicePreflight(preflight)).toContain('NOT verified');
   });
 });
