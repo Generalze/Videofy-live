@@ -378,3 +378,57 @@ export function createNigerianSynthesisRoute(
     },
   };
 }
+
+/**
+ * The same state, with everything an unauthenticated caller has no business
+ * reading taken out.
+ *
+ * WHY THIS EXISTS. `/health` is PUBLIC -- it answers 200 to anybody on the
+ * internet, by design, because a load balancer and an uptime probe both need
+ * it. It also carried the whole preflight object, including free text that
+ * comes straight from the vendor.
+ *
+ * On 2 Oct 2026 that vendor's text was: "Your subscription has a failed or
+ * incomplete payment. Complete the latest invoice to continue usage." Putting
+ * that on a public endpoint publishes the operator's billing status to anyone
+ * who asks, which is nobody's business and is not a health fact. The founder
+ * asked the right question -- do customers need to see this -- and the answer
+ * is no.
+ *
+ * WHAT IS KEPT AND WHY. Whether synthesis works is a genuine health fact and
+ * stays, as a boolean: a probe is entitled to know the service is degraded.
+ * WHY it is degraded is not, when the reason is somebody else's prose about
+ * an account. Voice ids and speaker counts go too -- this service's own
+ * operator surface already calls those "C7's account of its own supply chain
+ * rather than anything a viewer needs", and `/providers/readiness` is guarded
+ * for exactly that reason. The unguarded surface should not have been looser
+ * than the guarded one.
+ *
+ * The full detail is unchanged on the operator surface and in the log, which
+ * is where somebody who can act on it will be looking.
+ */
+export function publicNigerianSynthesisState(
+  state: NigerianSynthesisState,
+): NigerianSynthesisState {
+  if (state.preflight === null) return state;
+  const { preflight } = state;
+  return {
+    ...state,
+    preflight: {
+      providerId: preflight.providerId,
+      keyConfigured: preflight.keyConfigured,
+      reachable: preflight.reachable,
+      voiceCatalogueChecked: preflight.voiceCatalogueChecked,
+      canSynthesise: preflight.canSynthesise,
+      // The vendor's own sentences, both of them, withheld: they can name an
+      // account, an invoice or a plan.
+      synthesisProblem: null,
+      problem: null,
+      engineReady: preflight.engineReady,
+      // Counts and ids describe the supply chain, not the service's health.
+      totalSpeakers: null,
+      speakerIdsByLanguage: {},
+      languagesWithoutSpeakers: preflight.languagesWithoutSpeakers,
+    },
+  };
+}

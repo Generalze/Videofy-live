@@ -63,6 +63,7 @@ import {
 } from '@videofy-live/speech-activity';
 import { buildTranslationGate } from './translation-gate-wiring.js';
 import { scopeForServiceCategory } from './translation-gate.js';
+import { publicNigerianSynthesisState } from './nigerian-synthesis-route.js';
 import { registerQualityRoutes } from './quality-routes.js';
 import {
   nigerianReadiness,
@@ -1542,9 +1543,20 @@ if (liveSynthesis.nigerian !== null) {
  * that checks later.
  */
 /** Read at request time, like `liveEngine`; null only when synthesis is off. */
+/*
+ * REDACTED FOR THE PUBLIC SURFACE. `/health` answers anybody on the internet,
+ * and it carried the vendor's own free text -- which on 2 Oct 2026 read
+ * "Your subscription has a failed or incomplete payment". That is the
+ * operator's billing status on a public endpoint, and it is not a health
+ * fact. Whether synthesis works stays; why it does not, and the voice ids
+ * behind it, move to the guarded surface and the log.
+ */
 const nigerianSynthesis = liveSynthesis.nigerian === null
   ? null
-  : (): unknown => liveSynthesis.nigerian?.state();
+  : (): unknown => {
+      const state = liveSynthesis.nigerian?.state();
+      return state === undefined ? undefined : publicNigerianSynthesisState(state);
+    };
 
 const liveEngine = describeLiveEngine(config);
 if (!liveEngine.real) {
