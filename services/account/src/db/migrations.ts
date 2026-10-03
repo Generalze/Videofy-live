@@ -1960,6 +1960,60 @@ const LANGUAGE_CATALOGUE_CODES: Migration = {
  * assignment cannot name a set of another language, or a set whose content is
  * not what the assignment says it reviewed.
  */
+/**
+ * FEDERATED SIGN-IN: KingsChat and Google (founder directive, 3 Oct 2026).
+ *
+ * TWO CHANGES, AND THE FIRST IS THE ONE WITH TEETH. `password_hash` has been
+ * NOT NULL since the first migration, which was right while every account
+ * was born from a password. An account created by a provider has no password
+ * and must never be given a placeholder one: a hash of a generated secret is
+ * a credential somebody could in principle find, and a sentinel string like
+ * 'oauth' is a password hash that a careless comparison could match. Null
+ * means there is nothing to compare, and every password path must say so.
+ *
+ * A SEPARATE TABLE, NOT COLUMNS ON `accounts`. One person may link BOTH
+ * providers, and will: the whole point of offering two is that people pick
+ * differently and change their minds. Columns would mean a pair per provider
+ * and a migration every time another is added.
+ *
+ * THE JOIN KEY IS THE SUBJECT, NEVER THE EMAIL. `UNIQUE (provider, subject)`
+ * is what stops one provider identity reaching two C7 accounts. An address
+ * can be changed at the provider, released, and re-registered to a stranger;
+ * an account that followed the address would follow the stranger with it.
+ *
+ * `email_verified_at_link` records what the provider claimed AT THE MOMENT
+ * the link was made, which is the fact an audit needs later. It is evidence,
+ * not a live permission: nothing reads it to decide anything.
+ */
+const FEDERATED_IDENTITIES: Migration = {
+  name: '033_federated_identities',
+  sql: `
+    ALTER TABLE accounts ALTER COLUMN password_hash DROP NOT NULL;
+
+    CREATE TABLE IF NOT EXISTS account_identities (
+      account_id              text        NOT NULL
+        REFERENCES accounts (account_id) ON DELETE CASCADE,
+      -- 'google' | 'kingschat'. Checked so a typo cannot become a row that
+      -- nothing downstream recognises and nobody can sign in through.
+      provider                text        NOT NULL
+        CHECK (provider IN ('google', 'kingschat')),
+      -- The provider's own permanent id for the person.
+      subject                 text        NOT NULL,
+      -- What the provider said the address was when the link was made.
+      -- Recorded for audit; never used to find an account.
+      email_at_link           text,
+      email_verified_at_link  boolean     NOT NULL,
+      created_at              timestamptz NOT NULL,
+      PRIMARY KEY (account_id, provider),
+      -- One provider identity belongs to exactly one C7 account.
+      UNIQUE (provider, subject)
+    );
+
+    -- Sign-in looks the identity up by (provider, subject) on every attempt,
+    -- and the UNIQUE constraint above already indexes exactly that pair.
+  `,
+};
+
 const SPECIALIST_QA_SETS: Migration = {
   name: '032_specialist_qa_sets',
   sql: `
@@ -2091,4 +2145,5 @@ export const MIGRATIONS: readonly Migration[] = [
   PROGRAMME_REPLAY_DELETIONS,
   LANGUAGE_CATALOGUE_CODES,
   SPECIALIST_QA_SETS,
+  FEDERATED_IDENTITIES,
 ];

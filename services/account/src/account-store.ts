@@ -87,7 +87,17 @@ export interface AccountRecord {
   readonly listeningLanguage?: AccountDefaultLanguage;
   /** Normalised: lowercased and trimmed. The stored form IS the lookup key. */
   readonly email: string;
-  readonly passwordHash: string;
+  /**
+   * NULL FOR AN ACCOUNT BORN FROM A PROVIDER, and null is the only honest
+   * value for one.
+   *
+   * A generated password would be a credential that exists; a sentinel
+   * string would be a hash a careless comparison could match. Null cannot be
+   * compared to anything, so every password path has to decide what it means
+   * -- and the answer is always the same: there is no password here, so no
+   * password signs you in.
+   */
+  readonly passwordHash: string | null;
   /**
    * Bumped to invalidate every token issued so far. This is what makes "sign
    * out everywhere" mean something for a stateless token.
@@ -1105,6 +1115,15 @@ export class AccountStore {
 
     const accountId = this.byEmail.get(email);
     const account = accountId ? this.byId.get(accountId) : undefined;
+    /*
+     * A PROVIDER-ONLY ACCOUNT HAS NO PASSWORD, AND NO PASSWORD SIGNS IT IN.
+     *
+     * Its `passwordHash` is null, so it falls to the same dummy hash an
+     * unknown address uses, and the comparison fails. That is the intended
+     * answer and it costs the same time as every other refusal -- somebody
+     * probing cannot tell "no such account" from "that one signs in with
+     * Google" by how long the answer takes.
+     */
     const hash = account?.passwordHash ?? DUMMY_HASH;
     const matched = await verifyPassword(input.password, hash);
 
@@ -1117,7 +1136,9 @@ export class AccountStore {
     // Raising the cost later must not lock anybody out, so an old hash is
     // upgraded on the next successful sign-in — the one moment the plaintext
     // is legitimately in hand.
-    if (needsRehash(account.passwordHash)) {
+    // Only a real hash can be out of date. A null one is not a weak password
+    // to upgrade, it is the absence of one.
+    if (account.passwordHash !== null && needsRehash(account.passwordHash)) {
       /*
        * THE EXPENSIVE PART HAPPENS OUTSIDE THE LOCK, and the write happens
        * inside it against a FRESH read.
