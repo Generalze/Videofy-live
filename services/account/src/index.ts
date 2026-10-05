@@ -40,6 +40,11 @@ import { registerTariffRoutes } from './tariff-routes.js';
 import { DeviceStore } from './device-store.js';
 import { createPostgresDeviceRecords } from './db/device-records-postgres.js';
 import { registerDeviceRoutes } from './device-routes.js';
+import { createFederatedProviders } from './federated-config.js';
+import { FederatedSignIn } from './federated-sign-in.js';
+import { registerFederatedRoutes } from './federated-routes.js';
+import { createEphemeralAccountIdentities } from './account-identities.js';
+import { createPostgresAccountIdentities } from './db/account-identities-postgres.js';
 import { PushDispatcher } from './push/push-dispatcher.js';
 import { registerPushRoutes } from './push-routes.js';
 import { MessageStore, createInMemoryMessagePort } from './message-store.js';
@@ -720,6 +725,63 @@ registerDeviceRoutes(app, {
   onEvent: (event, detail) => {
     // eslint-disable-next-line no-console
     console.log(JSON.stringify({ service: 'account', event, ...detail }));
+  },
+});
+
+/*
+ * SIGNING IN WITH GOOGLE OR KINGSCHAT.
+ *
+ * Selection happens HERE, at boot, and throws rather than returning a broken
+ * provider -- so a deployment with a switch on and a value missing stops at
+ * startup instead of showing a button that answers 503 to everybody who
+ * presses it.
+ *
+ * Both switches ship off. An off provider is not an absent one: the routes
+ * stay mounted and refuse honestly, and `GET /oauth/providers` tells the
+ * sign-in page which buttons to draw, so nothing renders a control that
+ * cannot work.
+ */
+const federatedProviders = createFederatedProviders(process.env, {
+  warn: (message) => {
+    // eslint-disable-next-line no-console
+    console.warn(JSON.stringify({ service: 'account', level: 'warn', message }));
+  },
+  onSelected: (message) => {
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify({ service: 'account', message }));
+  },
+});
+
+registerFederatedRoutes(app, {
+  store,
+  signIn: new FederatedSignIn({
+    accounts: store,
+    identities: databasePool
+      ? createPostgresAccountIdentities(databasePool)
+      : createEphemeralAccountIdentities(),
+    warn: (message) => {
+      /*
+       * At WARN, on purpose. These lines report an identity pointing at a
+       * missing account, or a lost creation race -- conditions that should
+       * not happen and that nobody goes looking for. Logged at debug they
+       * would be invisible on an info-level box, which is how guards here
+       * have been misread before as never having fired.
+       */
+      // eslint-disable-next-line no-console
+      console.warn(JSON.stringify({ service: 'account', level: 'warn', message }));
+    },
+  }),
+  providers: federatedProviders,
+  secret,
+  /*
+   * From configuration, NEVER from a request header. The callback redirect is
+   * built from this, and one built from the Host header sends somebody who
+   * has just signed in to whichever host an attacker wrote there.
+   */
+  publicOrigin: process.env['C7_PUBLIC_ORIGIN'] ?? 'http://127.0.0.1:3106',
+  warn: (message) => {
+    // eslint-disable-next-line no-console
+    console.warn(JSON.stringify({ service: 'account', level: 'warn', message }));
   },
 });
 
