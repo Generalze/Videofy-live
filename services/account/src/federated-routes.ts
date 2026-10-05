@@ -23,7 +23,7 @@
  *   redeem. Three requests, because the person is not on our page for the
  *   middle one -- which is what the handoff exists to bridge.
  */
-import type express from 'express';
+import express from 'express';
 import {
   issueSessionToken,
   sessionLifetimeSeconds,
@@ -260,7 +260,22 @@ export function registerFederatedRoutes(
    * It answers with a REDIRECT rather than JSON, because the person's browser
    * is navigating here and whatever this returns is what they look at.
    */
-  app.post('/oauth/kingschat/callback', (req, res) => {
+  /*
+   * THE ONLY FORM-ENCODED REQUEST THIS SERVICE RECEIVES, so the parser is
+   * attached HERE and nowhere else.
+   *
+   * The service registers `express.json` globally and nothing for
+   * application/x-www-form-urlencoded -- which is what KingsChat's login page
+   * submits. In production `req.body` was therefore empty on every callback,
+   * `origin` read as missing, and every sign-in was refused as `expired`. The
+   * test harness had added a form parser of its own, so the suite certified a
+   * configuration the running service never had: the founder found it on the
+   * second live attempt. The harness no longer adds one; this line is what
+   * both the tests and production now rely on.
+   */
+  const formBody = express.urlencoded({ extended: false, limit: '16kb' });
+
+  app.post('/oauth/kingschat/callback', formBody, (req, res) => {
     const body = (req.body ?? {}) as { code?: unknown; origin?: unknown };
     const clients = deps.providers.kingschat;
     const client = clients?.get('web');

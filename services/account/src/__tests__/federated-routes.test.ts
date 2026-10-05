@@ -151,7 +151,6 @@ async function harness(options: Options = {}): Promise<Harness> {
 
   const app = express();
   app.use(express.json());
-  app.use(express.urlencoded({ extended: false }));
   registerFederatedRoutes(app, {
     store: accounts,
     signIn,
