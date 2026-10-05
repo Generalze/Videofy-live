@@ -316,6 +316,81 @@ export class AuthSessionManager {
   }
 
   /**
+   * Sign in with a Google ID token the app already holds.
+   *
+   * Goes through the SAME in-flight guard and the SAME `storeSessionFrom` as
+   * the password path, deliberately. A second way in that writes the session
+   * its own way is a second place for the stored shape to drift, and the
+   * failure that produces -- a token stored without its expiry -- is one the
+   * next launch discovers, not this one.
+   */
+  async signInWithGoogle(idToken: string): Promise<SignInResult> {
+    if (this.inFlight !== null) return this.inFlight;
+    const attempt = this.performProviderSignIn('/oauth/google', { idToken, client: 'device' });
+    this.inFlight = attempt;
+    try {
+      return await attempt;
+    } finally {
+      this.inFlight = null;
+    }
+  }
+
+  /**
+   * Sign in with a handoff collected from a provider round trip.
+   *
+   * The handoff is worth one exchange within a minute and is not a
+   * credential -- it names who to mint a session for, and the server
+   * re-checks that account before it does.
+   */
+  async signInWithHandoff(handoff: string): Promise<SignInResult> {
+    if (this.inFlight !== null) return this.inFlight;
+    const attempt = this.performProviderSignIn('/oauth/handoff', { handoff, client: 'device' });
+    this.inFlight = attempt;
+    try {
+      return await attempt;
+    } finally {
+      this.inFlight = null;
+    }
+  }
+
+  private async performProviderSignIn(
+    path: string,
+    body: Record<string, string>,
+  ): Promise<SignInResult> {
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch {
+      return { ok: false, reason: 'network' };
+    }
+
+    if (!response.ok) {
+      /*
+       * NOTHING IS PERSISTED ON FAILURE, exactly as in the password path.
+       *
+       * 401 here is not the same event as a wrong password -- a spent
+       * handoff or an unverifiable token is nobody's mistake -- but it maps
+       * to the same coarse reason, because the UI has one place to say "that
+       * did not work" and inventing a second vocabulary for the provider
+       * path would mean two sets of wording to keep honest.
+       */
+      return {
+        ok: false,
+        reason:
+          response.status === 429 ? 'rate-limited'
+            : response.status === 401 ? 'invalid-credentials'
+            : 'server',
+      };
+    }
+
+    return (await this.storeSessionFrom(response)) ? { ok: true } : { ok: false, reason: 'server' };
+  }
+
+  /**
    * Take a session out of a response and become signed in, or refuse.
    *
    * Shared by sign-in and sign-up because both are handed the identical body,

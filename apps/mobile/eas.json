@@ -1,65 +1,95 @@
 {
-  "cli": { "version": ">= 5.0.0", "appVersionSource": "remote" },
+  "cli": {
+    "version": ">= 5.0.0",
+    "appVersionSource": "remote"
+  },
   "build": {
     "development": {
       "developmentClient": true,
       "distribution": "internal",
-      "android": { "buildType": "apk" },
+      "android": {
+        "buildType": "apk"
+      },
       "env": {
         "EXPO_PUBLIC_GATEWAY_URL": "https://staging.consummate7.com",
         "EXPO_PUBLIC_ACCOUNT_URL": "https://staging.consummate7.com/auth",
         "EXPO_PUBLIC_INGEST_URL": "https://staging.consummate7.com/media",
         "EXPO_PUBLIC_LISTEN_URL": "https://staging.consummate7.com/listen",
         "EXPO_PUBLIC_WEB_URL": "https://staging.consummate7.com",
-        "EXPO_PUBLIC_CALL_DIAGNOSTICS": "1"
+        "EXPO_PUBLIC_CALL_DIAGNOSTICS": "1",
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "692573915541-sbq8ila7tjkptd9ueqfdan9n6gm5tb81.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "692573915541-05d8gnhk6b9s7mvkqk4vg169cr3qe39n.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "692573915541-13t0122j4bd8vkgkainvh91cjt9vfdil.apps.googleusercontent.com"
       }
     },
     "preview": {
       "distribution": "internal",
-      "android": { "buildType": "apk" },
+      "android": {
+        "buildType": "apk"
+      },
       "env": {
         "EXPO_PUBLIC_GATEWAY_URL": "https://staging.consummate7.com",
         "EXPO_PUBLIC_ACCOUNT_URL": "https://staging.consummate7.com/auth",
         "EXPO_PUBLIC_INGEST_URL": "https://staging.consummate7.com/media",
         "EXPO_PUBLIC_LISTEN_URL": "https://staging.consummate7.com/listen",
-        "EXPO_PUBLIC_WEB_URL": "https://staging.consummate7.com"
+        "EXPO_PUBLIC_WEB_URL": "https://staging.consummate7.com",
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "692573915541-sbq8ila7tjkptd9ueqfdan9n6gm5tb81.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "692573915541-05d8gnhk6b9s7mvkqk4vg169cr3qe39n.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "692573915541-13t0122j4bd8vkgkainvh91cjt9vfdil.apps.googleusercontent.com"
       }
     },
     "production-apk": {
       "environment": "production",
       "distribution": "internal",
-      "android": { "buildType": "apk" },
-      "env": {
-        "EXPO_PUBLIC_GATEWAY_URL": "https://consummate7.com",
-        "EXPO_PUBLIC_ACCOUNT_URL": "https://consummate7.com/auth",
-        "EXPO_PUBLIC_INGEST_URL": "https://consummate7.com/media",
-        "EXPO_PUBLIC_LISTEN_URL": "https://consummate7.com/listen",
-        "EXPO_PUBLIC_WEB_URL": "https://consummate7.com"
-      }
-    },
-    "production-apk-diag": {
-      "environment": "production",
-      "distribution": "internal",
-      "android": { "buildType": "apk" },
+      "android": {
+        "buildType": "apk"
+      },
       "env": {
         "EXPO_PUBLIC_GATEWAY_URL": "https://consummate7.com",
         "EXPO_PUBLIC_ACCOUNT_URL": "https://consummate7.com/auth",
         "EXPO_PUBLIC_INGEST_URL": "https://consummate7.com/media",
         "EXPO_PUBLIC_LISTEN_URL": "https://consummate7.com/listen",
         "EXPO_PUBLIC_WEB_URL": "https://consummate7.com",
-        "EXPO_PUBLIC_CALL_DIAGNOSTICS": "1"
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "692573915541-sbq8ila7tjkptd9ueqfdan9n6gm5tb81.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "692573915541-05d8gnhk6b9s7mvkqk4vg169cr3qe39n.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "692573915541-13t0122j4bd8vkgkainvh91cjt9vfdil.apps.googleusercontent.com"
       }
     },
-    "production": {
-      "android": { "buildType": "app-bundle" },
+    "production-apk-diag": {
+      "environment": "production",
+      "distribution": "internal",
+      "android": {
+        "buildType": "apk"
+      },
       "env": {
         "EXPO_PUBLIC_GATEWAY_URL": "https://consummate7.com",
         "EXPO_PUBLIC_ACCOUNT_URL": "https://consummate7.com/auth",
         "EXPO_PUBLIC_INGEST_URL": "https://consummate7.com/media",
         "EXPO_PUBLIC_LISTEN_URL": "https://consummate7.com/listen",
-        "EXPO_PUBLIC_WEB_URL": "https://consummate7.com"
+        "EXPO_PUBLIC_WEB_URL": "https://consummate7.com",
+        "EXPO_PUBLIC_CALL_DIAGNOSTICS": "1",
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "692573915541-sbq8ila7tjkptd9ueqfdan9n6gm5tb81.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "692573915541-05d8gnhk6b9s7mvkqk4vg169cr3qe39n.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "692573915541-13t0122j4bd8vkgkainvh91cjt9vfdil.apps.googleusercontent.com"
+      }
+    },
+    "production": {
+      "android": {
+        "buildType": "app-bundle"
+      },
+      "env": {
+        "EXPO_PUBLIC_GATEWAY_URL": "https://consummate7.com",
+        "EXPO_PUBLIC_ACCOUNT_URL": "https://consummate7.com/auth",
+        "EXPO_PUBLIC_INGEST_URL": "https://consummate7.com/media",
+        "EXPO_PUBLIC_LISTEN_URL": "https://consummate7.com/listen",
+        "EXPO_PUBLIC_WEB_URL": "https://consummate7.com",
+        "EXPO_PUBLIC_GOOGLE_ANDROID_CLIENT_ID": "692573915541-sbq8ila7tjkptd9ueqfdan9n6gm5tb81.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_IOS_CLIENT_ID": "692573915541-05d8gnhk6b9s7mvkqk4vg169cr3qe39n.apps.googleusercontent.com",
+        "EXPO_PUBLIC_GOOGLE_WEB_CLIENT_ID": "692573915541-13t0122j4bd8vkgkainvh91cjt9vfdil.apps.googleusercontent.com"
       }
     }
   },
-  "submit": { "production": {} }
+  "submit": {
+    "production": {}
+  }
 }

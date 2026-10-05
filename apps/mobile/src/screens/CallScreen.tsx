@@ -126,10 +126,10 @@ import {
 import type { ConferenceSetup } from '../conference/conferenceSetup';
 
 /** Not a secret; compiled into the bundle like every EXPO_PUBLIC_ value. */
-const GATEWAY_URL = process.env['EXPO_PUBLIC_GATEWAY_URL'] ?? 'https://staging.consummate7.com';
+const GATEWAY_URL = process.env.EXPO_PUBLIC_GATEWAY_URL ?? 'https://staging.consummate7.com';
 
 /** The developer switch. Off in every build a person installs. */
-const DIAGNOSTICS = process.env['EXPO_PUBLIC_CALL_DIAGNOSTICS'] === '1';
+const DIAGNOSTICS = process.env.EXPO_PUBLIC_CALL_DIAGNOSTICS === '1';
 
 /**
  * HOW LONG THE SCREEN WAITS FOR A LOST END ACKNOWLEDGEMENT before ending
@@ -145,7 +145,7 @@ const END_SAFETY_MS = 20_000;
  * shipped in a bundle.
  */
 function iceOverride(): { urls: string | string[]; username?: string; credential?: string }[] {
-  const raw = process.env['EXPO_PUBLIC_ICE_SERVERS'];
+  const raw = process.env.EXPO_PUBLIC_ICE_SERVERS;
   if (raw === undefined || raw.trim().length === 0) return [];
   try {
     const parsed: unknown = JSON.parse(raw);

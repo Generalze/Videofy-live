@@ -51,6 +51,15 @@ export interface FederatedRouteDependencies {
    * in to whichever host an attacker put in it, with the handoff attached.
    */
   readonly publicOrigin: string;
+  /**
+   * The mobile application's url scheme, without `://`.
+   *
+   * A phone runs the same KingsChat web flow in a system browser, and this is
+   * how the result gets back into the app. Fixed in configuration and never
+   * read from a request: a caller that could name the scheme to return to
+   * would be handing itself an open redirect with a completed login attached.
+   */
+  readonly appScheme?: string;
   readonly state?: OAuthStateStore;
   readonly handoffs?: SignInHandoffStore;
   readonly nowSeconds?: () => number;
@@ -66,6 +75,32 @@ export function registerFederatedRoutes(
   const handoffs = deps.handoffs ?? new SignInHandoffStore();
   const warn = deps.warn ?? ((message: string) => console.warn(message));
   const origin = deps.publicOrigin.replace(/\/+$/, '');
+  const appScheme = (deps.appScheme ?? 'videofy').replace(/:.*$/, '');
+
+  /**
+   * Where a finished KingsChat login sends the browser.
+   *
+   * ONE function for both surfaces and both outcomes, so the app path cannot
+   * drift away from the web one -- which is how a second surface normally
+   * ends up without the fragment, or without the error, or with the handoff
+   * in a query string.
+   */
+  const landing = (
+    attempt: { readonly surface: 'web' | 'app'; readonly returnPath: string } | null,
+    result: { readonly handoff: string } | { readonly error: string },
+  ): string => {
+    const fragment = 'handoff' in result ? `#c7_handoff=${result.handoff}` : '';
+    const query = 'error' in result ? `?error=${encodeURIComponent(result.error)}` : '';
+    /*
+     * The app gets a fixed path on its own scheme. An unknown attempt also
+     * lands here on the web, because without the attempt there is nothing
+     * that says a phone started it -- and defaulting to the app scheme on a
+     * value we cannot verify would be exactly the trust this avoids.
+     */
+    if (attempt?.surface === 'app') return `${appScheme}://auth${query}${fragment}`;
+    const path = attempt === null ? '/sign-in' : attempt.returnPath;
+    return 'error' in result ? `${origin}/sign-in${query}` : `${origin}${path}${fragment}`;
+  };
 
   const session = (accountId: string, version: number, sessionClass: SessionClass) => {
     const account = deps.store.get(accountId);
@@ -186,9 +221,16 @@ export function registerFederatedRoutes(
     }
 
     const returnPath = typeof req.query.returnPath === 'string' ? req.query.returnPath : undefined;
-    // Validated here, on the way out, which is the only moment the value is
-    // one we chose. On the way back it is a string the provider echoed.
-    const token = state.issue('kingschat', safeReturnPath(returnPath));
+    /*
+     * Validated here, on the way out, which is the only moment the value is
+     * one we chose. On the way back it is a string the provider echoed.
+     *
+     * The surface is recorded now for the same reason. A phone says so when
+     * it STARTS, and the callback reads it from here rather than from the
+     * request it receives -- which is a request the provider makes.
+     */
+    const surface = req.query.client === 'device' ? 'app' : 'web';
+    const token = state.issue('kingschat', safeReturnPath(returnPath), surface);
 
     const url = new URL(KINGSCHAT_LOGIN_URL);
     url.searchParams.set('clientId', client.clientId);
@@ -208,7 +250,7 @@ export function registerFederatedRoutes(
     const clients = deps.providers.kingschat;
     const client = clients?.get('web');
     if (!clients || !client) {
-      res.redirect(302, `${origin}/sign-in?error=unavailable`);
+      res.redirect(302, landing(null, { error: 'unavailable' }));
       return;
     }
 
@@ -226,13 +268,13 @@ export function registerFederatedRoutes(
      */
     const attempt = state.consume(typeof body.origin === 'string' ? body.origin : null);
     if (attempt === null || attempt.provider !== 'kingschat') {
-      res.redirect(302, `${origin}/sign-in?error=expired`);
+      res.redirect(302, landing(null, { error: 'expired' }));
       return;
     }
 
     const code = typeof body.code === 'string' ? body.code : '';
     if (code.length === 0) {
-      res.redirect(302, `${origin}/sign-in?error=cancelled`);
+      res.redirect(302, landing(attempt, { error: 'cancelled' }));
       return;
     }
 
@@ -249,7 +291,7 @@ export function registerFederatedRoutes(
           verified.reason === 'client-rejected' ||
           verified.reason === 'api-key-rejected' ||
           verified.reason === 'provider-unavailable';
-        res.redirect(302, `${origin}/sign-in?error=${broken ? 'unavailable' : 'expired'}`);
+        res.redirect(302, landing(attempt, { error: broken ? 'unavailable' : 'expired' }));
         return;
       }
 
@@ -264,7 +306,7 @@ export function registerFederatedRoutes(
       if (outcome.kind === 'refused') {
         // The reason, not the message: a query string is a url, and a url
         // ends up in history and logs. The page holds the wording.
-        res.redirect(302, `${origin}/sign-in?error=${encodeURIComponent(outcome.reason)}`);
+        res.redirect(302, landing(attempt, { error: outcome.reason }));
         return;
       }
 
@@ -274,9 +316,9 @@ export function registerFederatedRoutes(
        * the way to the page that consumes it.
        */
       const handoff = handoffs.issue(outcome.account.accountId, outcome.account.tokenVersion);
-      res.redirect(302, `${origin}${attempt.returnPath}#c7_handoff=${handoff}`);
+      res.redirect(302, landing(attempt, { handoff }));
     })().catch(() => {
-      res.redirect(302, `${origin}/sign-in?error=unavailable`);
+      res.redirect(302, landing(attempt, { error: 'unavailable' }));
     });
   });
 

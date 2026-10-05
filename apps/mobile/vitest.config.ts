@@ -30,6 +30,15 @@ export default defineConfig({
   resolve: {
     alias: {
       'expo-secure-store': resolve(__dirname, 'src/__tests__/stubs/expo-secure-store.ts'),
+      // Both open or depend on a system browser, so both throw at IMPORT in
+      // node. Longest path first: a bare 'expo-auth-session' alias would also
+      // swallow the providers/google subpath and hide what it resolved to.
+      'expo-auth-session/providers/google': resolve(
+        __dirname,
+        'src/__tests__/stubs/expo-auth-session-google.ts',
+      ),
+      'expo-auth-session': resolve(__dirname, 'src/__tests__/stubs/expo-auth-session.ts'),
+      'expo-web-browser': resolve(__dirname, 'src/__tests__/stubs/expo-web-browser.ts'),
       'react-native-svg': resolve(__dirname, 'src/__tests__/stubs/react-native-svg.tsx'),
       // Exact, so `react-native-webrtc` and friends are not caught by it.
       'react-native': resolve(__dirname, 'src/__tests__/stubs/react-native.tsx'),

@@ -392,6 +392,62 @@ describe('kingschat', () => {
   });
 });
 
+describe('a phone running the web flow', () => {
+  it('comes back through the app scheme instead of a page', async () => {
+    app = await harness();
+    await fetch(`${app.url}/oauth/kingschat/start?client=device`);
+
+    const response = await postForm(app.url, '/oauth/kingschat/callback', {
+      code: 'code-xyz',
+      origin: 'state-1',
+    });
+    const location = response.headers.get('location') ?? '';
+    // KingsChat's callback url is fixed per application, so the phone cannot
+    // be given its own. It does not need one: the same registered callback
+    // receives the code, and only the recorded surface decides where the
+    // browser goes next.
+    expect(location.startsWith('videofy://auth#c7_handoff=')).toBe(true);
+  });
+
+  it('sends a failure back into the app too, rather than stranding it in a browser', async () => {
+    app = await harness({ kcTokenStatus: 403 });
+    await fetch(`${app.url}/oauth/kingschat/start?client=device`);
+    const response = await postForm(app.url, '/oauth/kingschat/callback', {
+      code: 'code-xyz',
+      origin: 'state-1',
+    });
+    // Without this the person is left looking at our website inside a system
+    // browser with no way back to the app they started in.
+    expect(response.headers.get('location')).toBe('videofy://auth?error=unavailable');
+  });
+
+  it('takes the surface from the attempt, never from the callback', async () => {
+    app = await harness();
+    // Started as web...
+    await fetch(`${app.url}/oauth/kingschat/start`);
+    // ...and the callback cannot talk its way into the app scheme, because
+    // a caller that could name its own destination at callback time would be
+    // an open redirect with a completed login attached.
+    const response = await postForm(app.url, '/oauth/kingschat/callback', {
+      code: 'code-xyz',
+      origin: 'state-1',
+      client: 'device',
+    });
+    expect(response.headers.get('location')?.startsWith(ORIGIN)).toBe(true);
+  });
+
+  it('refuses an unknown token to the web, not to the app scheme', async () => {
+    app = await harness();
+    const response = await postForm(app.url, '/oauth/kingschat/callback', {
+      code: 'c',
+      origin: 'never-issued',
+    });
+    // Nothing says a phone started it, and guessing the app scheme from a
+    // value we could not verify is the trust this design exists to avoid.
+    expect(response.headers.get('location')).toBe(`${ORIGIN}/sign-in?error=expired`);
+  });
+});
+
 describe('handoff', () => {
   it('is worth exactly one exchange', async () => {
     app = await harness();

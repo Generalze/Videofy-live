@@ -779,6 +779,14 @@ registerFederatedRoutes(app, {
    * has just signed in to whichever host an attacker wrote there.
    */
   publicOrigin: process.env['C7_PUBLIC_ORIGIN'] ?? 'http://127.0.0.1:3106',
+  /*
+   * The mobile app's url scheme, matching `expo.scheme` in
+   * apps/mobile/app.json. A phone runs the same KingsChat web login in a
+   * system browser and comes back through this; if the two ever disagree,
+   * the browser lands on a scheme no app claims and the sign-in completes
+   * into nothing.
+   */
+  appScheme: process.env['C7_APP_URL_SCHEME'] ?? 'videofy',
   warn: (message) => {
     // eslint-disable-next-line no-console
     console.warn(JSON.stringify({ service: 'account', level: 'warn', message }));

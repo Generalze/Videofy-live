@@ -46,6 +46,17 @@ const DEFAULT_TTL_MS = 15 * 60 * 1000;
  */
 const DEFAULT_MAX_PENDING = 10_000;
 
+/**
+ * Which kind of client began the login.
+ *
+ * It decides where the callback sends somebody, and it is remembered HERE
+ * rather than read from the callback, because the callback is a request the
+ * provider makes and anything in it is a value somebody else chose. A client
+ * that could name its own destination at callback time would be an open
+ * redirect with a login in front of it.
+ */
+export type LoginSurface = 'web' | 'app';
+
 export interface OAuthLoginAttempt {
   /** Which provider this attempt was started for. */
   readonly provider: 'google' | 'kingschat';
@@ -54,6 +65,19 @@ export interface OAuthLoginAttempt {
    * already validated by `issue`; never an absolute url.
    */
   readonly returnPath: string;
+  /**
+   * `app` means a phone started this and the result goes back through the
+   * application's own url scheme instead of to a page.
+   *
+   * WHY THE PHONE CAN USE THE WEB FLOW AT ALL. KingsChat's mobile path is a
+   * native SDK, and their callback url is fixed per application and cannot be
+   * supplied at request time -- so a phone cannot be given its own redirect.
+   * It does not need one: the phone opens the SAME web login in a system
+   * browser, the SAME registered callback receives the code, and only this
+   * flag decides whether the browser is then sent to a page or back into the
+   * app. One application, one review, no native SDK.
+   */
+  readonly surface: LoginSurface;
   readonly createdAtMs: number;
 }
 
@@ -86,7 +110,11 @@ export class OAuthStateStore {
    * we are holding a value we chose ourselves. Validating it on the way back
    * instead would mean validating a string a stranger controls.
    */
-  issue(provider: OAuthLoginAttempt['provider'], returnPath?: string): string {
+  issue(
+    provider: OAuthLoginAttempt['provider'],
+    returnPath?: string,
+    surface: LoginSurface = 'web',
+  ): string {
     this.evictExpired();
     if (this.pending.size >= this.maxPending) this.evictOldest();
 
@@ -94,6 +122,7 @@ export class OAuthStateStore {
     this.pending.set(token, {
       provider,
       returnPath: safeReturnPath(returnPath),
+      surface,
       createdAtMs: this.now(),
     });
     return token;

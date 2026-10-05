@@ -540,7 +540,7 @@ export function VoiceRow({
  * The plans page, if there is one. Not a secret: `EXPO_PUBLIC_` values are
  * compiled into the bundle. Empty or unset means there is no page yet.
  */
-const PLANS_URL = process.env['EXPO_PUBLIC_PLANS_URL'];
+const PLANS_URL = process.env.EXPO_PUBLIC_PLANS_URL;
 
 /** Where the Plans row points, or null when it must not be shown. Exported so the rule is testable. */
 export function plansUrl(raw: string | undefined = PLANS_URL): string | null {

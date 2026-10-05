@@ -51,6 +51,16 @@ import { C7, C7Ground } from './src/ui/c7';
 import { Icon, type IconName } from './src/ui/icons';
 import { ProgrammesScreen } from './src/screens/ProgrammesScreen';
 import { SignInScreen } from './src/screens/SignInScreen';
+import { ProviderButtons } from './src/screens/ProviderButtons';
+import * as Google from 'expo-auth-session/providers/google';
+import {
+  describeProviderFailure,
+  fetchProviders,
+  googleAuthRequestConfig,
+  readErrorFromUrl,
+  readHandoffFromUrl,
+  signInWithKingsChat,
+} from './src/auth/providerSignIn';
 import { SignUpScreen } from './src/screens/SignUpScreen';
 import { CallScreen } from './src/screens/CallScreen';
 import { CallHomeScreen } from './src/screens/CallHomeScreen';
@@ -80,11 +90,11 @@ import { RingingBanner } from './src/screens/RingingReadiness';
 
 /** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. */
 const GATEWAY_BASE_URL =
-  process.env['EXPO_PUBLIC_GATEWAY_URL'] ?? 'https://staging.consummate7.com';
+  process.env.EXPO_PUBLIC_GATEWAY_URL ?? 'https://staging.consummate7.com';
 
 /** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. */
 const ACCOUNT_BASE_URL =
-  process.env['EXPO_PUBLIC_ACCOUNT_URL'] ?? 'https://staging.consummate7.com/auth';
+  process.env.EXPO_PUBLIC_ACCOUNT_URL ?? 'https://staging.consummate7.com/auth';
 
 /*
  * THE BRAND SCREEN, NOT A WHITE FRAME (founder ruling 29 Aug 2026). The OS
@@ -668,6 +678,127 @@ function AppInner(): JSX.Element {
   const signIn = useCallback((email: string, password: string) => auth.signIn(email, password), []);
 
   /*
+   * SIGNING IN WITH A PROVIDER.
+   *
+   * The hook has to be called unconditionally, every render, like every
+   * hook -- even on the screens where no sign-in surface exists. It costs
+   * nothing when there is no request to make, and making it conditional is
+   * the classic way to break the rules of hooks on the one render where
+   * somebody signs out.
+   */
+  const [googleRequest, googleResponse, promptGoogle] = Google.useIdTokenAuthRequest(
+    googleAuthRequestConfig(),
+  );
+  const [providerBusy, setProviderBusy] = useState(false);
+  const [providerError, setProviderError] = useState<string | null>(null);
+
+  /*
+   * Google answers through the hook rather than by returning from a call, so
+   * the result is picked up here. `id_token`, never an access token: the
+   * account service verifies the signature and the audience itself, and we
+   * want identity and nothing else.
+   */
+  useEffect(() => {
+    if (googleResponse === null) return;
+    if (googleResponse.type === 'dismiss' || googleResponse.type === 'cancel') {
+      // Their own decision. An error banner here is the app arguing with it.
+      setProviderBusy(false);
+      return;
+    }
+    if (googleResponse.type !== 'success') {
+      setProviderBusy(false);
+      setProviderError('That sign-in could not be completed. Please try again.');
+      return;
+    }
+    const idToken = googleResponse.params?.['id_token'];
+    if (typeof idToken !== 'string' || idToken.length === 0) {
+      setProviderBusy(false);
+      setProviderError('That sign-in could not be completed. Please try again.');
+      return;
+    }
+    setProviderBusy(true);
+    void auth
+      .signInWithGoogle(idToken)
+      .then((result) => {
+        /*
+         * On success nothing happens here on purpose: the session manager
+         * changes state and the app re-routes, exactly as the password path
+         * does. A second navigation would be a second source of truth about
+         * whether somebody is signed in.
+         */
+        if (!result.ok) setProviderError('That sign-in could not be completed. Please try again.');
+      })
+      .finally(() => setProviderBusy(false));
+  }, [googleResponse]);
+
+  const startGoogle = useCallback(() => {
+    setProviderError(null);
+    // No request means no client id reached this build; the button is not
+    // drawn in that case, so this is belt and braces.
+    if (googleRequest === null) {
+      setProviderError('That way of signing in is not available right now.');
+      return;
+    }
+    void promptGoogle();
+  }, [googleRequest, promptGoogle]);
+
+  const startKingsChat = useCallback(() => {
+    setProviderError(null);
+    setProviderBusy(true);
+    void signInWithKingsChat(ACCOUNT_BASE_URL)
+      .then(async (outcome) => {
+        if (!outcome.ok) {
+          setProviderError(describeProviderFailure(outcome.reason));
+          return;
+        }
+        if (outcome.kind !== 'handoff') return;
+        const result = await auth.signInWithHandoff(outcome.handoff);
+        if (!result.ok) setProviderError('That sign-in could not be completed. Please try again.');
+      })
+      .finally(() => setProviderBusy(false));
+  }, []);
+
+  /*
+   * A COLD START FROM THE PROVIDER.
+   *
+   * `openAuthSessionAsync` normally returns the url itself, and that is the
+   * path almost every sign-in takes. But if Android reclaims the app while
+   * the browser is open, the return arrives as a launch url instead and the
+   * promise never resolves -- the sign-in would complete at the server and
+   * silently strand on the device. This is the other end of that.
+   */
+  useEffect(() => {
+    let live = true;
+    const adopt = (url: string | null | undefined) => {
+      if (!live) return;
+      const failure = readErrorFromUrl(url);
+      if (failure !== null) {
+        setProviderError('That sign-in could not be completed. Please try again.');
+        return;
+      }
+      const handoff = readHandoffFromUrl(url);
+      if (handoff === null) return;
+      setProviderBusy(true);
+      void auth
+        .signInWithHandoff(handoff)
+        .then((result) => {
+          if (!result.ok && live) {
+            setProviderError('That sign-in could not be completed. Please try again.');
+          }
+        })
+        .finally(() => {
+          if (live) setProviderBusy(false);
+        });
+    };
+    void Linking.getInitialURL().then(adopt);
+    const subscription = Linking.addEventListener('url', (event) => adopt(event.url));
+    return () => {
+      live = false;
+      subscription.remove();
+    };
+  }, []);
+
+  /*
    * THE RIGHT TO WAKE, READ AND RE-READ. Three calls on 27 Sep 2026 whose
    * push Google accepted and the handset never woke for. The reading is
    * taken when a session exists and again every time the app returns to the
@@ -877,6 +1008,16 @@ function AppInner(): JSX.Element {
           onSignIn={signIn}
           onCreateAccount={() => setWantsAccount(true)}
           notice={NOTICE[state.status === 'signed-out' ? (state.reason ?? '') : '']}
+          providerError={providerError}
+          renderProviders={() => (
+            <ProviderButtons
+              accountBaseUrl={ACCOUNT_BASE_URL}
+              loadProviders={(url) => fetchProviders(url)}
+              onGoogle={startGoogle}
+              onKingsChat={startKingsChat}
+              busy={providerBusy}
+            />
+          )}
         />
       </>
     );
