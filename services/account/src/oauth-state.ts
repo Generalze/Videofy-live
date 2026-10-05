@@ -242,6 +242,14 @@ export function safeReturnPath(value: string | null | undefined): string {
   // slash or a backslash -- that pair is what makes it absolute.
   if (!trimmed.startsWith('/')) return '/';
   if (trimmed.startsWith('//') || trimmed.startsWith('/\\')) return '/';
+  /*
+   * NO FRAGMENT. The callback appends `#c7_handoff=...` to this path, and a
+   * path that already carries a `#` produces two of them. A browser folds
+   * everything after the FIRST one into a single fragment, so the handoff
+   * stops being a parameter the page can find and the sign-in silently
+   * completes into a page that cannot see it.
+   */
+  if (trimmed.includes('#')) return '/';
   // No control characters, which can truncate or split a Location header.
   // eslint-disable-next-line no-control-regex
   if (/[\u0000-\u001f\u007f]/.test(trimmed)) return '/';

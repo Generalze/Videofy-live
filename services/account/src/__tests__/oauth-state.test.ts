@@ -119,6 +119,15 @@ describe('return path', () => {
     expect(safeReturnPath('data:text/html,<script>')).toBe('/');
   });
 
+  it('refuses a path carrying a fragment', () => {
+    // The callback appends `#c7_handoff=...`, and a browser folds everything
+    // after the FIRST `#` into one fragment -- so a path with its own anchor
+    // makes the handoff unfindable and the sign-in completes into a page that
+    // cannot see it.
+    expect(safeReturnPath('/app/#section')).toBe('/');
+    expect(safeReturnPath('/app#')).toBe('/');
+  });
+
   it('refuses a path carrying control characters', () => {
     // A newline in a Location header splits the response.
     expect(safeReturnPath('/ok\r\nLocation: https://evil.test')).toBe('/');
