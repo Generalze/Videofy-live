@@ -98,8 +98,23 @@ export function registerFederatedRoutes(
      * value we cannot verify would be exactly the trust this avoids.
      */
     if (attempt?.surface === 'app') return `${appScheme}://auth${query}${fragment}`;
-    const path = attempt === null ? '/sign-in' : attempt.returnPath;
-    return 'error' in result ? `${origin}/sign-in${query}` : `${origin}${path}${fragment}`;
+    /*
+     * THE SIGN-IN PANEL IS A SECTION OF THE HOME PAGE, NOT A PAGE.
+     *
+     * This read `/sign-in`, which is not a route this site has -- the app
+     * serves `/`, `/videofy/`, `/videofy/live/`, `/app/`, and two specialist
+     * paths. Every failed provider sign-in therefore landed on a 404 saying
+     * "That page does not exist", which reads as the whole site being broken
+     * rather than one login not completing.
+     *
+     * Both halves of this had been built and tested -- the callback sends a
+     * reason, and JoinC7 reads `?error=` and renders the wording -- and they
+     * were joined by a path that was never checked against the router. The
+     * `#join` anchor is what puts the panel, and the message, on screen
+     * instead of the top of the marketing page.
+     */
+    if ('error' in result) return `${origin}/${query}#join`;
+    return `${origin}${attempt === null ? '/' : attempt.returnPath}${fragment}`;
   };
 
   const session = (accountId: string, version: number, sessionClass: SessionClass) => {
@@ -266,8 +281,27 @@ export function registerFederatedRoutes(
      * sends origin=kingschat-redirect-url-test, which this refuses, exactly
      * as it should. That refusal is the check working, not a broken callback.
      */
-    const attempt = state.consume(typeof body.origin === 'string' ? body.origin : null);
+    const presented = typeof body.origin === 'string' ? body.origin : null;
+    const attempt = state.consume(presented);
     if (attempt === null || attempt.provider !== 'kingschat') {
+      /*
+       * SAID OUT LOUD, because the first live failure could not be explained
+       * from the logs: this refusal redirected silently, so the only evidence
+       * was a person reporting a page they had landed on.
+       *
+       * The TOKEN IS NOT LOGGED -- it is a live credential until it is spent,
+       * and one in a log file outlives the minute it was good for. What is
+       * logged is the shape: whether anything was presented at all, how many
+       * logins are currently in flight, and the portal's own test marker,
+       * which is the single most likely cause of a refusal that looks
+       * mysterious.
+       */
+      warn(
+        `kingschat callback refused: no matching login attempt ` +
+          `(presented=${presented === null ? 'none' : `${presented.length} chars`}, ` +
+          `pending=${state.pendingCount}` +
+          `${presented === 'kingschat-redirect-url-test' ? ', portal Test Redirect URL' : ''})`,
+      );
       res.redirect(302, landing(null, { error: 'expired' }));
       return;
     }

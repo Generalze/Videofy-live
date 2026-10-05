@@ -321,17 +321,54 @@ describe('kingschat', () => {
       code: 'code-xyz',
       origin: 'not-a-token-we-issued',
     });
-    expect(response.headers.get('location')).toBe(`${ORIGIN}/sign-in?error=expired`);
+    expect(response.headers.get('location')).toBe(`${ORIGIN}/?error=expired#join`);
   });
 
-  it('refuses the portal test callback, which is the check working', async () => {
+  it('says out loud why it refused, without logging the token', async () => {
+    app = await harness();
+    await postForm(app.url, '/oauth/kingschat/callback', {
+      code: 'code-xyz',
+      origin: 'a-token-nobody-issued',
+    });
+    const said = app.warnings.join(' ');
+    // The first live failure could not be explained from the logs, because
+    // this path redirected in silence.
+    expect(said).toMatch(/kingschat callback refused/i);
+    expect(said).toMatch(/pending=/);
+    // The presented value is a live credential until it is spent. Its LENGTH
+    // is diagnostic; the value itself would outlive the minute it was good
+    // for, sitting in a log file.
+    expect(said).not.toContain('a-token-nobody-issued');
+  });
+
+  it('refuses the portal test callback, and names it so nobody debugs a ghost', async () => {
     app = await harness();
     // "Test Redirect URL" sends this literal value and carries no cookies.
     const response = await postForm(app.url, '/oauth/kingschat/callback', {
       code: 'code-xyz',
       origin: 'kingschat-redirect-url-test',
     });
-    expect(response.headers.get('location')).toBe(`${ORIGIN}/sign-in?error=expired`);
+    expect(response.headers.get('location')).toBe(`${ORIGIN}/?error=expired#join`);
+    expect(app.warnings.join(' ')).toMatch(/Test Redirect URL/);
+  });
+
+  it('sends every web failure to a page that actually exists', async () => {
+    app = await harness({ kcTokenStatus: 422 });
+    await fetch(`${app.url}/oauth/kingschat/start`);
+    const response = await postForm(app.url, '/oauth/kingschat/callback', {
+      code: 'code-xyz',
+      origin: 'state-1',
+    });
+    const location = response.headers.get('location') ?? '';
+    /*
+     * This read `/sign-in`, which this site does not serve -- so every failed
+     * provider sign-in landed on "That page does not exist", which reads as
+     * the whole site being broken rather than one login not completing. The
+     * panel is a SECTION of the home page, which is what `#join` reaches.
+     */
+    expect(location).not.toContain('/sign-in');
+    expect(location.startsWith(`${ORIGIN}/?error=`)).toBe(true);
+    expect(location.endsWith('#join')).toBe(true);
   });
 
   it('will not let one csrf token be spent twice', async () => {
@@ -347,7 +384,7 @@ describe('kingschat', () => {
       code: 'code-2',
       origin: 'state-1',
     });
-    expect(replay.headers.get('location')).toBe(`${ORIGIN}/sign-in?error=expired`);
+    expect(replay.headers.get('location')).toBe(`${ORIGIN}/?error=expired#join`);
   });
 
   it('refuses to be bounced off our own domain', async () => {
@@ -375,7 +412,7 @@ describe('kingschat', () => {
     });
     // Unapproved client: retrying will never help, so it must not say
     // "expired", which is an instruction to try again.
-    expect(response.headers.get('location')).toBe(`${ORIGIN}/sign-in?error=unavailable`);
+    expect(response.headers.get('location')).toBe(`${ORIGIN}/?error=unavailable#join`);
     expect(app.warnings.join(' ')).toMatch(/client id/i);
   });
 
@@ -444,7 +481,7 @@ describe('a phone running the web flow', () => {
     });
     // Nothing says a phone started it, and guessing the app scheme from a
     // value we could not verify is the trust this design exists to avoid.
-    expect(response.headers.get('location')).toBe(`${ORIGIN}/sign-in?error=expired`);
+    expect(response.headers.get('location')).toBe(`${ORIGIN}/?error=expired#join`);
   });
 });
 
