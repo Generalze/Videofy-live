@@ -62,7 +62,14 @@ function DomainCard({
   );
 }
 
-export function C7Home({ navigate }: { readonly navigate: (route: Route) => void }) {
+export function C7Home({
+  navigate,
+  authed = false,
+}: {
+  readonly navigate: (route: Route) => void;
+  /** The same signal the nav reads; the hero must not disagree with it. */
+  readonly authed?: boolean;
+}) {
   const flagship = ECOSYSTEM_DOMAINS.find((domain) => domain.tone === 'flagship');
   const others = ECOSYSTEM_DOMAINS.filter((domain) => domain.tone !== 'flagship');
 
@@ -105,9 +112,23 @@ export function C7Home({ navigate }: { readonly navigate: (route: Route) => void
                 which is a button that lies about what it does. It returns the
                 day there is something to watch.
               */}
-              <a className="button button-ghost" {...internalLink('c7', navigate, '#join')}>
-                Join C7
-              </a>
+              {/*
+                THE HERO KNOWS WHO IS STANDING THERE, like the nav above it.
+                After the first real sign-in the founder landed here signed in
+                and this still read "Join C7" -- the page's biggest control
+                inviting somebody to do the thing they had just done, while the
+                way onward sat in the nav corner. Signed in, the invitation
+                becomes the door: the dashboard, in the same place, same weight.
+              */}
+              {authed ? (
+                <a className="button button-ghost" {...internalLink('app', navigate)}>
+                  Open My C7
+                </a>
+              ) : (
+                <a className="button button-ghost" {...internalLink('c7', navigate, '#join')}>
+                  Join C7
+                </a>
+              )}
             </div>
           </div>
           <C7OrbitHero />

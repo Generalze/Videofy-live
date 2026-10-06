@@ -1,7 +1,7 @@
 import React from 'react';
 import { createRoot } from 'react-dom/client';
 import { App } from './App';
-import { completeHandoff, scrubHandoffFromUrl } from './federatedSignIn';
+import { completeHandoff, readHandoff, scrubHandoffFromUrl } from './federatedSignIn';
 import { persistJoinSession } from './JoinC7';
 /*
  * TWO STYLESHEETS, TWO AUDIENCES, AND THE ORDER MATTERS.
@@ -49,12 +49,15 @@ const accountUrl = (
   (import.meta.env['VITE_ACCOUNT_URL'] as string | undefined) ?? 'http://localhost:3006'
 ).replace(/\/+$/, '');
 
-const pendingHandoff = completeHandoff({ accountUrl, hash: window.location.hash });
+const arrivingHash = window.location.hash;
+const hasHandoff = readHandoff(arrivingHash) !== null;
 scrubHandoffFromUrl();
 
 const container = document.getElementById('root');
 if (container === null) throw new Error('root container missing');
-const root = createRoot(container);
+// Named after the null check so the narrowing survives into start() below.
+const rootElement: HTMLElement = container;
+const root = createRoot(rootElement);
 const render = () =>
   root.render(
     <React.StrictMode>
@@ -62,22 +65,37 @@ const render = () =>
     </React.StrictMode>,
   );
 
-render();
+/*
+ * WHEN A HANDOFF IS PRESENT, THE EXCHANGE HAPPENS BEFORE THE FIRST PAINT.
+ *
+ * The first version rendered immediately and exchanged in the background,
+ * on the theory that a network call must never block a page. It did not
+ * survive the first real sign-in. The return path is /app/, and the shell
+ * there answers "no session" with window.location.replace('/#join') -- so
+ * the app painted, saw the empty store, bounced to the marketing page, and
+ * ONLY THEN did the session land. The founder arrived signed in, on the
+ * home page, looking at a hero that still said "Join C7", with the only way
+ * onward tucked into the nav. A sign-in that works and strands you is a
+ * sign-in that looks broken.
+ *
+ * So: no handoff (every ordinary visit) renders at once, as before. A
+ * handoff waits for one round trip, during which the root says what is
+ * happening, and the app's first paint then has the session it needs to
+ * stay on the dashboard. A failed exchange still renders the page; the
+ * person is signed out with the button in front of them, which is the
+ * honest state.
+ */
+async function start(): Promise<void> {
+  if (hasHandoff) {
+    rootElement.textContent = 'Signing you in…';
+    try {
+      const session = await completeHandoff({ accountUrl, hash: arrivingHash });
+      if (session !== null) persistJoinSession(session);
+    } catch {
+      // Already scrubbed and already spent; the page below is the way back.
+    }
+  }
+  render();
+}
 
-void pendingHandoff
-  .then((session) => {
-    // Null is the ordinary case: no handoff, nothing to do, no error.
-    if (session === null) return;
-    if (!persistJoinSession(session)) return;
-    // Re-rendered rather than reloaded: a reload here would throw away the
-    // page that was just painted and flash the whole app for no reason.
-    render();
-  })
-  .catch(() => {
-    /*
-     * Swallowed deliberately. The handoff is already scrubbed and already
-     * spent; the person is looking at a working, signed-out page and the
-     * sign-in button is right there. An error thrown out of the entry point
-     * would be an unhandled rejection in the console and nothing on screen.
-     */
-  });
+void start();
