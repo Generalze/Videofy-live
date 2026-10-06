@@ -220,8 +220,16 @@ export class KingsChatIdentity {
          * just minted that token seconds ago, so in practice this is our key.
          * Said out loud for that reason -- it is a deployment fault that will
          * otherwise read as every KingsChat user suddenly being rejected.
+         *
+         * THEIR ERROR CODE IS KEPT. The first live refusal said only "check
+         * the api key", and the body -- which names whether it was the key or
+         * the bearer -- had been thrown away. The code is a short identifier
+         * (e.g. invalid_api_key); the message is prose they may reword, and
+         * neither carries a credential.
          */
-        this.warn('kingschat: profile read was refused -- check the project api key');
+        const detail = await readJson<{ error?: unknown; message?: unknown }>(response.clone());
+        const code = typeof detail?.error === 'string' ? detail.error.slice(0, 64) : 'no-code';
+        this.warn(`kingschat: profile read was refused (${code}) -- check the project api key`);
         return { ok: false, reason: 'api-key-rejected' };
       }
       if (response.status === 403 || response.status === 404) {

@@ -144,9 +144,14 @@ describe('kingschat identity', () => {
   });
 
   it('names a refused api key instead of blaming the person signing in', async () => {
-    const { identity, warnings } = harness({ profile: { status: 401, body: {} } });
+    const { identity, warnings } = harness({
+      profile: { status: 401, body: { error: 'invalid_api_key', message: 'nope' } },
+    });
     expect(await identity.verify('code-xyz')).toEqual({ ok: false, reason: 'api-key-rejected' });
     expect(warnings.join(' ')).toMatch(/api key/i);
+    // Their code is the part that says WHICH header was refused; the first
+    // live failure threw it away and could only say 'check the key'.
+    expect(warnings.join(' ')).toContain('invalid_api_key');
   });
 
   it('reports an unreachable provider as unavailable, not as a bad code', async () => {
