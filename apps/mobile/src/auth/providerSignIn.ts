@@ -40,6 +40,13 @@ export const APP_SCHEME = 'videofy';
 export type ProviderSignInOutcome =
   | { readonly ok: true; readonly kind: 'google'; readonly idToken: string }
   | { readonly ok: true; readonly kind: 'handoff'; readonly handoff: string }
+  /**
+   * The account service answered, and said no. `detail` is its reason --
+   * `no-email`, `unverified-email-conflict`, ... -- for the wording in
+   * describeCallbackError. Kept apart from `failed`: a refusal is a decision
+   * the person needs to understand, not a fault to retry.
+   */
+  | { readonly ok: false; readonly reason: 'refused'; readonly detail: string }
   | { readonly ok: false; readonly reason: ProviderSignInFailure };
 
 export type ProviderSignInFailure =
@@ -147,6 +154,11 @@ export async function signInWithKingsChat(
       // dismiss and cancel are both somebody changing their mind.
       return { ok: false, reason: 'cancelled' };
     }
+    // A refusal comes back on the same url as a success would, as ?error=.
+    // Read it BEFORE concluding "failed": without this, five people refused
+    // for `no-email` were all told to try again.
+    const refused = readErrorFromUrl(result.url);
+    if (refused !== null) return { ok: false, reason: 'refused', detail: refused };
     const handoff = readHandoffFromUrl(result.url);
     if (handoff === null) return { ok: false, reason: 'failed' };
     return { ok: true, kind: 'handoff', handoff };
@@ -206,6 +218,38 @@ export function googleAuthRequestConfig(): Parameters<typeof Google.useIdTokenAu
 /** The redirect this app claims, for diagnostics and for tests. */
 export function appRedirectUri(): string {
   return AuthSession.makeRedirectUri({ scheme: APP_SCHEME, path: 'auth' });
+}
+
+/**
+ * Wording for a reason the account service sent back on the app url.
+ *
+ * SPECIFIC, because the generic sentence hid a product fact for a day. On
+ * 10 Oct 2026 five people were refused with `no-email` -- their KingsChat
+ * profile carries no address -- and every one of them was shown "could not
+ * be completed, please try again", which is an instruction to repeat the
+ * thing that cannot work. The server sends a reason and not a sentence
+ * because the url is logged; the sentence lives here, one per reason.
+ */
+export function describeCallbackError(reason: string | null): string | null {
+  switch (reason) {
+    case null:
+      return null;
+    case 'no-email':
+      return 'Your KingsChat account has no email address, so we cannot create a C7 account from it yet. Add an email to your KingsChat profile, or create a C7 account with your email and password.';
+    case 'unverified-email-conflict':
+      return 'We could not use that to sign you in. If you already have a C7 account, sign in with your email and password, then connect KingsChat from your settings.';
+    case 'account-already-linked':
+      return 'That C7 account is already connected to a different KingsChat account.';
+    case 'expired':
+      return 'That sign-in took too long or was already used. Please try again.';
+    case 'cancelled':
+      return null;
+    case 'unavailable':
+    case 'account-not-created':
+      return 'We could not complete that sign-in just now. Please try again shortly.';
+    default:
+      return 'That sign-in could not be completed. Please try again.';
+  }
 }
 
 /**

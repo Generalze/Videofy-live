@@ -10,6 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   NO_PROVIDERS,
+  describeCallbackError,
   describeProviderFailure,
   fetchProviders,
   readErrorFromUrl,
@@ -164,5 +165,26 @@ describe('which buttons the phone draws', () => {
       google: false,
       kingschat: true,
     });
+  });
+});
+
+describe('what a refused sign-in is told', () => {
+  it('names the cause for no-email instead of asking them to try again', () => {
+    // Five people on 10 Oct 2026 were refused for this and every one was
+    // shown "try again" -- an instruction to repeat the thing that cannot work.
+    const words = describeCallbackError('no-email') ?? '';
+    expect(words).toMatch(/no email address/i);
+    expect(words).not.toMatch(/try again/i);
+  });
+
+  it('never says whether an address already has an account', () => {
+    const words = describeCallbackError('unverified-email-conflict') ?? '';
+    expect(words).not.toMatch(/exists|already registered|taken/i);
+  });
+
+  it('says nothing for a cancelled attempt, and something for any reason it has never met', () => {
+    expect(describeCallbackError('cancelled')).toBeNull();
+    expect(describeCallbackError(null)).toBeNull();
+    expect(describeCallbackError('something-new')).toBeTruthy();
   });
 });

@@ -54,6 +54,7 @@ import { SignInScreen } from './src/screens/SignInScreen';
 import { ProviderButtons } from './src/screens/ProviderButtons';
 import * as Google from 'expo-auth-session/providers/google';
 import {
+  describeCallbackError,
   describeProviderFailure,
   fetchProviders,
   googleAuthRequestConfig,
@@ -748,7 +749,11 @@ function AppInner(): JSX.Element {
     void signInWithKingsChat(ACCOUNT_BASE_URL)
       .then(async (outcome) => {
         if (!outcome.ok) {
-          setProviderError(describeProviderFailure(outcome.reason));
+          setProviderError(
+            outcome.reason === 'refused'
+              ? describeCallbackError(outcome.detail)
+              : describeProviderFailure(outcome.reason),
+          );
           return;
         }
         if (outcome.kind !== 'handoff') return;
@@ -773,7 +778,8 @@ function AppInner(): JSX.Element {
       if (!live) return;
       const failure = readErrorFromUrl(url);
       if (failure !== null) {
-        setProviderError('That sign-in could not be completed. Please try again.');
+        // The reason names the cause; the generic sentence hid 'no-email' for a day.
+        setProviderError(describeCallbackError(failure));
         return;
       }
       const handoff = readHandoffFromUrl(url);
