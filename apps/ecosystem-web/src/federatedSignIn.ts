@@ -172,7 +172,8 @@ export function describeSignInError(reason: string | null): string | null {
     case 'unavailable':
       return 'We could not complete that sign-in just now. Please try again shortly.';
     case 'no-email':
-      return 'That account has no email address, so we cannot create a C7 account from it.';
+      // KingsChat shares an address only once the person has verified it there.
+      return 'Your KingsChat email address is not verified yet, so KingsChat did not share it with us. Verify your email in the KingsChat app and try again, or create a C7 account with your email and password.';
     case 'unverified-email-conflict':
       /*
        * The careful one. It must NOT say whether an account exists for that

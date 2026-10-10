@@ -235,7 +235,14 @@ export function describeCallbackError(reason: string | null): string | null {
     case null:
       return null;
     case 'no-email':
-      return 'Your KingsChat account has no email address, so we cannot create a C7 account from it yet. Add an email to your KingsChat profile, or create a C7 account with your email and password.';
+      /*
+       * KingsChat returns an address only once the person has VERIFIED it
+       * there -- its API documents `email` as the verified address or null.
+       * The founder confirmed every KingsChat account has one; the people
+       * refused on 10 Oct 2026 had not confirmed theirs. So the instruction
+       * is to verify in KingsChat, not to add an address they already have.
+       */
+      return 'Your KingsChat email address is not verified yet, so KingsChat did not share it with us. Verify your email in the KingsChat app and try again, or create a C7 account with your email and password.';
     case 'unverified-email-conflict':
       return 'We could not use that to sign you in. If you already have a C7 account, sign in with your email and password, then connect KingsChat from your settings.';
     case 'account-already-linked':
