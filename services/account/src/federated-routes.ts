@@ -353,6 +353,17 @@ export function registerFederatedRoutes(
       });
 
       if (outcome.kind === 'refused') {
+        /*
+         * SAID OUT LOUD. Five KingsChat sign-ups failed in one afternoon on
+         * 10 Oct 2026 and the only record was the Location header in the
+         * edge log, because this branch redirected in silence. The reason is
+         * logged with the surface and nothing else: no subject, no address,
+         * nothing that names the person. "no-email" turned out to be the
+         * dominant refusal -- KingsChat is phone-first and many profiles
+         * carry no address -- which is a product decision, and one that was
+         * invisible for a day because this line did not exist.
+         */
+        warn(`kingschat sign-in refused: ${outcome.reason} (surface=${attempt.surface})`);
         // The reason, not the message: a query string is a url, and a url
         // ends up in history and logs. The page holds the wording.
         res.redirect(302, landing(attempt, { error: outcome.reason }));

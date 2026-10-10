@@ -484,6 +484,25 @@ describe('a phone running the web flow', () => {
   });
 });
 
+describe('a profile with no email', () => {
+  it('is refused with the reason, and the reason is logged', async () => {
+    app = await harness({
+      kcProfile: { profile: { id: 'kc-no-mail', name: 'Ada', is_email_verified: false } },
+    });
+    await fetch(`${app.url}/oauth/kingschat/start?client=device`);
+    const response = await postForm(app.url, '/oauth/kingschat/callback', {
+      code: 'code-xyz',
+      origin: 'state-1',
+    });
+    // KingsChat is phone-first; many profiles carry no address. The person
+    // must be told that, not "try again".
+    expect(response.headers.get('location')).toBe('videofy://auth?error=no-email');
+    // And the server must say so: five of these in one afternoon were
+    // invisible in the log because this branch used to redirect in silence.
+    expect(app.warnings.join(' ')).toMatch(/kingschat sign-in refused: no-email \(surface=app\)/);
+  });
+});
+
 describe('handoff', () => {
   it('is worth exactly one exchange', async () => {
     app = await harness();
