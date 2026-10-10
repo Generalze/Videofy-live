@@ -39,9 +39,9 @@
  * through the same writer with the same bar, so a rehearsal cannot promise an
  * outcome the real command refuses.
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 import {
   ROUTE_DOCUMENT_PATH_ENV_VAR,
@@ -562,7 +562,27 @@ export function runRouteApprovalCli(argv: readonly string[]): number {
  * separator and drive-letter case, and a string comparison there would either
  * never fire or fire on an import.
  */
+function safeRealpath(path: string): string | undefined {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
+}
+
+/*
+ * COMPARED AS REAL PATHS, NOT AS URLS.
+ *
+ * On the production box the release is reached through a symlink,
+ * /srv/videofy-prod/current -> releases/<sha>. Invoked that way, argv[1]
+ * carries the symlink path while import.meta.url carries the resolved one,
+ * the two never match, and this file did NOTHING: no output, no error,
+ * exit 0. The one command that approves a translation route was a no-op on
+ * the one machine it has to run on, and it looked like success. Found on
+ * 10 Oct 2026 while trying to read what production had approved.
+ */
 const invokedAs = process.argv[1];
-if (invokedAs !== undefined && pathToFileURL(invokedAs).href === import.meta.url) {
+const invokedReal = invokedAs === undefined ? undefined : safeRealpath(invokedAs);
+if (invokedReal !== undefined && invokedReal === safeRealpath(fileURLToPath(import.meta.url))) {
   process.exitCode = runRouteApprovalCli(process.argv.slice(2));
 }
