@@ -242,7 +242,7 @@ export function describeCallbackError(reason: string | null): string | null {
        * refused on 10 Oct 2026 had not confirmed theirs. So the instruction
        * is to verify in KingsChat, not to add an address they already have.
        */
-      return 'Your KingsChat email address is not verified yet, so KingsChat did not share it with us. Verify your email in the KingsChat app and try again, or create a C7 account with your email and password.';
+      return 'Your KingsChat email address is not verified yet, so KingsChat did not share it with us. Verify your email in the KingsChat app — even if it already shows as verified, verify it again — then try again, or create a C7 account with your email and password.';
     case 'unverified-email-conflict':
       return 'We could not use that to sign you in. If you already have a C7 account, sign in with your email and password, then connect KingsChat from your settings.';
     case 'account-already-linked':
