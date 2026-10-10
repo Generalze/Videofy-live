@@ -173,8 +173,13 @@ describe('what a refused sign-in is told', () => {
     // Five people on 10 Oct 2026 were refused for this and every one was
     // shown "try again" -- an instruction to repeat the thing that cannot work.
     const words = describeCallbackError('no-email') ?? '';
-    expect(words).toMatch(/no email address/i);
-    expect(words).not.toMatch(/try again/i);
+    // The cause, and the thing to DO about it. KingsChat withholds an address
+    // until the person verifies it there, so 'verify' is the instruction; a
+    // sentence that only said 'try again' would be asking them to repeat
+    // the thing that cannot work.
+    expect(words).toMatch(/not verified/i);
+    expect(words).toMatch(/verify your email/i);
+    expect(words).not.toMatch(/^that sign-in could not be completed/i);
   });
 
   it('never says whether an address already has an account', () => {
