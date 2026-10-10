@@ -278,9 +278,28 @@ export class DirectCallLifecycle {
       return toDirectCallWire(record);
     }
     this.arm(record, 'ringing-window', RINGING_WINDOW_MS, () => {
-      if (record.state === 'calling' || record.state === 'ringing') {
-        this.transition(record, record.reachedDevices === 0 ? 'unavailable' : 'no_answer');
-      }
+      /*
+       * NO ANSWER IS SOMETHING A PERSON DID. UNAVAILABLE IS SOMETHING A PHONE
+       * DID NOT DO.
+       *
+       * This used to read `reachedDevices === 0 ? 'unavailable' : 'no_answer'`,
+       * and "reached" meant the push service accepted the message -- which it
+       * does for a phone that is switched off, out of coverage or out of
+       * battery, because it queues the push for later. So an off phone rang
+       * the full window and the caller was told "no answer", and the callee
+       * was recorded as having ignored a call they never saw. The founder
+       * asked for the distinction on 10 Oct 2026.
+       *
+       * The honest signal is the ring ACKNOWLEDGEMENT: a device that is
+       * showing the incoming call says so (`ringingAck`), and the state moves
+       * to `ringing`. At the end of the window, `calling` means no device
+       * ever showed it -- unavailable, whatever the push service accepted --
+       * and `ringing` means somebody's phone rang and nobody picked up.
+       * `reachedDevices === 0` still ends the call at once in
+       * noteRingDispatch; it never has to wait for this timer.
+       */
+      if (record.state === 'calling') this.transition(record, 'unavailable');
+      else if (record.state === 'ringing') this.transition(record, 'no_answer');
     });
     return toDirectCallWire(record);
   }

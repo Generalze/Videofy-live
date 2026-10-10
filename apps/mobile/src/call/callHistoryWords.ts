@@ -67,9 +67,12 @@ export function callHistoryWords(entry: CallHistoryEntry): CallHistoryWords {
         ? { title: 'Busy', detail: null, missed: false }
         : { title: 'Missed call', detail: 'you were on another call', missed: true };
     case 'unavailable':
+      // The callee's phone never showed the call -- off, out of coverage,
+      // out of battery. Saying so is fairer than a bare "Missed call", which
+      // reads as a choice they made.
       return outgoing
         ? { title: 'Couldn’t be reached', detail: null, missed: false }
-        : { title: 'Missed call', detail: null, missed: true };
+        : { title: 'Missed call', detail: 'your phone couldn’t be reached', missed: true };
     case 'network':
       return { title: 'Call dropped', detail: duration, missed: false };
     case 'failed':
