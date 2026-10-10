@@ -1,0 +1,926 @@
+{
+ "seed": 20260831,
+ "packets": [
+  {
+   "language": "af",
+   "name": "Afrikaans",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-af.csv",
+   "key_file": "ANSWER-KEY-af.csv"
+  },
+  {
+   "language": "am",
+   "name": "Amharic",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-am.csv",
+   "key_file": "ANSWER-KEY-am.csv"
+  },
+  {
+   "language": "ar",
+   "name": "Arabic",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-ar.csv",
+   "key_file": "ANSWER-KEY-ar.csv"
+  },
+  {
+   "language": "az",
+   "name": "Azerbaijani",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-az.csv",
+   "key_file": "ANSWER-KEY-az.csv"
+  },
+  {
+   "language": "bg",
+   "name": "Bulgarian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-bg.csv",
+   "key_file": "ANSWER-KEY-bg.csv"
+  },
+  {
+   "language": "bn",
+   "name": "Bengali",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-bn.csv",
+   "key_file": "ANSWER-KEY-bn.csv"
+  },
+  {
+   "language": "bs",
+   "name": "Bosnian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-bs.csv",
+   "key_file": "ANSWER-KEY-bs.csv"
+  },
+  {
+   "language": "ca",
+   "name": "Catalan",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-ca.csv",
+   "key_file": "ANSWER-KEY-ca.csv"
+  },
+  {
+   "language": "cs",
+   "name": "Czech",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-cs.csv",
+   "key_file": "ANSWER-KEY-cs.csv"
+  },
+  {
+   "language": "cy",
+   "name": "Welsh",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-cy.csv",
+   "key_file": "ANSWER-KEY-cy.csv"
+  },
+  {
+   "language": "da",
+   "name": "Danish",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-da.csv",
+   "key_file": "ANSWER-KEY-da.csv"
+  },
+  {
+   "language": "de",
+   "name": "German",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-de.csv",
+   "key_file": "ANSWER-KEY-de.csv"
+  },
+  {
+   "language": "el",
+   "name": "Greek",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-el.csv",
+   "key_file": "ANSWER-KEY-el.csv"
+  },
+  {
+   "language": "es",
+   "name": "Spanish",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-es.csv",
+   "key_file": "ANSWER-KEY-es.csv"
+  },
+  {
+   "language": "et",
+   "name": "Estonian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-et.csv",
+   "key_file": "ANSWER-KEY-et.csv"
+  },
+  {
+   "language": "eu",
+   "name": "Basque",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-eu.csv",
+   "key_file": "ANSWER-KEY-eu.csv"
+  },
+  {
+   "language": "fa",
+   "name": "Persian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-fa.csv",
+   "key_file": "ANSWER-KEY-fa.csv"
+  },
+  {
+   "language": "ff",
+   "name": "Fula",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-ff.csv",
+   "key_file": "ANSWER-KEY-ff.csv"
+  },
+  {
+   "language": "fi",
+   "name": "Finnish",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-fi.csv",
+   "key_file": "ANSWER-KEY-fi.csv"
+  },
+  {
+   "language": "fil",
+   "name": "Filipino",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-fil.csv",
+   "key_file": "ANSWER-KEY-fil.csv"
+  },
+  {
+   "language": "fr",
+   "name": "French",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-fr.csv",
+   "key_file": "ANSWER-KEY-fr.csv"
+  },
+  {
+   "language": "ga",
+   "name": "Irish",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-ga.csv",
+   "key_file": "ANSWER-KEY-ga.csv"
+  },
+  {
+   "language": "gl",
+   "name": "Galician",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-gl.csv",
+   "key_file": "ANSWER-KEY-gl.csv"
+  },
+  {
+   "language": "gu",
+   "name": "Gujarati",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-gu.csv",
+   "key_file": "ANSWER-KEY-gu.csv"
+  },
+  {
+   "language": "he",
+   "name": "Hebrew",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-he.csv",
+   "key_file": "ANSWER-KEY-he.csv"
+  },
+  {
+   "language": "hi",
+   "name": "Hindi",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-hi.csv",
+   "key_file": "ANSWER-KEY-hi.csv"
+  },
+  {
+   "language": "hr",
+   "name": "Croatian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-hr.csv",
+   "key_file": "ANSWER-KEY-hr.csv"
+  },
+  {
+   "language": "ht",
+   "name": "Haitian Creole",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-ht.csv",
+   "key_file": "ANSWER-KEY-ht.csv"
+  },
+  {
+   "language": "hu",
+   "name": "Hungarian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-hu.csv",
+   "key_file": "ANSWER-KEY-hu.csv"
+  },
+  {
+   "language": "hy",
+   "name": "Armenian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-hy.csv",
+   "key_file": "ANSWER-KEY-hy.csv"
+  },
+  {
+   "language": "id",
+   "name": "Indonesian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-id.csv",
+   "key_file": "ANSWER-KEY-id.csv"
+  },
+  {
+   "language": "is",
+   "name": "Icelandic",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-is.csv",
+   "key_file": "ANSWER-KEY-is.csv"
+  },
+  {
+   "language": "it",
+   "name": "Italian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-it.csv",
+   "key_file": "ANSWER-KEY-it.csv"
+  },
+  {
+   "language": "ja",
+   "name": "Japanese",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-ja.csv",
+   "key_file": "ANSWER-KEY-ja.csv"
+  },
+  {
+   "language": "ka",
+   "name": "Georgian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-ka.csv",
+   "key_file": "ANSWER-KEY-ka.csv"
+  },
+  {
+   "language": "kk",
+   "name": "Kazakh",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-kk.csv",
+   "key_file": "ANSWER-KEY-kk.csv"
+  },
+  {
+   "language": "km",
+   "name": "Khmer",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-km.csv",
+   "key_file": "ANSWER-KEY-km.csv"
+  },
+  {
+   "language": "kn",
+   "name": "Kannada",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-kn.csv",
+   "key_file": "ANSWER-KEY-kn.csv"
+  },
+  {
+   "language": "ko",
+   "name": "Korean",
+   "items": 34,
+   "engines": [
+    "m2m100"
+   ],
+   "review_file": "review-ko.csv",
+   "key_file": "ANSWER-KEY-ko.csv",
+   "note": "opus-mt-tc-big-en-ko produced word salad on every row (10 Oct 2026); this packet is M2M100 output"
+  },
+  {
+   "language": "ku",
+   "name": "Kurdish",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-ku.csv",
+   "key_file": "ANSWER-KEY-ku.csv"
+  },
+  {
+   "language": "ky",
+   "name": "Kyrgyz",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-ky.csv",
+   "key_file": "ANSWER-KEY-ky.csv"
+  },
+  {
+   "language": "ln",
+   "name": "Lingala",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-ln.csv",
+   "key_file": "ANSWER-KEY-ln.csv"
+  },
+  {
+   "language": "lo",
+   "name": "Lao",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-lo.csv",
+   "key_file": "ANSWER-KEY-lo.csv"
+  },
+  {
+   "language": "lt",
+   "name": "Lithuanian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-lt.csv",
+   "key_file": "ANSWER-KEY-lt.csv"
+  },
+  {
+   "language": "lv",
+   "name": "Latvian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-lv.csv",
+   "key_file": "ANSWER-KEY-lv.csv"
+  },
+  {
+   "language": "mg",
+   "name": "Malagasy",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-mg.csv",
+   "key_file": "ANSWER-KEY-mg.csv"
+  },
+  {
+   "language": "mk",
+   "name": "Macedonian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-mk.csv",
+   "key_file": "ANSWER-KEY-mk.csv"
+  },
+  {
+   "language": "ml",
+   "name": "Malayalam",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-ml.csv",
+   "key_file": "ANSWER-KEY-ml.csv"
+  },
+  {
+   "language": "mn",
+   "name": "Mongolian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-mn.csv",
+   "key_file": "ANSWER-KEY-mn.csv"
+  },
+  {
+   "language": "mr",
+   "name": "Marathi",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-mr.csv",
+   "key_file": "ANSWER-KEY-mr.csv"
+  },
+  {
+   "language": "ms",
+   "name": "Malay",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-ms.csv",
+   "key_file": "ANSWER-KEY-ms.csv"
+  },
+  {
+   "language": "my",
+   "name": "Burmese",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-my.csv",
+   "key_file": "ANSWER-KEY-my.csv"
+  },
+  {
+   "language": "ne",
+   "name": "Nepali",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-ne.csv",
+   "key_file": "ANSWER-KEY-ne.csv"
+  },
+  {
+   "language": "nl",
+   "name": "Dutch",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-nl.csv",
+   "key_file": "ANSWER-KEY-nl.csv"
+  },
+  {
+   "language": "no",
+   "name": "Norwegian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-no.csv",
+   "key_file": "ANSWER-KEY-no.csv"
+  },
+  {
+   "language": "nso",
+   "name": "Northern Sotho",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-nso.csv",
+   "key_file": "ANSWER-KEY-nso.csv"
+  },
+  {
+   "language": "om",
+   "name": "Oromo",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-om.csv",
+   "key_file": "ANSWER-KEY-om.csv"
+  },
+  {
+   "language": "or",
+   "name": "Odia",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-or.csv",
+   "key_file": "ANSWER-KEY-or.csv"
+  },
+  {
+   "language": "pa",
+   "name": "Punjabi",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-pa.csv",
+   "key_file": "ANSWER-KEY-pa.csv"
+  },
+  {
+   "language": "pl",
+   "name": "Polish",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-pl.csv",
+   "key_file": "ANSWER-KEY-pl.csv"
+  },
+  {
+   "language": "ps",
+   "name": "Pashto",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-ps.csv",
+   "key_file": "ANSWER-KEY-ps.csv"
+  },
+  {
+   "language": "pt",
+   "name": "Portuguese",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-pt.csv",
+   "key_file": "ANSWER-KEY-pt.csv"
+  },
+  {
+   "language": "ro",
+   "name": "Romanian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-ro.csv",
+   "key_file": "ANSWER-KEY-ro.csv"
+  },
+  {
+   "language": "ru",
+   "name": "Russian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-ru.csv",
+   "key_file": "ANSWER-KEY-ru.csv"
+  },
+  {
+   "language": "rw",
+   "name": "Kinyarwanda",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-rw.csv",
+   "key_file": "ANSWER-KEY-rw.csv"
+  },
+  {
+   "language": "sd",
+   "name": "Sindhi",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-sd.csv",
+   "key_file": "ANSWER-KEY-sd.csv"
+  },
+  {
+   "language": "si",
+   "name": "Sinhala",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-si.csv",
+   "key_file": "ANSWER-KEY-si.csv"
+  },
+  {
+   "language": "sk",
+   "name": "Slovak",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-sk.csv",
+   "key_file": "ANSWER-KEY-sk.csv"
+  },
+  {
+   "language": "sl",
+   "name": "Slovenian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-sl.csv",
+   "key_file": "ANSWER-KEY-sl.csv"
+  },
+  {
+   "language": "sn",
+   "name": "Shona",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-sn.csv",
+   "key_file": "ANSWER-KEY-sn.csv"
+  },
+  {
+   "language": "so",
+   "name": "Somali",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-so.csv",
+   "key_file": "ANSWER-KEY-so.csv"
+  },
+  {
+   "language": "sq",
+   "name": "Albanian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-sq.csv",
+   "key_file": "ANSWER-KEY-sq.csv"
+  },
+  {
+   "language": "sr",
+   "name": "Serbian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-sr.csv",
+   "key_file": "ANSWER-KEY-sr.csv"
+  },
+  {
+   "language": "st",
+   "name": "Southern Sotho",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-st.csv",
+   "key_file": "ANSWER-KEY-st.csv"
+  },
+  {
+   "language": "sv",
+   "name": "Swedish",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-sv.csv",
+   "key_file": "ANSWER-KEY-sv.csv"
+  },
+  {
+   "language": "sw",
+   "name": "Swahili",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-sw.csv",
+   "key_file": "ANSWER-KEY-sw.csv"
+  },
+  {
+   "language": "ta",
+   "name": "Tamil",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-ta.csv",
+   "key_file": "ANSWER-KEY-ta.csv"
+  },
+  {
+   "language": "te",
+   "name": "Telugu",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-te.csv",
+   "key_file": "ANSWER-KEY-te.csv"
+  },
+  {
+   "language": "tg",
+   "name": "Tajik",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-tg.csv",
+   "key_file": "ANSWER-KEY-tg.csv"
+  },
+  {
+   "language": "th",
+   "name": "Thai",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-th.csv",
+   "key_file": "ANSWER-KEY-th.csv"
+  },
+  {
+   "language": "ti",
+   "name": "Tigrinya",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-ti.csv",
+   "key_file": "ANSWER-KEY-ti.csv"
+  },
+  {
+   "language": "tn",
+   "name": "Tswana",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-tn.csv",
+   "key_file": "ANSWER-KEY-tn.csv"
+  },
+  {
+   "language": "tr",
+   "name": "Turkish",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-tr.csv",
+   "key_file": "ANSWER-KEY-tr.csv"
+  },
+  {
+   "language": "ts",
+   "name": "Tsonga",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-ts.csv",
+   "key_file": "ANSWER-KEY-ts.csv"
+  },
+  {
+   "language": "uk",
+   "name": "Ukrainian",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-uk.csv",
+   "key_file": "ANSWER-KEY-uk.csv"
+  },
+  {
+   "language": "ur",
+   "name": "Urdu",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-ur.csv",
+   "key_file": "ANSWER-KEY-ur.csv"
+  },
+  {
+   "language": "uz",
+   "name": "Uzbek",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-uz.csv",
+   "key_file": "ANSWER-KEY-uz.csv"
+  },
+  {
+   "language": "vi",
+   "name": "Vietnamese",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-vi.csv",
+   "key_file": "ANSWER-KEY-vi.csv"
+  },
+  {
+   "language": "wo",
+   "name": "Wolof",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-wo.csv",
+   "key_file": "ANSWER-KEY-wo.csv"
+  },
+  {
+   "language": "xh",
+   "name": "Xhosa",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-xh.csv",
+   "key_file": "ANSWER-KEY-xh.csv"
+  },
+  {
+   "language": "zh",
+   "name": "Chinese (Mandarin)",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-zh.csv",
+   "key_file": "ANSWER-KEY-zh.csv"
+  },
+  {
+   "language": "zu",
+   "name": "Zulu",
+   "items": 34,
+   "engines": [
+    "auto"
+   ],
+   "review_file": "review-zu.csv",
+   "key_file": "ANSWER-KEY-zu.csv"
+  }
+ ]
+}

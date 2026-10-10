@@ -127,7 +127,13 @@ FORWARD: dict[str, Route | None] = {
     # tc-big pairs where no plain pair exists
     "pt": _opus("opus-mt-tc-big-en-pt", by="tc-big"),
     "tr": _opus("opus-mt-tc-big-en-tr", by="tc-big"),
-    "ko": _opus("opus-mt-tc-big-en-ko", by="tc-big"),
+    # NOT opus-mt-tc-big-en-ko. It loads, it answers, and every answer is word
+    # salad -- "프로세스、 인기560、 25% 이스케이프。" for "the price is two
+    # thousand naira per bag" -- with 13 of 34 outputs not even in Hangul.
+    # Measured 10 Oct 2026; the other four tc-big models (pt, tr, lt, lv) are
+    # fine. M2M100 renders the same sentence as 가격은 가방 당 2천 나이라입니다,
+    # at ~2.8 s instead of 0.37 s, which is the price of being right.
+    "ko": _m2m("ko"),
     "lt": _opus("opus-mt-tc-big-en-lt", by="tc-big"),
     "lv": _opus("opus-mt-tc-big-en-lv", by="tc-big"),
     # language-group models, token read from vocab.json

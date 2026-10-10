@@ -170,11 +170,18 @@ _SCRIPT_OF_NAME = (
 _ACCEPTS = {"Jpan": {"Jpan", "Hans"}, "Kore": {"Kore", "Hans"}, "Hant": {"Hant", "Hans"}}
 
 
+# Letters that are not prose and keep their script in ANY correct translation:
+# urls, hashtags, handles and identifier-shaped tokens such as OTP-483920. The
+# first international run flagged 45 correct outputs across 20 languages because
+# the only Latin letters in them were the ones the SOURCE put there.
+_NOT_PROSE = re.compile(r"https?://\S+|www\.\S+|[#@]\w+|\b[A-Z]{2,}-?\s?\d[\w-]*\b")
+
+
 def _dominant_wrong_script(text: str, expected: str) -> str | None:
     """The script most of the letters are in, if it is not one the expected
     language is written in; None when the text has no letters or is fine."""
     counts: Counter = Counter()
-    for ch in text:
+    for ch in _NOT_PROSE.sub(" ", text):
         if not ch.isalpha():
             continue
         name = unicodedata.name(ch, "")
@@ -184,7 +191,10 @@ def _dominant_wrong_script(text: str, expected: str) -> str | None:
                 break
         else:
             counts["Other"] += 1
-    if not counts:
+    # Fewer than four letters is not prose -- it is what is left of an
+    # identifier or a url after the model rearranged it -- and no script can
+    # be judged from it. A real wrong-script failure has dozens.
+    if sum(counts.values()) < 4:
         return None
     dominant = counts.most_common(1)[0][0]
     return None if dominant in _ACCEPTS.get(expected, {expected}) else dominant
