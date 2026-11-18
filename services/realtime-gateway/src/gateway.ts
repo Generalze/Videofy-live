@@ -784,6 +784,12 @@ export class Gateway {
       }),
     });
     this.io = new SocketServer(httpServer, {
+      // Public WebSocket connections can briefly stall while the browser is
+      // negotiating WebRTC or the proxy is flushing a large media request.
+      // The defaults (25s interval / 20s timeout) turn that pause into a
+      // false gateway outage and tear down the operator session.
+      pingInterval: 10_000,
+      pingTimeout: 60_000,
       cors: {
         // P6.5 (R7): dev origins ∪ ACTIVE projects' origins, resolved per
         // handshake. Reaching the transport is necessary but never
