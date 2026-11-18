@@ -829,11 +829,23 @@ export default function App(): React.ReactElement {
         applyProcessingSession(session);
         await publishProgrammeSessionConfig(binding);
 
-        const source = await manager.start({ captureForTransport: false });
+        // Uploaded video still has to publish its audio/video tracks to the
+        // gateway.  Starting local playback alone leaves the backend transport
+        // closed, so ingest remains at 0/0 and transcription never begins.
+        const source = await manager.start({ captureForTransport: true });
         sourceStarted = source.broadcasting;
         if (!source.broadcasting) {
           throw new Error('Programme source did not start playback.');
         }
+        const sourceStream = manager.getStream();
+        if (!sourceStream) {
+          throw new Error('Uploaded programme source did not expose a WebRTC capture stream.');
+        }
+        await transport.start(sourceStream);
+        await transport.waitForBackendMedia({
+          requireVideo: preparedSource.videoDetected,
+          timeoutMs: PROGRAMME_MEDIA_READY_TIMEOUT_MS,
+        });
         return;
       }
 
