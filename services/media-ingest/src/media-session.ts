@@ -732,7 +732,12 @@ export class ProcessingSessionStore {
       };
       session.media = media;
       this.transition(session.id, 'ready');
-      return await this.startAudioExtraction(session.id);
+      // A media upload must be acknowledged before extraction/transcription
+      // completes.  Waiting here keeps the HTTP request open while ffmpeg and
+      // the local AI pipeline run, which causes the browser/proxy to abort it
+      // with HTTP 408.  The session event stream reports the actual progress.
+      void this.startAudioExtraction(session.id);
+      return { ...session };
     } catch (error) {
       return this.failSession(session, error, 'Media validation failed.');
     }
