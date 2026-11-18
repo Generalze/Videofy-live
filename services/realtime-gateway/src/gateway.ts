@@ -3092,7 +3092,7 @@ export class Gateway {
     const run = this.programmeRuns.get(config.sessionId);
     const delivery = run === undefined ? undefined : this.relay.deliveryFor(run.runId);
     const state: MediaStateEvent = {
-      eventId: 'Videofy Live Demo Event',
+      eventId: 'C7 / Videofy Live Programme',
       // So the console can ask what THIS airing is doing.
       ...(run === undefined ? {} : { programmeRunId: run.runId }),
       /*
