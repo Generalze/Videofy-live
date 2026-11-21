@@ -744,7 +744,7 @@ export class ProcessingSessionStore {
         });
         return { ...session };
       }
-      return await this.startAudioExtraction(session.id);
+      return this.startAudioExtraction(session.id);
     } catch (error) {
       return this.failSession(session, error, 'Media validation failed.');
     }
