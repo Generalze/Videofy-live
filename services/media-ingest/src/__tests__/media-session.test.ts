@@ -208,7 +208,7 @@ describe('ProcessingSessionStore', () => {
     );
 
     expect(accepted.state).toBe('processing');
-    expect(accepted.audioExtraction.status).toBe('extracting');
+    expect(accepted.audioExtraction.status).toBe('chunking');
     expect(releaseExtraction).toBeDefined();
     releaseExtraction?.(
       completedExtraction([
@@ -455,7 +455,7 @@ describe('ProcessingSessionStore', () => {
       id: created.id,
       sourceKind: 'upload',
       state: 'processing',
-      audioExtraction: { status: 'extracting' },
+      audioExtraction: { status: 'chunking' },
     });
   });
 
