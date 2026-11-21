@@ -718,7 +718,9 @@ export class IngestService {
   }
 
   async createProcessingSession(upload: UploadedMediaFile): Promise<ProcessingSession> {
-    const session = await this.sessions.createFromUpload(upload);
+    const session = await this.sessions.createFromUpload(upload, undefined, {
+      waitForProcessing: false,
+    });
     logger.info('Processing session ready', {
       sessionId: session.id,
       streamId: session.streamId,

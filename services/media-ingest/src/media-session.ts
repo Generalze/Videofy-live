@@ -636,6 +636,7 @@ export class ProcessingSessionStore {
   async createFromUpload(
     upload: UploadedMediaFile,
     probe: MediaProbe = ffprobeMedia,
+    options: { waitForProcessing?: boolean } = {},
   ): Promise<ProcessingSession> {
     const supported = resolveSupportedMedia(upload.originalName, upload.mimeType);
     const sourceLanguageControl = createInitialSourceLanguageControl({
@@ -736,11 +737,14 @@ export class ProcessingSessionStore {
       // completes.  Waiting here keeps the HTTP request open while ffmpeg and
       // the local AI pipeline run, which causes the browser/proxy to abort it
       // with HTTP 408.  The session event stream reports the actual progress.
-      void this.startAudioExtraction(session.id).catch(() => {
-        // Failures are persisted and emitted by failSession; this background
-        // task has no awaiting HTTP request to receive its rejection.
-      });
-      return { ...session };
+      if (options.waitForProcessing === false) {
+        void this.startAudioExtraction(session.id).catch(() => {
+          // Failures are persisted and emitted by failSession; this background
+          // task has no awaiting HTTP request to receive its rejection.
+        });
+        return { ...session };
+      }
+      return await this.startAudioExtraction(session.id);
     } catch (error) {
       return this.failSession(session, error, 'Media validation failed.');
     }
