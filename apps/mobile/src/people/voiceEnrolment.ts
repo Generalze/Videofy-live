@@ -22,7 +22,7 @@
  */
 
 /** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. Staging mounts media-ingest at /media (deploy/staging/Caddyfile). */
-export const INGEST_URL = process.env['EXPO_PUBLIC_INGEST_URL'] ?? 'https://staging.consummate7.com/media';
+export const INGEST_URL = process.env.EXPO_PUBLIC_INGEST_URL ?? 'https://staging.consummate7.com/media';
 
 /** The consent wording the person accepted; the same version the web app records. */
 export const VOICE_CONSENT_TEXT_VERSION = 'voice-consent-v1';

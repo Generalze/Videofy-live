@@ -105,9 +105,20 @@ function governedRig(): {
   };
 
   const app = express();
-  registerGeneratedAudioDeliveryRoute(app, alwaysHasAudio() as never, guard);
+  registerGeneratedAudioDeliveryRoute(app, alwaysHasAudio() as never, admitEveryone, guard);
   return { app, registry };
 }
+
+/**
+ * An audience door that admits everybody, so these cases measure the ROUTE.
+ *
+ * Stated rather than absent: until 29 Sep 2026 these routes took no audience
+ * guard at all, which let a locked broadcast's media be fetched by anyone
+ * holding a session id. The dependency is required now, so a test has to say
+ * which door it is using. The refusal itself is covered in
+ * programme-session-guard.test.ts.
+ */
+const admitEveryone: express.RequestHandler = (_req, _res, next) => next();
 
 describe('translated audio the cursor has released', () => {
   it('is served', async () => {
@@ -181,7 +192,9 @@ describe('the composition root applies it', () => {
   const source = readFileSync(fileURLToPath(new URL('../index.ts', import.meta.url)), 'utf8');
 
   it('passes a real guard rather than registering the route bare', () => {
-    expect(source).toContain('registerGeneratedAudioDeliveryRoute(app, ingest, {');
+    // The audience guard sits between the service and the cursor guard
+    // since 29 Sep 2026; both are required, and both are named here.
+    expect(source).toContain('registerGeneratedAudioDeliveryRoute(app, ingest, programmeSessionAudience, {');
     expect(source).toContain('programmeTimelines.runForSession(sessionId)');
     expect(source).toContain('status.cursor.publicOutputTimeMs');
   });

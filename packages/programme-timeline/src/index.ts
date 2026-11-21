@@ -184,6 +184,32 @@ export class ProgrammeTimeline {
     );
   }
 
+  /**
+   * Everything due by this output position, in programme order.
+   *
+   * WHY THIS EXISTS ALONGSIDE `between`. The comment on `append` above says
+   * it plainly: "Events do not arrive in programme order -- a translation of
+   * a sentence lands after later audio has already been written." A cursor
+   * that releases a half-open TIME window cannot emit those. The translation
+   * is written at the sentence's programme time, the live edge has already
+   * moved past it, and `between`'s exclusive lower bound skips it for ever.
+   *
+   * Measured consequence, found by audit 29 Sep 2026: on a programme every
+   * `generated-audio` event was authored behind the cursor and released to
+   * nobody, for the life of the process.
+   *
+   * So the window answers "what is due", and the caller is responsible for
+   * emitting each event exactly once by IDENTITY. A sequence watermark is not
+   * enough on its own -- an event with a low sequence and a future programme
+   * time is not yet due, and a watermark would step over it -- which is why
+   * `ProgrammeOutputBuffer` keeps the set rather than a number.
+   */
+  dueBy(toInclusiveMs: number): readonly ProgrammeTimelineEvent[] {
+    return inProgrammeOrder(
+      this.events.filter((event) => event.programmeTimeMs <= toInclusiveMs),
+    );
+  }
+
   /** Events in a half-open window, for emitting exactly once as the cursor moves. */
   between(fromExclusiveMs: number, toInclusiveMs: number): readonly ProgrammeTimelineEvent[] {
     return inProgrammeOrder(

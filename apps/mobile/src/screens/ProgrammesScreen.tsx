@@ -58,7 +58,7 @@ import { useChannelInterest } from '../programmes/useChannelInterest';
 import { C7, Chip, GlassCard, SectionHeading } from '../ui/c7';
 import { Icon } from '../ui/icons';
 
-const GATEWAY_URL = process.env['EXPO_PUBLIC_GATEWAY_URL'] ?? 'https://staging.consummate7.com';
+const GATEWAY_URL = process.env.EXPO_PUBLIC_GATEWAY_URL ?? 'https://staging.consummate7.com';
 /** One stable empty list, so the memos and the push-open effect do not re-run on every render before the directory arrives. */
 const NO_CHANNELS: readonly ChannelSummary[] = [];
 

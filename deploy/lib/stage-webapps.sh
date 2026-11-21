@@ -50,6 +50,7 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 export VITE_GATEWAY_URL=/
 export VITE_CALL_PATH=/call/
 export VITE_ACCOUNT_URL=/auth
+export VITE_GOOGLE_WEB_CLIENT_ID=692573915541-13t0122j4bd8vkgkainvh91cjt9vfdil.apps.googleusercontent.com
 export VITE_INGEST_URL=/media
 export VITE_VIEWER_BASE=/listen
 export VITE_PROGRESSIVE_TRANSLATED_AUDIO=true
@@ -126,6 +127,17 @@ for app in ecosystem-web call-web listener-web operator-web; do
   }
   check_endpoint '/auth'  'VITE_ACCOUNT_URL|localhost:3006'
   check_endpoint '/media' 'VITE_INGEST_URL|localhost:3002'
+
+  # The Google sign-in button, which only ecosystem-web carries. Its client id
+  # is compiled in exactly like the endpoints above, and fails exactly like
+  # them: absent, the button is silently never drawn, no request is made, and
+  # nothing anywhere reports a fault. The id is public -- it travels in every
+  # request Google's own script makes -- so asserting it is in the bundle
+  # discloses nothing that the bundle does not already.
+  if [ "$app" = "ecosystem-web" ]      && ! grep -qrF -- 'apps.googleusercontent.com' "$dir" 2>/dev/null; then
+    echo "REFUSED: ecosystem-web names no Google client id -- its build did not receive VITE_GOOGLE_WEB_CLIENT_ID" >&2
+    missing=1
+  fi
 done
 if [ "$missing" -ne 0 ]; then
   echo "staging aborted: a bundle would have shipped without its endpoints" >&2

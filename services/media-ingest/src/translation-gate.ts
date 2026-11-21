@@ -34,6 +34,30 @@ import { createHash } from 'node:crypto';
 export type TranslationScope = 'messaging' | 'programme-live' | 'call-live';
 
 /**
+ * A live stream's service category, translated into the scope its approval
+ * must be judged under. The ONLY place that mapping is written down.
+ *
+ * WHY IT IS A FUNCTION AND NOT TWO LITERALS AT THE CALL SITES. Until 28 Sep
+ * this service never wrote `'call-live'` anywhere but the type above. Every
+ * gate was built with `'programme-live'` at boot, so a native call asked
+ * whether its language pair was approved for BROADCAST -- a stricter,
+ * separately reviewed question with a different answer. On the production
+ * document `en->fr` is approved for calls and not for programmes, exactly as
+ * reviewed, so the gate refused every segment of a translated call and the
+ * pipeline correctly declined to speak an untranslated one. Both people heard
+ * nothing for 55 seconds, with no error logged, because nothing was broken:
+ * the wrong question had been asked and answered honestly.
+ *
+ * The category is on the OPEN frame and the pipeline holds it. One function,
+ * one test, and a call site that cannot silently mean `programme` by default.
+ */
+export function scopeForServiceCategory(
+  serviceCategory: 'call' | 'programme',
+): TranslationScope {
+  return serviceCategory === 'call' ? 'call-live' : 'programme-live';
+}
+
+/**
  * The registry gate, structurally. Declared rather than imported so this module
  * compiles and tests without the registry package's build -- the same choice
  * the account service made, and for the same reason.

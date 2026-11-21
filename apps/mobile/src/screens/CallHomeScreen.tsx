@@ -55,7 +55,7 @@ import {
 } from '../conference/publicConferences';
 
 /** Not a secret; compiled into the bundle like every EXPO_PUBLIC_ value. */
-const GATEWAY_URL = process.env['EXPO_PUBLIC_GATEWAY_URL'] ?? 'https://staging.consummate7.com';
+const GATEWAY_URL = process.env.EXPO_PUBLIC_GATEWAY_URL ?? 'https://staging.consummate7.com';
 
 const ADJECTIVES = ['amber', 'bright', 'calm', 'clear', 'coral', 'gentle', 'golden', 'quiet'];
 const NOUNS = ['river', 'harbour', 'meadow', 'summit', 'lantern', 'compass', 'orchard', 'beacon'];

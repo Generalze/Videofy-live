@@ -43,6 +43,17 @@ export type ReplayFailureReason =
   | 'segment-conflict'
   /** A retained segment needs initialisation material that was never retained. */
   | 'initialisation-missing'
+  /**
+   * An initialisation object was offered with no bytes.
+   *
+   * SEPARATE FROM `initialisation-missing`, because the two look identical
+   * to a viewer and are different faults. Missing means nobody offered one.
+   * Empty means the producer offered a file that exists and holds nothing,
+   * which every size comparison downstream accepts -- zero copied equals
+   * zero declared, zero found equals zero expected -- so the recording
+   * reaches `available` and not one fragment will decode.
+   */
+  | 'initialisation-empty'
   /** An encoder generation was offered twice with different material. */
   | 'initialisation-conflict'
   /** Finalising something that retained nothing. */

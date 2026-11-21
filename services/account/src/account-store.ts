@@ -87,7 +87,17 @@ export interface AccountRecord {
   readonly listeningLanguage?: AccountDefaultLanguage;
   /** Normalised: lowercased and trimmed. The stored form IS the lookup key. */
   readonly email: string;
-  readonly passwordHash: string;
+  /**
+   * NULL FOR AN ACCOUNT BORN FROM A PROVIDER, and null is the only honest
+   * value for one.
+   *
+   * A generated password would be a credential that exists; a sentinel
+   * string would be a hash a careless comparison could match. Null cannot be
+   * compared to anything, so every password path has to decide what it means
+   * -- and the answer is always the same: there is no password here, so no
+   * password signs you in.
+   */
+  readonly passwordHash: string | null;
   /**
    * Bumped to invalidate every token issued so far. This is what makes "sign
    * out everywhere" mean something for a stateless token.
@@ -1091,6 +1101,84 @@ export class AccountStore {
   }
 
   /**
+   * Create an account for somebody a provider has just vouched for.
+   *
+   * WHY THIS IS NOT `register` WITH AN OPTIONAL PASSWORD. Every guard in
+   * `register` exists to protect a password: strength rejection, the scrypt
+   * cost, and the re-check after it because that cost opens a window. There is
+   * no password here and never will be, so those guards would be dead code
+   * standing in front of a door that is not there. What replaces them is the
+   * caller's obligation: this is only ever reached after
+   * `resolveFederatedSignIn` has returned `create`, under the lock that makes
+   * that decision and this write one step.
+   *
+   * NO AWAIT between the final check and the two writes below, which is what
+   * makes them atomic on a single-threaded runtime. `register` needs a comment
+   * explaining how it recovers that property after hashing; here it is simply
+   * never lost, and it must stay that way -- an await introduced into this
+   * method reopens the duplicate-account race it currently cannot have.
+   */
+  async registerFederated(input: {
+    email: string;
+    /**
+     * Whether the PROVIDER verified the address.
+     *
+     * The same boolean that decided whether this identity was allowed to claim
+     * an existing account, reused rather than re-derived. One source of truth:
+     * if these two ever disagreed, an address good enough to take over an
+     * account would be arriving marked unverified, or the reverse.
+     */
+    emailVerified: boolean;
+    displayName?: string;
+  }): Promise<RegistrationResult> {
+    const email = normaliseEmail(input.email);
+    if (email.length === 0 || email.length > MAX_EMAIL_LENGTH || !EMAIL_PATTERN.test(email)) {
+      return { ok: false, reason: 'invalid-email', message: 'Enter a valid email address.' };
+    }
+    if (this.byEmail.has(email)) {
+      return {
+        ok: false,
+        reason: 'already-exists',
+        message: 'An account already exists for that email address.',
+      };
+    }
+
+    const timestamp = new Date(this.now()).toISOString();
+    const displayName = input.displayName?.trim();
+    const account: AccountRecord = {
+      accountId: createAccountId(this.newAccountSuffix),
+      email,
+      ...(displayName !== undefined && displayName.length > 0 ? { displayName } : {}),
+      /*
+       * NULL, not a hash of something unguessable.
+       *
+       * A placeholder hash would make this account look password-capable to
+       * every path that checks for one, and the only way in would be a reset
+       * email for a password that was never set. Null says the true thing:
+       * there is no password here, and `authenticate` must refuse rather than
+       * compare against nothing.
+       */
+      passwordHash: null,
+      tokenVersion: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      /*
+       * A provider that says it verified the address has done the thing our
+       * own verification email does, so requiring a second one would ask
+       * somebody to prove what is already proven. A provider that says nothing
+       * leaves the channel unverified, exactly as a password sign-up does --
+       * absent is never a kind of verified.
+       */
+      trust: input.emailVerified ? { ...INITIAL_TRUST, email: 'verified' } : INITIAL_TRUST,
+    };
+
+    this.byId.set(account.accountId, account);
+    this.byEmail.set(email, account.accountId);
+    await this.persist(account);
+    return { ok: true, account };
+  }
+
+  /**
    * Whether this is really them.
    *
    * An unknown email still costs a password hash. Returning early would make
@@ -1105,6 +1193,15 @@ export class AccountStore {
 
     const accountId = this.byEmail.get(email);
     const account = accountId ? this.byId.get(accountId) : undefined;
+    /*
+     * A PROVIDER-ONLY ACCOUNT HAS NO PASSWORD, AND NO PASSWORD SIGNS IT IN.
+     *
+     * Its `passwordHash` is null, so it falls to the same dummy hash an
+     * unknown address uses, and the comparison fails. That is the intended
+     * answer and it costs the same time as every other refusal -- somebody
+     * probing cannot tell "no such account" from "that one signs in with
+     * Google" by how long the answer takes.
+     */
     const hash = account?.passwordHash ?? DUMMY_HASH;
     const matched = await verifyPassword(input.password, hash);
 
@@ -1117,7 +1214,9 @@ export class AccountStore {
     // Raising the cost later must not lock anybody out, so an old hash is
     // upgraded on the next successful sign-in — the one moment the plaintext
     // is legitimately in hand.
-    if (needsRehash(account.passwordHash)) {
+    // Only a real hash can be out of date. A null one is not a weak password
+    // to upgrade, it is the absence of one.
+    if (account.passwordHash !== null && needsRehash(account.passwordHash)) {
       /*
        * THE EXPENSIVE PART HAPPENS OUTSIDE THE LOCK, and the write happens
        * inside it against a FRESH read.

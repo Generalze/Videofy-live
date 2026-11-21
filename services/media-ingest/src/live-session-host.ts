@@ -117,7 +117,25 @@ export function planSpeechTargets(input: {
 
 export interface LiveSessionHostDeps {
   readonly transcription: StreamingTranscriptionProvider;
-  readonly translation: TimestampedTranslationProvider;
+  /**
+   * The translator for THIS stream's service category, asked per stream.
+   *
+   * A FUNCTION, NOT A PROVIDER. It was a provider, and the one this host was
+   * handed had a `programme-live` gate baked into it -- so a native call's
+   * every segment was judged against broadcast approval. Measured 28 Sep
+   * 2026: a 55-second French call, both directions, zero translated frames,
+   * no error. The category is on the OPEN frame and sits three lines from
+   * here; the join was simply never made.
+   */
+  readonly translationFor: (
+    serviceCategory: 'call' | 'programme',
+  ) => TimestampedTranslationProvider;
+  /**
+   * For decisions that leave a participant hearing nothing. Kept separate
+   * from `log` because this host's `log` is a debug channel and a silenced
+   * call is not a debug event. See the pipeline's `warn`.
+   */
+  readonly warn?: (line: string, detail?: Record<string, unknown>) => void;
   /** Null means captions only: nothing is translated into speech. */
   readonly synthesis: StreamingSpeechSynthesisProvider | null;
   readonly mintSegmentId: (open: IngressOpen) => string;
@@ -313,12 +331,46 @@ export class LiveSessionHost implements IngressStreamHandler {
      * which from a participant's seat is captions with silence, identical to
      * broken synthesis.
      */
-    deps.log?.('live speech plans resolved', {
+    /*
+     * AND IT IS SAID AT A LEVEL SOMEBODY CAN HEAR.
+     *
+     * The comment above called zero "an invisible failure" and then reported
+     * it through `log`, which the composition root wires to `logger.debug`,
+     * on deployments running at LOG_LEVEL=info. So the one line that
+     * distinguishes "this call is captions-only by design" from "this call
+     * will have captions and silence" was written and discarded.
+     *
+     * Measured twice. On 28 Sep a translated call produced no audio and the
+     * investigation went looking in the gate. On 2 Oct another one did, and
+     * this line -- which would have answered it in a second -- was again
+     * invisible, so the service had to be put into debug on a live box to
+     * find out. That is two outages explained by a log level.
+     *
+     * Zero plans with nothing asked for is captions-only and unremarkable.
+     * Zero plans when the stream DID ask to be spoken is a participant
+     * hearing nothing, and it warns.
+     */
+    const detail = {
       sessionId: open.sessionId,
+      serviceCategory: open.context.serviceCategory,
       synthesisConfigured: deps.synthesis !== null,
       planCount: plans.length,
       languages: plans.map((plan) => plan.targetLanguage),
-    });
+    };
+    if (plans.length === 0) {
+      deps.warn?.('no language will be SPOKEN on this stream; captions only', {
+        ...detail,
+        consequence:
+          'every participant hears the original and nothing is synthesised, which is ' +
+          'indistinguishable from broken synthesis from their seat',
+        likelyCause:
+          deps.synthesis === null
+            ? 'no synthesis stack is configured on this deployment'
+            : 'every target language was marked text-only, or carried no voice id',
+      });
+    } else {
+      deps.log?.('live speech plans resolved', detail);
+    }
     const speech = new Map<string, LiveTranslationPipeline>();
 
     for (const plan of plans) {
@@ -332,7 +384,22 @@ export class LiveSessionHost implements IngressStreamHandler {
         targetLanguage: plan.targetLanguage,
         voiceId: plan.voiceId,
         minSpokenConfidence: deps.minSpokenConfidence ?? DEFAULT_MIN_SPOKEN_CONFIDENCE,
-        translation: deps.translation,
+        // The SAME category the pipeline is given on the line above. A call is
+        // judged against call approvals and a programme against programme
+        // approvals, which is the distinction the route document exists to
+        // record and which this service ignored until 28 Sep 2026.
+        translation: deps.translationFor(open.context.serviceCategory),
+        /*
+         * A DECISION THAT LEAVES SOMEBODY IN SILENCE IS NOT DEBUG CHATTER.
+         *
+         * `log` below is wired to `logger.debug` and that is right for the
+         * chatter of a working stream. It was also, until 28 Sep 2026, the
+         * only channel the pipeline had -- so "nothing will be spoken for
+         * this segment" was written at debug on a box running at info, and
+         * the 55-second silent call left no trace of the one line that
+         * explained it.
+         */
+        ...(deps.warn === undefined ? {} : { warn: deps.warn }),
         synthesis,
         // Straight back down the same socket the audio came up. The LANGUAGE
         // travels with every frame: several pipelines share this socket and a

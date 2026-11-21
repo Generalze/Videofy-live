@@ -112,3 +112,41 @@ export function shouldDismissIncoming(check: DirectCallCheck | null): boolean {
   if (check === null) return false;
   return !check.ring;
 }
+
+/** As much of the ringing screen's state as a confirmation poll can change. */
+export interface RingingCall {
+  readonly callId: string;
+  readonly callerSpeaks?: string | null;
+}
+
+/**
+ * WHAT A CONFIRMATION POLL DOES TO THE SCREEN THAT IS ALREADY UP.
+ *
+ * The push that wakes a phone carries a name and a mode and no language of any
+ * kind, so the caller's spoken language -- half of the board's language pill --
+ * can only arrive with the poll that confirms the call is still live. This is
+ * that fold, and it lives here rather than in the app shell because NOTHING
+ * TESTS THE APP SHELL: a decision made inline there is a decision nothing can
+ * check, which is how this repository keeps shipping two working halves with
+ * no join between them.
+ *
+ * Returns the SAME object when nothing moved, so a two-second poll cannot
+ * re-render a ringing screen for the length of the ring.
+ *
+ * @param current the call on screen, or null if it has already gone
+ * @param callId the call this poll was about; a late answer for a call that
+ *   has been replaced is dropped rather than applied to its successor
+ */
+export function applyCheckToRinging<T extends RingingCall>(
+  current: T | null,
+  callId: string,
+  check: DirectCallCheck | null,
+): T | null {
+  if (current === null || current.callId !== callId) return current;
+  // A poll that failed says nothing. It is not news that the caller has no
+  // language, only that this phone could not ask.
+  if (check === null) return current;
+  const speaks = check.callerSpeakLanguage;
+  if ((current.callerSpeaks ?? null) === speaks) return current;
+  return { ...current, callerSpeaks: speaks };
+}

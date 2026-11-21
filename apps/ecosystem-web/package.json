@@ -16,6 +16,7 @@
   },
   "dependencies": {
     "@videofy-live/design-system": "*",
+    "@videofy-live/language-catalogue": "*",
     "@videofy-live/language-specialist": "*",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"

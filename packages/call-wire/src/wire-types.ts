@@ -15,10 +15,25 @@
  */
 
 /**
- * Call languages with registered development voices; primary subtags only.
- * Must stay identical to call-session's CallLanguage.
+ * A LANGUAGE CATALOGUE CODE; primary subtags only. Must stay identical to
+ * call-session's CallLanguage.
+ *
+ * This was `'en' | 'es' | 'fr'`, and that union was the cage. Everything
+ * around it had already widened -- the account store, the account routes, the
+ * mobile API client, media ingest's ninety-eight published targets, and the
+ * gateway's own acceptance schema, which deliberately takes any string
+ * because "the store owns the language vocabulary". Only the call path still
+ * said three, so a Hausa profile reached a call as `undefined` and the call
+ * carried no target language at all. Production showed the result on every
+ * session: `targetLanguages:[]`, `willTranslate:false`, while approved
+ * en<->ha/ig/yo/pcm routes sat live and unreachable.
+ *
+ * Deliberately NOT a union of the ninety-eight codes, matching
+ * AccountDefaultLanguage: the catalogue grows, and a type regenerated each
+ * time it does is a type that gets copied wrongly. The catalogue
+ * (packages/language-catalogue) is the authority, checked at the boundary.
  */
-export type CallLanguage = 'en' | 'es' | 'fr';
+export type CallLanguage = string;
 
 export type CallVoiceGender = 'male' | 'female';
 

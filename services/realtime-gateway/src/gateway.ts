@@ -46,6 +46,7 @@ import {
   type ChannelAssignedPayload,
   type OperatorChannelSettingsPayload,
   SOCKET_EVENTS,
+  SOCKET_ERROR_CODES,
   type TranslatedAudioFramePayload,
   WEBRTC_BACKEND_MEDIA_PEER_ID,
   WEBRTC_SIGNALLING_LIMITS,
@@ -222,6 +223,8 @@ export class Gateway {
    * before there is an incident rather than after.
    */
   private readonly operatorAuthority: OperatorAuthority;
+  /** Whether a socket claiming an internal role presented the right secret. */
+  private readonly internalServiceAllowed: (presented: string | undefined) => boolean;
   private readonly operatorAccounts = new Map<string, string>();
   private readonly activeWorkers = new Set<string>();
   private readonly activeIngestClients = new Set<string>();
@@ -356,6 +359,26 @@ export class Gateway {
   }
   private listenerCount = 0;
 
+  /**
+   * Video signalling relayed into a room with NOBODY IN IT, cumulative.
+   *
+   * Distinct from a refusal: the gateway accepted the payload, checked the
+   * sender's binding and the target's membership, and delivered it to an
+   * empty room. From the sender that is indistinguishable from success, and
+   * from `videoRelayDrops` it is indistinguishable from nothing happening.
+   */
+  private videoRelayNoListenerCount = 0;
+
+  /**
+   * Video signalling relayed, BY KIND (offer / answer / ice).
+   *
+   * Offers relayed with zero answers relayed back is the signature of a
+   * callee that received the offer and never replied -- a state in which the
+   * caller's own log reads `offer-sent`, the refusal counter reads 0 and the
+   * empty-room counter reads 0, all truthfully, while no video ever flows.
+   */
+  private readonly videoRelayByKind: Record<string, number> = {};
+
   // ---- P6.5 Connect control plane (FE3) --------------------------------
   /** Null when connect-projects.json is absent or Connect is unconfigured: /v1 fails closed. */
   private readonly connectRegistry: ConnectProjectRegistry | null;
@@ -428,6 +451,29 @@ export class Gateway {
         /** Approved to translate this direction on a live call. Absent refuses. */
         callLiveRouteApproved?: (sourceLanguage: string, targetLanguage: string) => boolean;
       };
+      /**
+       * Whether a socket claiming to be an internal service really is one.
+       *
+       * OMITTED MEANS TRUST NOBODY. Until 29 Sep 2026 the `ingest` and
+       * `worker` roles were taken from a query parameter and authenticated by
+       * nothing -- `operator` was the only role with an admission check, and
+       * its own comment said so while listing exactly the reason the others
+       * needed one: those roles CONTROL a live broadcast.
+       *
+       * What an unauthenticated `ingest` socket could do: set the programme
+       * delivery policy, which the relay authority's own header calls
+       * safety-critical because it decides whether an unbound session's
+       * tracks may be relayed live. One frame announcing `live` on a
+       * protected broadcast releases the studio feed the compliance delay
+       * exists to hold back. A conflicting frame sets a policy-conflict flag
+       * that has no reset path anywhere in the code, so every subsequent
+       * programme is refused until the process restarts -- a permanent denial
+       * of service from one message.
+       *
+       * Absent in tests and embedders, which then get a gateway that refuses
+       * internal roles rather than one that trusts them.
+       */
+      internalServiceAllowed?: (presented: string | undefined) => boolean;
       operator?: {
         authSecret?: string | undefined;
         requireEntitlement?: boolean;
@@ -447,6 +493,7 @@ export class Gateway {
     this.channelLiveHook = options.onChannelLive ?? null;
     this.channelSalt = options.operator?.channelSalt ?? 'videofy-live-channel';
     this.channelIdentity = options.channelIdentity ?? NULL_CHANNEL_IDENTITY;
+    this.internalServiceAllowed = options.internalServiceAllowed ?? (() => false);
     this.operatorAuthority = createOperatorAuthority({
       secret: options.operator?.authSecret,
       ...(options.operator?.requireEntitlement === undefined
@@ -653,6 +700,35 @@ export class Gateway {
     this.callRuntime = new CallRuntime({
       store: this.callSessionStore,
       emitToRoom: (room, event, payload) => {
+        /*
+         * AN EMIT INTO AN EMPTY ROOM SUCCEEDS, SILENTLY, AND THAT IS THE
+         * BLIND SPOT THIS COUNTS.
+         *
+         * Video signalling is relayed into the TARGET's private room. If that
+         * target holds a seat but has no socket in the room -- reconnecting,
+         * reaped, or never joined it -- the relay passes every check the
+         * gateway makes, is not a refusal, and reaches nobody. Measured on two
+         * handsets: the caller logged `offer-sent` twice and no answer ever
+         * came back, while `videoRelayDrops` stayed at 0. Both facts are true
+         * at once only if the offer was relayed into a room with nobody in it.
+         *
+         * Video only: the programme and caption rooms are legitimately empty
+         * all the time, and counting those would bury the signal.
+         */
+        if (event.startsWith('call:video:')) {
+          const listeners = this.io.sockets.adapter.rooms.get(room)?.size ?? 0;
+          if (listeners === 0) this.videoRelayNoListenerCount += 1;
+          /*
+           * COUNTED BY KIND, because offers and answers failing are different
+           * faults with different owners. An offer relayed to a live room and
+           * no answer ever relayed back means the CALLEE received it and did
+           * not reply -- which is invisible from the caller, whose own log
+           * shows a perfectly good `offer-sent`, and invisible from the drop
+           * and empty-room counters, which are both honestly zero.
+           */
+          const kind = event.slice('call:video:'.length);
+          this.videoRelayByKind[kind] = (this.videoRelayByKind[kind] ?? 0) + 1;
+        }
         this.io.to(room).emit(event, payload);
       },
       ingestControl: new HttpMediaTranscriptionSubmissionClient({
@@ -708,6 +784,12 @@ export class Gateway {
       }),
     });
     this.io = new SocketServer(httpServer, {
+      // Public WebSocket connections can briefly stall while the browser is
+      // negotiating WebRTC or the proxy is flushing a large media request.
+      // The defaults (25s interval / 20s timeout) turn that pause into a
+      // false gateway outage and tear down the operator session.
+      pingInterval: 10_000,
+      pingTimeout: 60_000,
       cors: {
         // P6.5 (R7): dev origins ∪ ACTIVE projects' origins, resolved per
         // handshake. Reaching the transport is necessary but never
@@ -917,20 +999,37 @@ export class Gateway {
         });
         break;
       }
+      /*
+       * BOTH INTERNAL ROLES ARE ADMITTED BEFORE THEY ARE WIRED.
+       *
+       * `operator` used to be the only authenticated role, and its comment
+       * explained why in terms that applied just as well to these: a
+       * listener joins and receives, but an ingest socket SETS THE DELIVERY
+       * POLICY for a protected broadcast. Until 29 Sep 2026 that was a query
+       * parameter anybody could type.
+       *
+       * Refused before joining the room, so a rejected socket never receives
+       * an internal broadcast on its way out -- the same ordering, for the
+       * same reason.
+       */
       case 'worker':
-        void socket.join(WORKER_ROOM);
-        this.activeWorkers.add(socket.id);
-        this.handleWorkerSocket(socket);
-        this.broadcastServiceStatus('speech-worker', 'healthy', socket.id);
-        logger.info('Speech worker connected', { socketId: socket.id });
+      case 'ingest': {
+        if (!this.admitInternalService(socket, role)) return;
+        if (role === 'worker') {
+          void socket.join(WORKER_ROOM);
+          this.activeWorkers.add(socket.id);
+          this.handleWorkerSocket(socket);
+          this.broadcastServiceStatus('speech-worker', 'healthy', socket.id);
+          logger.info('Speech worker connected', { socketId: socket.id });
+        } else {
+          void socket.join(INGEST_ROOM);
+          this.activeIngestClients.add(socket.id);
+          this.handleIngestSocket(socket);
+          this.broadcastServiceStatus('media-ingest', 'healthy', socket.id);
+          logger.info('Media ingest connected', { socketId: socket.id });
+        }
         break;
-      case 'ingest':
-        void socket.join(INGEST_ROOM);
-        this.activeIngestClients.add(socket.id);
-        this.handleIngestSocket(socket);
-        this.broadcastServiceStatus('media-ingest', 'healthy', socket.id);
-        logger.info('Media ingest connected', { socketId: socket.id });
-        break;
+      }
       case 'broadcaster':
         this.handleWebRtcSocket(socket, role);
         logger.info('WebRTC broadcaster signalling socket connected', { socketId: socket.id });
@@ -956,6 +1055,35 @@ export class Gateway {
       this.operatorOwnChannels.delete(socket.id);
       this.handleDisconnect(socket);
     });
+  }
+
+  /**
+   * Is this socket really the media service, or the speech worker?
+   *
+   * The credential is the shared internal token both services already hold
+   * and already present on every internal HTTP call. It is read from the
+   * handshake's auth payload first and the query second, because a query
+   * string reaches proxy logs and an auth payload does not.
+   *
+   * ONE ANSWER FOR EVERY REFUSAL. No token, a wrong token and a deployment
+   * with no secret configured all get the same sentence, for the reason the
+   * operator gate gives: distinguishing them tells somebody probing which
+   * half they got right.
+   */
+  private admitInternalService(socket: Socket, role: ClientRole): boolean {
+    const auth = socket.handshake.auth as Record<string, unknown> | undefined;
+    const fromAuth = typeof auth?.['token'] === 'string' ? (auth['token'] as string) : undefined;
+    const fromQuery =
+      typeof socket.handshake.query['token'] === 'string'
+        ? (socket.handshake.query['token'] as string)
+        : undefined;
+    if (this.internalServiceAllowed(fromAuth ?? fromQuery)) return true;
+    logger.warn('Internal service socket refused', { socketId: socket.id, role });
+    socket.emit(SOCKET_EVENTS.ERROR, {
+      message: 'This gateway does not accept that connection.',
+    });
+    socket.disconnect(true);
+    return false;
   }
 
   private resolveRole(socket: Socket): ClientRole {
@@ -1014,13 +1142,39 @@ export class Gateway {
        * already on -- a failed attempt to enter a private programme must not
        * cost somebody the one they were already watching.
        */
-      if (!this.channels.mayJoin(request.channelId, request.code)) {
+      /*
+       * THE CLIENT KEY, WHICH THIS CALL OMITTED.
+       *
+       * `mayJoin` rate-limits guessing, and its own comment says the attempts
+       * are "keyed per client so one guesser cannot lock a channel's real
+       * audience out". The third argument was never passed, so every attempt
+       * shared one key per channel under the literal client name "anonymous".
+       * Five wrong guesses from anybody locked the channel for sixty seconds,
+       * and the lockout is checked BEFORE the code is compared, so a viewer
+       * holding the CORRECT code was turned away with them. One guesser could
+       * keep a locked programme shut.
+       *
+       * The socket id is the key. It is per connection rather than per
+       * person, which is the honest bound available here -- a determined
+       * guesser can reconnect -- and it is enough for the property the limiter
+       * is actually for: one client's failures never cost another client.
+       */
+      if (!this.channels.mayJoin(request.channelId, request.code, socket.id)) {
         logger.warn('Listener refused a private channel', {
           socketId: socket.id,
           channelId: request.channelId,
         });
         socket.emit(SOCKET_EVENTS.ERROR, {
           message: 'This programme is locked. Check the link and code you were given.',
+          /*
+           * THE HALF THE CLIENT BRANCHES ON. The player used to decide
+           * whether to show the join-code prompt by searching this sentence
+           * for the word "private", which this sentence has never contained
+           * since the three-tier vocabulary landed -- so the prompt could
+           * never appear and a locked channel was unenterable from the web.
+           * The sentence is now free to change; the code is not.
+           */
+          code: SOCKET_ERROR_CODES.CHANNEL_LOCKED,
         });
         return;
       }
@@ -1405,8 +1559,47 @@ export class Gateway {
       this.io.to(INGEST_ROOM).emit(SOCKET_EVENTS.PROGRAMME_RUN_ENDED, { runId: endedRun.runId });
       logger.info('Programme run ended', { runId: endedRun.runId, reason });
     }
+    /*
+     * AND THE ENCODER STOPS, which it did not until 29 Sep 2026.
+     *
+     * `ProgrammeContributionHost` appeared at exactly three places in this
+     * file -- the field, the construction, and `contributeToProtectedRun`,
+     * which only ever pushes frames. Teardown closed the media peers, the
+     * transcription bridge, the generated-audio store, the run binding, the
+     * relay session and the channel binding, and never touched the host.
+     *
+     * So a broadcaster whose connection dropped for four seconds left an
+     * ffmpeg child and a 10 ms interval running for the life of the process,
+     * then started a SECOND one against a second spool on reconnect, because
+     * a reconnect mints a new run id. The audience's manifest still pointed
+     * at the dead run. On a CPU-only box a day of flaky connectivity is a
+     * pile of orphaned encoders.
+     *
+     * Released here rather than interrupted: this is teardown, and the run
+     * id is gone by the next line. The `interrupt`/`resume` pair that would
+     * let a run survive a brief reconnect is a separate capability with no
+     * caller, and giving it one is a behaviour change rather than a leak
+     * fix -- so it stays unused and stays honest.
+     *
+     * Not awaited, and its failure cannot fail a teardown: the broadcast is
+     * already over and there is nothing left to abandon.
+     */
+    if (endedRun !== undefined) {
+      void this.contributionHost?.release(endedRun.runId).catch((error: unknown) => {
+        logger.warn('the contribution encoder for a finished run could not be stopped', {
+          runId: endedRun.runId,
+          reason: error instanceof Error ? error.message : 'unknown',
+        });
+      });
+    }
     this.programmeRuns.delete(sessionId);
     this.relay.releaseSession(sessionId);
+    /*
+     * The run's delivery policy goes with the run. It is a map keyed by run
+     * id that only ever grew, one entry per airing, for the life of the
+     * process.
+     */
+    if (endedRun !== undefined) this.relay.forgetRun(endedRun.runId);
     this.programmeSessionConfigs.delete(sessionId);
     this.generatedAudioStore.resetSession(sessionId);
     this.invalidateProgrammeMediaState(sessionId);
@@ -1865,8 +2058,36 @@ export class Gateway {
         programmeConfig?.programmeSourceType,
         stateEvent.streamStatus,
       );
+      /*
+       * THE RUN AND ITS DELIVERY MODE SURVIVE EVERY LATER STATE.
+       *
+       * Both were attached in `broadcastProgrammeSessionConfig` and nowhere
+       * else, and this rebuilds the payload from the media service's event --
+       * which carries neither. So the first state after the config silently
+       * dropped them, and the retained copy a late listener receives had
+       * neither either.
+       *
+       * Two audience-visible consequences, measured by audit 29 Sep 2026.
+       * With no delivery mode a player decides the programme is realtime,
+       * detaches the delayed player and waits for a peer the gateway is
+       * refusing to build: a black screen, without even the "protected
+       * programme unavailable" message. And with no run id every advert is
+       * rejected, because adverts are matched against it.
+       *
+       * Recomputed here rather than carried forward from the retained state,
+       * so a delivery mode that CHANGES mid-broadcast is reflected rather
+       * than frozen at whatever it was when the session was configured.
+       */
+      const enrichedRun =
+        typeof stateEvent.processingSessionId === 'string'
+          ? this.programmeRuns.get(stateEvent.processingSessionId)
+          : undefined;
+      const enrichedDelivery =
+        enrichedRun === undefined ? undefined : this.relay.deliveryFor(enrichedRun.runId);
       const enriched: MediaStateEvent = {
         ...stateEvent,
+        ...(enrichedRun === undefined ? {} : { programmeRunId: enrichedRun.runId }),
+        ...(enrichedDelivery === undefined ? {} : { mediaDelivery: enrichedDelivery }),
         ...(programmeConfig
           ? {
               streamId: programmeConfig.broadcastId,
@@ -2333,6 +2554,34 @@ export class Gateway {
           readiness: delivery.readiness,
         });
       }
+
+      /*
+       * AND THE AUDIENCE IS TOLD, which they were not.
+       *
+       * This tore the peers down and published nothing, so a listener
+       * already watching kept the delivery mode they were last sent -- or,
+       * after the enrichment dropped it, none at all -- and went on waiting
+       * for a realtime peer this gateway had just decided never to build.
+       * Their screen stays black and no message explains it.
+       *
+       * Republished from the retained state so late joiners get the new
+       * answer too: the retained copy is what a listener receives on join,
+       * and leaving it stale would mean the mode is correct for whoever
+       * happened to be connected at the moment it changed and wrong for
+       * everybody after.
+       */
+      const channelId = this.channels.channelForSession(sessionId);
+      const retained = this.channels.mediaState(channelId);
+      if (retained !== null) {
+        const nowDelivering = this.relay.deliveryFor(run.runId);
+        const restated: MediaStateEvent = {
+          ...retained,
+          programmeRunId: run.runId,
+          ...(nowDelivering === undefined ? {} : { mediaDelivery: nowDelivering }),
+        };
+        this.channels.setMediaState(channelId, restated);
+        this.publishMediaState(channelId, restated);
+      }
     }
   }
 
@@ -2584,6 +2833,8 @@ export class Gateway {
     transcriptionBridgeSessionCount: number;
     callRuntime: ReturnType<CallRuntime['getDiagnostics']>;
     transcriptionBridgeSessions: unknown[];
+    videoRelayNoListenerCount: number;
+    videoRelayByKind: Record<string, number>;
   } {
     const signalling = this.webrtcSessions.getDiagnostics();
     const transcriptionBridge = this.webRtcTranscriptionBridge.getDiagnostics();
@@ -2596,6 +2847,8 @@ export class Gateway {
       transcriptionBridgeSessionCount: transcriptionBridge.sessionCount,
       callRuntime: this.callRuntime.getDiagnostics(),
       transcriptionBridgeSessions: this.webRtcTranscriptionBridge.getSessionDiagnostics(),
+      videoRelayNoListenerCount: this.videoRelayNoListenerCount,
+      videoRelayByKind: { ...this.videoRelayByKind },
     };
   }
 
@@ -2845,7 +3098,7 @@ export class Gateway {
     const run = this.programmeRuns.get(config.sessionId);
     const delivery = run === undefined ? undefined : this.relay.deliveryFor(run.runId);
     const state: MediaStateEvent = {
-      eventId: 'Videofy Live Demo Event',
+      eventId: 'C7 / Videofy Live Programme',
       // So the console can ask what THIS airing is doing.
       ...(run === undefined ? {} : { programmeRunId: run.runId }),
       /*

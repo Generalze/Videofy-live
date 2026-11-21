@@ -65,7 +65,21 @@ export interface RegisterDeviceInput {
 }
 
 export type RegisterResult =
-  | { readonly ok: true; readonly device: DeviceSummary; readonly reassignedFrom: string | null }
+  | {
+      readonly ok: true;
+      readonly device: DeviceSummary;
+      readonly reassignedFrom: string | null;
+      /**
+       * This device had not been seen for THIS account before.
+       *
+       * The distinction exists because clients register on every launch, so
+       * "registered" is a heartbeat and only this is a sign-in worth telling
+       * somebody about. Same predicate as `registeredAtMs` below: a device
+       * that moved from another account is new here, because what matters is
+       * that this account is now reachable somewhere it was not.
+       */
+      readonly firstSeen: boolean;
+    }
   | { readonly ok: false; readonly reason: 'invalid-platform' | 'missing-token' | 'missing-device-id' };
 
 /** Trimmed, and capped so a label cannot become a payload. */
@@ -130,19 +144,20 @@ export class DeviceStore {
 
     const nowMs = this.now();
     const previous = this.devices.get(deviceId);
+    const firstSeen = previous?.accountId !== input.accountId;
     const record: DeviceRecord = {
       deviceId,
       accountId: input.accountId,
       platform: input.platform,
       pushToken,
       label: (input.label ?? previous?.label ?? input.platform).trim().slice(0, MAX_LABEL),
-      registeredAtMs: previous?.accountId === input.accountId ? previous.registeredAtMs : nowMs,
+      registeredAtMs: firstSeen ? nowMs : (previous?.registeredAtMs ?? nowMs),
       lastSeenAtMs: nowMs,
     };
 
     this.devices.set(deviceId, record);
     await this.port?.save(record);
-    return { ok: true, device: summarise(record), reassignedFrom };
+    return { ok: true, device: summarise(record), reassignedFrom, firstSeen };
   }
 
   /**

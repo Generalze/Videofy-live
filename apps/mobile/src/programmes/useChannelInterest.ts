@@ -57,7 +57,21 @@ export function useChannelInterest(api: Api): ChannelInterest {
   useEffect(() => {
     let cancelled = false;
     void api.follows().then((result) => {
-      if (cancelled || !result.ok) return;
+      if (cancelled) return;
+      if (!result.ok) {
+        /*
+         * A FAILED READ IS NOT "FOLLOWING NOTHING".
+         *
+         * This returned silently, leaving every bell in its default state --
+         * which renders exactly like a channel the person genuinely does not
+         * follow. The consequence is worse than a blank screen: pressing a
+         * bell they ALREADY follow sends a follow rather than an unfollow, so
+         * reminders cannot be switched off and the control appears to do
+         * nothing. Said once, through the same notice a refused toggle uses.
+         */
+        setNotice('Your reminders could not be loaded. Pull to refresh.');
+        return;
+      }
       dispatch({ kind: 'loaded', follows: result.value });
     });
     return () => {

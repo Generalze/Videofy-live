@@ -126,3 +126,25 @@ describe('failure shapes', () => {
     expect(!result.ok && result.status).toBe('network');
   });
 });
+
+describe('the translated voice (routes.ts POST /accounts/voice)', () => {
+  it('posts the choice under the server’s field name and reports what the server now holds', async () => {
+    const { api, sent } = harness({ voiceGender: 'male' });
+    const result = await api.setTranslatedVoice('male');
+    expect(sent[0]).toEqual({ path: '/accounts/voice', method: 'POST', body: { voiceGender: 'male' } });
+    expect(result).toEqual({ ok: true, value: 'male' });
+  });
+
+  it('reads a 200 that names no usable voice as null, never as the request echoed', async () => {
+    const { api } = harness({ voiceGender: 'robot' });
+    expect(await api.setTranslatedVoice('female')).toEqual({ ok: true, value: null });
+    const empty = harness({});
+    expect(await empty.api.setTranslatedVoice('female')).toEqual({ ok: true, value: null });
+  });
+
+  it('passes a refusal through with the server’s sentence', async () => {
+    const { api } = harness({ error: 'Choose the male or the female voice.' }, 400);
+    const result = await api.setTranslatedVoice('male');
+    expect(!result.ok && result.error).toBe('Choose the male or the female voice.');
+  });
+});

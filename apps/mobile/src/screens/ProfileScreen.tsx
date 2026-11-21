@@ -2,8 +2,9 @@
 /**
  * Profile, to canon: the person first (picture in a teal ring, name,
  * @handle, the C7 badge, a line about them), the four counts, then the
- * rows -- Languages & Voice, Name shown in calls, About me, Availability,
- * Verification, Notifications (with this phone's registration), Privacy,
+ * rows -- Languages & Voice, Translated voice, Name shown in calls, About
+ * me, Availability, Verification, Notifications (with this phone's
+ * registration), Ringing (whether Android will wake this app), Privacy,
  * My C7 Voice -- the translation offer, and sign out.
  *
  * EVERY ROW LEADS SOMEWHERE. Each one reads a real field of GET /me and
@@ -21,7 +22,9 @@ import type { Api, MeCounts, Profile, VerificationStatus } from '../api/client';
 import type { RegistrationOutcome } from '../push/deviceRegistrationService';
 import { C7, Chip, GlassCard } from '../ui/c7';
 import { Icon } from '../ui/icons';
-import { AboutMeRow, AvailabilityRow, CountsRow, NotificationsRow, PrivacyRow, Row, UpgradeRow, VoiceRow } from './profileRows';
+import { AboutMeRow, AvailabilityRow, CountsRow, NotificationsRow, PrivacyRow, RingingRow, Row, TranslatedVoiceRow, UpgradeRow, VoiceRow } from './profileRows';
+import type { TranslatedVoice } from '../call/translatedVoice';
+import type { RingingReadiness } from '../push/ringingReadiness';
 import {
   canHear,
   canSpeak,
@@ -56,11 +59,19 @@ export interface ProfileScreenProps {
   readonly onBiometricsPreferred: (on: boolean) => void;
   /** The session's bearer token for media-ingest (voice enrolment), read at upload time and never kept. */
   readonly sessionToken: () => string | null;
+  /** The voice the account's translated words are spoken in, as the session holds it; null = not known. */
+  readonly translatedVoice: TranslatedVoice | null;
+  /** The server accepted a change; the session and the next join follow it. */
+  readonly onTranslatedVoice: (voice: TranslatedVoice) => void;
+  /** What Android was read as saying about waking this app; null = not read yet. */
+  readonly ringing: RingingReadiness | null;
+  readonly onAllowBackground: () => void;
+  readonly onOpenAppSettings: () => void;
 }
 
-type OpenRow = 'languages' | 'name' | 'about' | 'availability' | 'verification' | 'notifications' | 'privacy' | 'voice';
+type OpenRow = 'languages' | 'translatedVoice' | 'name' | 'about' | 'availability' | 'verification' | 'notifications' | 'ringing' | 'privacy' | 'voice';
 
-export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, onSignOut, biometricsPreferred, onBiometricsPreferred, sessionToken }: ProfileScreenProps): JSX.Element {
+export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, onSignOut, biometricsPreferred, onBiometricsPreferred, sessionToken, translatedVoice, onTranslatedVoice, ringing, onAllowBackground, onOpenAppSettings }: ProfileScreenProps): JSX.Element {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [verification, setVerification] = useState<VerificationStatus | null>(null);
   const [counts, setCounts] = useState<MeCounts | null>(null);
@@ -321,6 +332,8 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
         )}
       </Row>
 
+      <TranslatedVoiceRow api={api} voice={translatedVoice} onChanged={onTranslatedVoice} open={open === 'translatedVoice'} onToggle={toggle('translatedVoice')} />
+
       <Row icon="profile" title="Name shown in calls" subtitle={profile?.displayName ?? 'Not set'} open={open === 'name'} onPress={toggle('name')}>
         <View style={styles.nameRow}>
           <TextInput style={styles.input} value={draftName} onChangeText={setDraftName} placeholder="Your name" placeholderTextColor={C7.faint} maxLength={40} />
@@ -377,6 +390,8 @@ export function ProfileScreen({ api, probeAvatar, deviceOutcome, onRetryDevice, 
         open={open === 'notifications'}
         onToggle={toggle('notifications')}
       />
+
+      <RingingRow readiness={ringing} onAllow={onAllowBackground} onOpenSettings={onOpenAppSettings} open={open === 'ringing'} onToggle={toggle('ringing')} />
 
       <PrivacyRow
         api={api}

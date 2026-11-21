@@ -53,6 +53,14 @@ describe('gateway call_ session id reservation', () => {
   beforeEach(async () => {
     server = createServer(createApp());
     new Gateway(server, ['http://localhost:5173'], {
+    /*
+     * These rigs connect as the media service and the speech worker. Both
+     * roles became authenticated on 29 Sep 2026 -- they were previously a
+     * query parameter anybody could type, while an ingest socket sets the
+     * delivery policy for protected broadcasts. The refusal itself is
+     * covered in internal-role-admission.test.ts.
+     */
+    internalServiceAllowed: () => true,
     call: { authorizeHost: async () => true },
     });
     await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));

@@ -307,6 +307,30 @@ function conformsToTheReplayContract(subject: Subject): void {
       expect((await archive.describe(RUN_A.runId))?.segments).toHaveLength(1);
     });
 
+    /*
+     * AN EMPTY INITIALISATION OBJECT IS REFUSED BY EVERY ARCHIVE.
+     *
+     * Found by audit 29 Sep 2026, and placed in the conformance suite on
+     * purpose: both backends run it, because a size check at only one layer
+     * is exactly how this defect comes back through the other one.
+     *
+     * It is invisible to every comparison downstream. Ownership compares
+     * copied bytes against declared bytes -- zero equals zero. Verification
+     * compares found size against expected size -- zero equals zero again.
+     * Finalisation checks an init generation is PRESENT, never that it holds
+     * anything. So the recording reached `available`, the manifest rendered,
+     * the file served 200 with no bytes, and not one fragment would decode,
+     * with nothing on the server to show for it. The same shape as the mock
+     * speech engine that wrote 44-byte audio files behind green signals.
+     */
+    it('refuses an initialisation object with no bytes', async () => {
+      await keep();
+      const empty = { ...media.initialisation(0), bytes: 0 };
+      const result = await archive.retainInitialisation(RUN_A.runId, empty);
+      expect(result.ok).toBe(false);
+      if (!result.ok) expect(result.failure.reason).toBe('initialisation-empty');
+    });
+
     it('absorbs an exact initialisation repeat the same way', async () => {
       await keep();
       const init = media.initialisation(0);

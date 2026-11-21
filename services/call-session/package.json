@@ -21,10 +21,11 @@
   },
   "dependencies": {
     "@videofy-live/call-contracts": "*",
+    "@videofy-live/conference-authority": "*",
+    "@videofy-live/language-catalogue": "*",
     "@videofy-live/language-router": "*",
     "@videofy-live/participant-contracts": "*",
-    "@videofy-live/shared-types": "*",
-    "@videofy-live/conference-authority": "*"
+    "@videofy-live/shared-types": "*"
   },
   "devDependencies": {
     "typescript": "^5.5.4",

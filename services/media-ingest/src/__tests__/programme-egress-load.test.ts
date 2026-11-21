@@ -223,9 +223,16 @@ describe('the cursor holds while it is moving and being read', () => {
       .split(/\r?\n/u)
       // Segment URIs only. The EXT-X-MAP line names the init segment and is
       // quoted, so a naive filter picks up a trailing quote and asks for a
-      // segment id that cannot exist.
-      .filter((line) => line.startsWith('/programmes/'))
-      .map((line) => decodeURIComponent(line.split('/segments/')[1] ?? ''));
+      // segment id that cannot exist. Every tag line starts with `#`, so
+      // excluding those and blanks leaves exactly the fragment references.
+      //
+      // Matched on `segments/` rather than on a leading `/programmes/`: the
+      // manifest names fragments RELATIVE to itself since 29 Sep 2026, so a
+      // root-absolute filter now selects nothing and this case silently
+      // measured an empty list. See programme-egress-routes.ts for why the
+      // reference changed.
+      .filter((line) => line !== '' && !line.startsWith('#'))
+      .map((line) => decodeURIComponent(line.split('segments/')[1] ?? ''));
     expect(offered.length).toBeGreaterThan(10);
 
     const fetched = await pool(offered.length, (index) =>

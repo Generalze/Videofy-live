@@ -28,8 +28,8 @@
  *
  *   STT  Deepgram (nova-3 / flux), then local faster-whisper
  *   MT   opus-mt / M2M-100, NLLB-200 as the configured fallback, Google last
- *   TTS  ElevenLabs then Azure -- EXCEPT ha/ig/yo/pcm, which are 9jaLingo then
- *        Azure and nothing else (commercial-routing.ts owns that rule)
+ *   TTS  ElevenLabs then Azure -- EXCEPT ha/ig/yo/pcm, which are ElevenLabs
+ *        alone and nothing after it (commercial-routing.ts owns that rule)
  *
  * Per stage a language earns one of four evidence levels, and each reported
  * state is the WEAKEST stage that answers its question:
@@ -368,9 +368,10 @@ function describeShortfall(
 function degradedWords(englishName: string, providerId: string | undefined): string {
   return (
     `DEGRADED ${englishName}: served by ${providerId ?? 'a general voice vendor'}, not the ` +
-    '9jaLingo specialist. General vendors return HTTP 200 and fluent-sounding audio for ' +
-    'this language with the wrong pronunciation -- confirmed by listening on 2026-08-26. ' +
-    'Set NAIJALINGO_API_KEY to route it to the specialist.'
+    'approved voice. An unapproved vendor returns HTTP 200 and fluent-sounding audio for ' +
+    'this language with the wrong pronunciation -- confirmed by listening on 2026-08-26 -- ' +
+    'and only a speaker of the language can hear that it is wrong. ' +
+    'Set ELEVENLABS_API_KEY to route it to the approved voice (founder ruling 2026-09-18).'
   );
 }
 

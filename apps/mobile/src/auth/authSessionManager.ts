@@ -22,6 +22,7 @@
  * Callers ask for an authenticated request; they never ask for the secret.
  */
 import type { SecureSessionStore, StoredSession } from './secureSessionStore';
+import { parseTranslatedVoice, type TranslatedVoice } from '../call/translatedVoice';
 
 /** Renew once the device session has under thirty days left. */
 const RENEW_WHEN_REMAINING_MS = 30 * 24 * 60 * 60 * 1000;
@@ -78,6 +79,8 @@ interface SessionResponse {
   accountId?: unknown;
   token?: unknown;
   expiresInSeconds?: unknown;
+  /** The voice this person's translated words are spoken in; see ../call/translatedVoice. */
+  voiceGender?: unknown;
 }
 
 export interface AuthSessionManagerOptions {
@@ -97,6 +100,26 @@ export class AuthSessionManager {
 
   private state: AuthState = { status: 'starting' };
   private session: StoredSession | null = null;
+  /**
+   * THE VOICE THE ACCOUNT CHOSE, held with the session it came with.
+   *
+   * `POST /sessions`, `POST /accounts` and `GET /sessions/current` all carry
+   * `voiceGender`, and until 27 Sep 2026 this class read the first two for
+   * the token and threw the rest of the body away, while `restore()` never
+   * read the body at all. So the phone knew nothing of the choice and every
+   * join spoke in the default. Not persisted: it is re-read from the server
+   * on every launch, which is also the only place it can be changed from
+   * another device. Null means "not known", and the join's shared default
+   * then applies -- stated, not hidden.
+   *
+   * ONE RULE, IN ONE PLACE: no session, no voice. `translatedVoice()` is
+   * the only reader and it answers null whenever `session` is null, and
+   * every path that creates a session overwrites this field from the body
+   * it came with. So nothing clears it on sign-out or revocation -- a
+   * clearing line there was measured as unkillable, because the reader
+   * already refuses to hand it out.
+   */
+  private voice: TranslatedVoice | null = null;
   /**
    * Guards against a second sign-in starting while one is in flight.
    *
@@ -165,6 +188,7 @@ export class AuthSessionManager {
     }
 
     if (response.ok) {
+      this.voice = await voiceFrom(response);
       this.session = stored;
       this.set({ status: 'signed-in', accountId: stored.accountId });
       return this.state;
@@ -179,6 +203,20 @@ export class AuthSessionManager {
     this.session = null;
     this.set({ status: 'signed-out', reason: response.status === 401 ? 'revoked' : 'expired' });
     return this.state;
+  }
+
+  /** The voice the account's translated words are spoken in, as the server last said; null when signed out or not known. */
+  translatedVoice(): TranslatedVoice | null {
+    return this.session === null ? null : this.voice;
+  }
+
+  /**
+   * The person changed it and the server accepted (`POST /accounts/voice`).
+   * Recorded here so the next join carries the new choice without a
+   * round trip; the next launch re-reads it from the server as ever.
+   */
+  rememberTranslatedVoice(voice: TranslatedVoice): void {
+    this.voice = voice;
   }
 
   /**
@@ -278,6 +316,81 @@ export class AuthSessionManager {
   }
 
   /**
+   * Sign in with a Google ID token the app already holds.
+   *
+   * Goes through the SAME in-flight guard and the SAME `storeSessionFrom` as
+   * the password path, deliberately. A second way in that writes the session
+   * its own way is a second place for the stored shape to drift, and the
+   * failure that produces -- a token stored without its expiry -- is one the
+   * next launch discovers, not this one.
+   */
+  async signInWithGoogle(idToken: string): Promise<SignInResult> {
+    if (this.inFlight !== null) return this.inFlight;
+    const attempt = this.performProviderSignIn('/oauth/google', { idToken, client: 'device' });
+    this.inFlight = attempt;
+    try {
+      return await attempt;
+    } finally {
+      this.inFlight = null;
+    }
+  }
+
+  /**
+   * Sign in with a handoff collected from a provider round trip.
+   *
+   * The handoff is worth one exchange within a minute and is not a
+   * credential -- it names who to mint a session for, and the server
+   * re-checks that account before it does.
+   */
+  async signInWithHandoff(handoff: string): Promise<SignInResult> {
+    if (this.inFlight !== null) return this.inFlight;
+    const attempt = this.performProviderSignIn('/oauth/handoff', { handoff, client: 'device' });
+    this.inFlight = attempt;
+    try {
+      return await attempt;
+    } finally {
+      this.inFlight = null;
+    }
+  }
+
+  private async performProviderSignIn(
+    path: string,
+    body: Record<string, string>,
+  ): Promise<SignInResult> {
+    let response: Response;
+    try {
+      response = await this.fetchImpl(`${this.baseUrl}${path}`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+    } catch {
+      return { ok: false, reason: 'network' };
+    }
+
+    if (!response.ok) {
+      /*
+       * NOTHING IS PERSISTED ON FAILURE, exactly as in the password path.
+       *
+       * 401 here is not the same event as a wrong password -- a spent
+       * handoff or an unverifiable token is nobody's mistake -- but it maps
+       * to the same coarse reason, because the UI has one place to say "that
+       * did not work" and inventing a second vocabulary for the provider
+       * path would mean two sets of wording to keep honest.
+       */
+      return {
+        ok: false,
+        reason:
+          response.status === 429 ? 'rate-limited'
+            : response.status === 401 ? 'invalid-credentials'
+            : 'server',
+      };
+    }
+
+    return (await this.storeSessionFrom(response)) ? { ok: true } : { ok: false, reason: 'server' };
+  }
+
+  /**
    * Take a session out of a response and become signed in, or refuse.
    *
    * Shared by sign-in and sign-up because both are handed the identical body,
@@ -307,6 +420,7 @@ export class AuthSessionManager {
     };
     await this.store.write(session);
     this.session = session;
+    this.voice = parseTranslatedVoice(body.voiceGender);
     this.set({ status: 'signed-in', accountId });
     return true;
   }
@@ -419,5 +533,19 @@ export class AuthSessionManager {
       this.set({ status: 'signed-out', reason: 'revoked' });
     }
     return response;
+  }
+}
+
+/**
+ * The voice out of a `GET /sessions/current` body, or null. A body that
+ * cannot be read is not an error here: the session was already accepted by
+ * the status, and the voice is the one thing this read is for.
+ */
+async function voiceFrom(response: Response): Promise<TranslatedVoice | null> {
+  try {
+    const body = (await response.json()) as SessionResponse;
+    return parseTranslatedVoice(body.voiceGender);
+  } catch {
+    return null;
   }
 }

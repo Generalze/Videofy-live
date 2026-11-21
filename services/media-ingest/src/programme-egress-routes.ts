@@ -158,8 +158,25 @@ export function registerProgrammeEgressRoutes(
         .send(
           renderHlsManifest(
             manifest,
-            (segmentId) =>
-              `/programmes/${encodeURIComponent(runId)}/segments/${encodeURIComponent(segmentId)}`,
+            /*
+             * RELATIVE, AND IT MATTERS. This was root-absolute:
+             * `/programmes/<run>/segments/<id>`.
+             *
+             * Behind the edge this service is mounted under `/media` with the
+             * prefix stripped, and the manifest a client holds was fetched
+             * from `https://<host>/media/programmes/<run>/playlist.m3u8`. A
+             * root-absolute URI throws the `/media` away, so the player asked
+             * the WEBSITE for every fragment, fell through to the static
+             * handler and got `index.html` back with a 200 -- a demux failure
+             * on the client and not one line in this service's log, because
+             * the requests never arrived here.
+             *
+             * A relative reference resolves against the playlist's own URL,
+             * so it is correct under any mount, including none. Found by
+             * audit 29 Sep 2026; the existing test asserted a substring that
+             * both spellings satisfy, against an app with no prefix.
+             */
+            (segmentId) => `segments/${encodeURIComponent(segmentId)}`,
           ),
         );
     })();

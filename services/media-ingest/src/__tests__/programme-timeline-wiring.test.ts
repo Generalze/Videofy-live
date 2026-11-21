@@ -59,7 +59,8 @@ function nova(): DeepgramNovaStreamingProvider {
 async function open(timelines: ProgrammeTimelineRegistry, ingress: IngressOpen): Promise<void> {
   const opener = createLiveStreamOpener({
     transcription: nova(),
-    translation: { translate: async () => ({ text: '', detectedSourceLanguage: 'en' }) } as never,
+    translationFor: () =>
+      ({ translate: async () => ({ text: '', detectedSourceLanguage: 'en' }) }) as never,
     synthesis: null,
     mintSegmentId: () => 'seg_1',
     speechPlansFor: () => [],

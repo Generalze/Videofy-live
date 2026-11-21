@@ -5,7 +5,14 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { MEASURED, PERMISSIVE_LICENCE, documentOf, route, scopes } from './document.fixtures.js';
+import {
+  MEASURED,
+  PERMISSIVE_LICENCE,
+  approvedBy,
+  documentOf,
+  route,
+  scopes,
+} from './document.fixtures.js';
 import { parseRouteDocument } from './validate.js';
 
 function problemsFor(document: unknown, options = {}): readonly { path: string; message: string }[] {
@@ -33,6 +40,7 @@ describe('approval must be backed by something', () => {
       documentOf(
         route({
           productionApproved: true,
+          approval: approvedBy('messaging'),
           technicalEvidence: { ...MEASURED },
           humanReviewStatus: 'passed',
           licenceStatus: { ...PERMISSIVE_LICENCE },
@@ -126,6 +134,7 @@ describe('a human must clear the review-required languages', () => {
         sourceLanguage: 'en',
         targetLanguage: 'fr',
         productionApproved: true,
+        approval: approvedBy('messaging'),
         technicalEvidence: { ...MEASURED },
         humanReviewStatus: 'required-not-done',
         serviceScopes: scopes({ messaging: 'approved' }),
@@ -272,5 +281,177 @@ describe('the document must be readable as what it claims to be', () => {
     expect(parseRouteDocument(null).ok).toBe(false);
     expect(parseRouteDocument('[]').ok).toBe(false);
     expect(paths({ version: 1 })).toContain('routes');
+  });
+});
+
+describe('"not-required" is not a way to clear a review-required language', () => {
+  const FULL_REVIEW = {
+    engine: 'opus-mt',
+    model: 'Helsinki-NLP/opus-mt-en-alv',
+    modelVersion: 'a1b2c3d',
+    corpusHash: 'sha256:9f2c',
+    corpusVersion: '2026-09-01',
+    evaluator: 'A. Reader',
+    assessedAt: '2026-09-19T09:00:00.000Z',
+    method: 'read all eight lines against the source',
+    score: 8,
+    scale: 'sentences materially correct out of 8',
+    scaleMaximum: 8,
+    passThreshold: 7,
+    evidenceReference: 'docs/reviews/en-yo.md',
+  };
+
+  /*
+   * The hole this closes: `required-not-done` was refused for yo, ha, ig and
+   * pcm and `not-required` was not, so the honest value got you stopped and
+   * declaring the review unnecessary did not. `reviewRequiredLanguages` is
+   * documented as the set where a human reader is MANDATORY; an editor writing
+   * `not-required` is asserting exactly what that list says is not theirs to
+   * assert.
+   */
+  it('refuses an approved scope on yo, ha, ig or pcm declared not-required', () => {
+    for (const language of ['yo', 'ha', 'ig', 'pcm']) {
+      const problems = problemsFor(
+        documentOf(
+          route({
+            sourceLanguage: 'en',
+            targetLanguage: language,
+            productionApproved: true,
+            technicalEvidence: { ...MEASURED },
+            humanReviewStatus: 'not-required',
+            licenceStatus: { ...PERMISSIVE_LICENCE },
+            serviceScopes: scopes({ messaging: 'approved' }),
+          }),
+        ),
+      );
+      expect(problems.map((problem) => problem.path), language).toContain(
+        'routes[0].humanReviewStatus',
+      );
+    }
+  });
+
+  it('refuses it in the reverse direction too', () => {
+    expect(
+      paths(
+        documentOf(
+          route({
+            sourceLanguage: 'ig',
+            targetLanguage: 'en',
+            productionApproved: true,
+            technicalEvidence: { ...MEASURED },
+            humanReviewStatus: 'not-required',
+            licenceStatus: { ...PERMISSIVE_LICENCE },
+            serviceScopes: scopes({ 'call-live': 'approved' }),
+          }),
+        ),
+      ),
+    ).toContain('routes[0].humanReviewStatus');
+  });
+
+  it('leaves not-required alone on a language nobody put on the list', () => {
+    expect(
+      parseRouteDocument(
+        documentOf(
+          route({
+            sourceLanguage: 'en',
+            targetLanguage: 'fr',
+            productionApproved: true,
+            approval: approvedBy('messaging'),
+            technicalEvidence: { ...MEASURED },
+            humanReviewStatus: 'not-required',
+            licenceStatus: { ...PERMISSIVE_LICENCE },
+            serviceScopes: scopes({ messaging: 'approved' }),
+          }),
+        ),
+      ).ok,
+    ).toBe(true);
+  });
+
+  it('accepts a passed review on a review-required language', () => {
+    expect(
+      parseRouteDocument(
+        documentOf(
+          route({
+            sourceLanguage: 'en',
+            targetLanguage: 'yo',
+            modelId: FULL_REVIEW.model,
+            productionApproved: true,
+            approval: approvedBy('messaging'),
+            technicalEvidence: { ...MEASURED },
+            humanReviewStatus: 'passed',
+            reviewEvidence: { ...FULL_REVIEW },
+            licenceStatus: { ...PERMISSIVE_LICENCE },
+            serviceScopes: scopes({ messaging: 'approved' }),
+          }),
+        ),
+      ).ok,
+    ).toBe(true);
+  });
+});
+
+describe('the review evidence block, which the record type has always declared', () => {
+  const FULL_REVIEW = {
+    engine: 'opus-mt',
+    model: 'Helsinki-NLP/opus-mt-en-fr',
+    modelVersion: 'a1b2c3d',
+    corpusHash: 'sha256:9f2c',
+    corpusVersion: '2026-09-01',
+    evaluator: 'A. Reader',
+    assessedAt: '2026-09-19T09:00:00.000Z',
+    method: 'read all eight lines against the source',
+    score: 8,
+    scale: 'sentences materially correct out of 8',
+    scaleMaximum: 8,
+    passThreshold: 7,
+    evidenceReference: 'docs/reviews/en-fr.md',
+  };
+
+  it('is carried onto the loaded record rather than refused as an unknown field', () => {
+    const parsed = parseRouteDocument(
+      documentOf(
+        route({
+          modelId: FULL_REVIEW.model,
+          humanReviewStatus: 'passed',
+          reviewEvidence: { ...FULL_REVIEW },
+        }),
+      ),
+    );
+    expect(parsed.ok).toBe(true);
+    expect(parsed.ok === true && parsed.document.routes[0]?.reviewEvidence).toEqual(FULL_REVIEW);
+  });
+
+  it('is absent, never present-and-empty, on a route nobody has reviewed', () => {
+    const parsed = parseRouteDocument(documentOf(route()));
+    expect(parsed.ok).toBe(true);
+    expect(parsed.ok === true && 'reviewEvidence' in (parsed.document.routes[0] ?? {})).toBe(false);
+  });
+
+  it('refuses a half-filled block, which reads as a qualification and names nobody', () => {
+    const { evaluator: _evaluator, corpusHash: _corpusHash, ...partial } = FULL_REVIEW;
+    expect(paths(documentOf(route({ reviewEvidence: partial })))).toEqual(
+      expect.arrayContaining([
+        'routes[0].reviewEvidence.evaluator',
+        'routes[0].reviewEvidence.corpusHash',
+      ]),
+    );
+  });
+
+  it('refuses a score that is not a number and a date that is not a date', () => {
+    expect(
+      paths(
+        documentOf(route({ reviewEvidence: { ...FULL_REVIEW, score: 'good', assessedAt: 'soon' } })),
+      ),
+    ).toEqual(
+      expect.arrayContaining([
+        'routes[0].reviewEvidence.score',
+        'routes[0].reviewEvidence.assessedAt',
+      ]),
+    );
+  });
+
+  it('refuses an unknown field inside it', () => {
+    expect(
+      paths(documentOf(route({ reviewEvidence: { ...FULL_REVIEW, verdict: 'fine' } }))),
+    ).toContain('routes[0].reviewEvidence.verdict');
   });
 });

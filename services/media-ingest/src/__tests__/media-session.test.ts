@@ -146,9 +146,24 @@ async function until(
   }
 }
 
+async function waitForSettledSession(
+  sessionStore: ProcessingSessionStore,
+  sessionId: string,
+): Promise<ProcessingSession> {
+  await until(() => {
+    const state = sessionStore.get(sessionId)?.state;
+    return state === 'completed' || state === 'failed';
+  });
+  const session = sessionStore.get(sessionId);
+  if (!session) throw new Error(`Processing session ${sessionId} disappeared`);
+  return session;
+}
+
 describe('ProcessingSessionStore', () => {
   it('accepts a valid video upload, extracts audio and stores chunk metadata', async () => {
-    const session = await store().createFromUpload(upload(), async () => validVideoProbe);
+    const sessionStore = store();
+    const created = await sessionStore.createFromUpload(upload(), async () => validVideoProbe);
+    const session = await waitForSettledSession(sessionStore, created.id);
 
     expect(session.state).toBe('completed');
     expect(session.media).toMatchObject({
@@ -177,13 +192,44 @@ describe('ProcessingSessionStore', () => {
     ]);
   });
 
+  it('can acknowledge an upload while extraction continues in the background', async () => {
+    let releaseExtraction: ((result: AudioExtractionMetadata) => void) | undefined;
+    const sessionStore = store(
+      async () =>
+        await new Promise<AudioExtractionMetadata>((resolve) => {
+          releaseExtraction = resolve;
+        }),
+    );
+
+    const accepted = await sessionStore.createFromUpload(
+      upload(),
+      async () => validVideoProbe,
+      { waitForProcessing: false },
+    );
+
+    expect(accepted.state).toBe('processing');
+    expect(accepted.audioExtraction.status).toBe('extracting');
+    expect(releaseExtraction).toBeDefined();
+    releaseExtraction?.(
+      completedExtraction([
+        chunk(0, 0, 15_000),
+        chunk(1, 15_000, 30_000),
+        chunk(2, 30_000, 31_000),
+      ]),
+    );
+    await until(() => sessionStore.get(accepted.id)?.state === 'completed');
+    expect(sessionStore.get(accepted.id)?.state).toBe('completed');
+  });
+
   it('accepts a valid audio upload and converts it through the same extraction path', async () => {
-    const session = await store(async (input) =>
+    const sessionStore = store(async (input) =>
       completedExtraction([chunk(0, 0, 15_000), chunk(1, 15_000, input.expectedDurationMs)]),
-    ).createFromUpload(
+    );
+    const created = await sessionStore.createFromUpload(
       upload({ originalName: 'speech.mp3', mimeType: 'audio/mpeg' }),
       async () => validAudioProbe,
     );
+    const session = await waitForSettledSession(sessionStore, created.id);
 
     expect(session.state).toBe('completed');
     expect(session.media).toMatchObject({
@@ -239,13 +285,19 @@ describe('ProcessingSessionStore', () => {
 
   it('creates a stream ID and processing-session record with success states', async () => {
     const changes: string[] = [];
-    const session = await new ProcessingSessionStore({
+    const sessionStore = new ProcessingSessionStore({
       outputBaseDir: 'C:/tmp/chunks',
       extractAudio: successfulExtractor,
       onSessionChange: (next) => {
         changes.push(next.state);
       },
-    }).createFromUpload(upload(), async () => validVideoProbe);
+    });
+    const created = await sessionStore.createFromUpload(
+      upload(),
+      async () => validVideoProbe,
+      { waitForProcessing: false },
+    );
+    const session = await waitForSettledSession(sessionStore, created.id);
 
     expect(session.id).toMatch(/^ps_/);
     expect(session.streamId).toMatch(/^stream_/);
@@ -257,10 +309,12 @@ describe('ProcessingSessionStore', () => {
   });
 
   it('can create an upload processing session with a requested safe session ID', async () => {
-    const session = await store().createFromUpload(
+    const sessionStore = store();
+    const created = await sessionStore.createFromUpload(
       upload({ requestedSessionId: 'wrs_uploaded_video' }),
       async () => validVideoProbe,
     );
+    const session = await waitForSettledSession(sessionStore, created.id);
 
     expect(session.id).toBe('wrs_uploaded_video');
     expect(session.sourceKind).toBe('upload');
@@ -310,13 +364,14 @@ describe('ProcessingSessionStore', () => {
         await writeFile(input.outputPath, Buffer.from('viewer-ready mp4'));
       },
     });
-    const session = await sessionStore.createFromUpload(
+    const created = await sessionStore.createFromUpload(
       upload({
         path: sourcePath,
         requestedSessionId: 'wrs_viewer_ready',
       }),
       async () => validVideoProbe,
     );
+    const session = await waitForSettledSession(sessionStore, created.id);
 
     const file = await sessionStore.getViewerReadyMediaFile(session.id);
 
@@ -381,17 +436,26 @@ describe('ProcessingSessionStore', () => {
       );
     };
 
-    await expect(
-      store(failingExtractor).createFromUpload(upload(), async () => validVideoProbe),
-    ).rejects.toMatchObject({
-      code: 'audio-extraction-failed',
-      session: {
-        state: 'failed',
-        audioExtraction: {
-          status: 'failed',
-          error: 'FFmpeg audio extraction failed: test failure',
-        },
+    const sessionStore = store(failingExtractor);
+    const created = await sessionStore.createFromUpload(
+      upload(),
+      async () => validVideoProbe,
+      { waitForProcessing: false },
+    );
+    await until(() => sessionStore.get(created.id)?.state === 'failed');
+    expect(sessionStore.get(created.id)).toMatchObject({
+      state: 'failed',
+      audioExtraction: {
+        status: 'failed',
+        error: 'FFmpeg audio extraction failed: test failure',
       },
+      error: 'FFmpeg audio extraction failed: test failure',
+    });
+    expect(created).toMatchObject({
+      id: created.id,
+      sourceKind: 'upload',
+      state: 'processing',
+      audioExtraction: { status: 'extracting' },
     });
   });
 

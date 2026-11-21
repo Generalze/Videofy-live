@@ -16,6 +16,41 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+describe('the route QA queue', () => {
+  it('asks the server for the queue and picks a set up by language, with the session', async () => {
+    const calls: { url: string; method: string; auth: string | undefined }[] = [];
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        const headers = (init?.headers ?? {}) as Record<string, string>;
+        calls.push({ url, method: init?.method ?? 'GET', auth: headers['authorization'] });
+        return new Response(JSON.stringify({ languages: [], assignmentId: 'asg_1', state: 'NEW' }), {
+          status: 200,
+        });
+      }),
+    );
+    const api = createSpecialistApi('http://x', 'tok');
+    expect((await api.qaSets()).ok).toBe(true);
+    const pickup = await api.pickUpQaSet('yo');
+    expect(pickup.ok && pickup.value.assignmentId).toBe('asg_1');
+    expect(calls).toEqual([
+      { url: 'http://x/specialists/qa-sets', method: 'GET', auth: 'Bearer tok' },
+      { url: 'http://x/specialists/qa-sets/yo/pickup', method: 'POST', auth: 'Bearer tok' },
+    ]);
+  });
+
+  it('PIN: a locked pickup carries the gate’s sentence and reason, not a portal-written one', async () => {
+    answer(
+      '{"error":"Route QA sets open once you are qualified in this language.","reason":"review-locked","detail":"not-qualified"}',
+      { status: 403 },
+    );
+    const result = await createSpecialistApi('http://x', 'tok').pickUpQaSet('ha');
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && 'detail' in result && result.detail).toBe('not-qualified');
+    expect(result.ok === false && 'error' in result && result.error).toMatch(/qualified in this language/u);
+  });
+});
+
 describe('reading an answer', () => {
   it('returns the payload on a normal success', async () => {
     answer(JSON.stringify({ accountId: 'acct_zoe', tracks: [], assignments: [] }));

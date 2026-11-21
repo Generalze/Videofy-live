@@ -19,6 +19,30 @@ export interface DirectCallCheck {
   readonly mode: 'normal' | 'translated';
   readonly callerAccountId: string;
   readonly callerName: string;
+  /**
+   * WHAT THE CALLER SPEAKS, so the ringing screen can say which way the
+   * translation runs before this phone decides whether to answer.
+   *
+   * Half of the board's language pill. The other half is this handset's own
+   * listening language, which is its own setting and needs no server to state
+   * it. Null when the gateway sent nothing usable -- which includes every
+   * deployment older than the field -- and null means no pill, never a guess.
+   */
+  readonly callerSpeakLanguage: string | null;
+}
+
+/**
+ * A language tag SHAPED like one, or null. Mirrors the gateway's own check
+ * (`directCallLanguageTag`) deliberately: blank is not a choice, and a tag the
+ * phone cannot name is drawn as nothing rather than as itself.
+ */
+const LANGUAGE_TAG = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/u;
+
+export function languageTag(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  if (trimmed.length > 35) return null;
+  return LANGUAGE_TAG.test(trimmed) ? trimmed : null;
 }
 
 export interface DirectCallApi {
@@ -60,6 +84,13 @@ export function createDirectCallApi(options: {
         mode: body.mode === 'translated' ? 'translated' : 'normal',
         callerAccountId: typeof body.callerAccountId === 'string' ? body.callerAccountId : '',
         callerName: typeof body.callerName === 'string' ? body.callerName : 'Caller',
+        /*
+         * Validated here as well as at the gateway, because this string was
+         * chosen by one account and is about to be drawn on another person's
+         * lock screen, and a client that trusts the server to have checked is
+         * one deployment away from not having been checked.
+         */
+        callerSpeakLanguage: languageTag(body.callerSpeakLanguage),
       };
     },
     async ackRinging(callId) {

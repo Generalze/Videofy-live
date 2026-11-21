@@ -65,6 +65,7 @@ import type {
   SpeakerAudioMixDecision,
 } from '@videofy-live/call-client-core';
 import type { CallJoinPayload } from '@videofy-live/call-wire';
+import { isCatalogueLanguage } from '@videofy-live/language-catalogue';
 import type {
   AudioMode,
   CallCaptionView,
@@ -1399,13 +1400,21 @@ function isTerminalResumeCode(code: string | undefined): boolean {
 }
 
 /**
- * Narrow a BCP-47 tag to the wire's language vocabulary. A tag outside it is
- * sent as 'en' purely to satisfy the legacy-required field — the gateway
- * rederives the real preference from the token.
+ * Reduce a BCP-47 tag to the wire's language vocabulary: its primary subtag.
+ *
+ * THIS USED TO NARROW TO 'en' | 'es' | 'fr', sending 'en' for everything else
+ * "purely to satisfy the legacy-required field". That was true while the wire
+ * carried exactly three languages. It stopped being true when CallLanguage
+ * became the catalogue, and the consequence was that a partner integration
+ * placing a Yoruba call announced itself as English on the wire.
+ *
+ * A tag naming no catalogue language still falls back to 'en': the field is
+ * required, and the gateway would now refuse an unknown code outright, which
+ * would turn a cosmetic mismatch into a failed call.
  */
-function wireLanguage(tag: string): 'en' | 'es' | 'fr' {
-  const primary = tag.trim().toLowerCase().split('-')[0];
-  return primary === 'es' || primary === 'fr' ? primary : 'en';
+function wireLanguage(tag: string): string {
+  const primary = tag.trim().toLowerCase().split('-')[0] ?? '';
+  return isCatalogueLanguage(primary) ? primary : 'en';
 }
 
 function readWireSubject(participant: object): string {

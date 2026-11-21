@@ -52,7 +52,10 @@ describe('registration', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(JSON.stringify(result.account)).not.toContain(PASSWORD);
-    expect(result.account.passwordHash.startsWith('scrypt$')).toBe(true);
+    // Registering WITH a password must still produce one: null is reserved
+    // for an account born from a provider, and this is not that.
+    expect(result.account.passwordHash).not.toBeNull();
+    expect(result.account.passwordHash?.startsWith('scrypt$')).toBe(true);
   });
 
   it('treats an email as the same address whatever the casing or spacing', async () => {

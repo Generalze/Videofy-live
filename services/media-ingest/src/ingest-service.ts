@@ -41,6 +41,7 @@ import {
 } from './text-to-speech-provider.js';
 import { GatedTranslationProvider, type GateObserver } from './gated-translation-provider.js';
 import { buildTranslationGate, type GateWiring } from './translation-gate-wiring.js';
+import type { TranslationScope } from './translation-gate.js';
 import type { StreamingBackedTextToSpeechOptions } from './streaming-backed-text-to-speech-provider.js';
 import type { StreamingSpeechSynthesisProvider } from './streaming-speech-synthesis-provider.js';
 import {
@@ -354,10 +355,20 @@ export class IngestService {
   private streamStatus: MediaStateEvent['streamStatus'] = 'created';
   private currentSession: ProcessingSession | null = null;
   private readonly sessions: ProcessingSessionStore;
-  /** The same translation provider the batch path uses. See the constructor. */
-  private readonly liveTranslationProvider: TimestampedTranslationProvider;
+  /**
+   * The ONE engine, unwrapped. Every scoped provider below wraps this exact
+   * instance, so a process holds one model load and one warm-up however many
+   * scopes it serves.
+   */
+  private readonly rawTranslationProvider: TimestampedTranslationProvider;
   /** For /health and the boot line: which directions this deployment may translate. */
   private readonly translationGateWiring: GateWiring;
+  /** One gated provider per scope, built on demand and kept. */
+  private readonly translationByScope = new Map<
+    TranslationScope,
+    TimestampedTranslationProvider
+  >();
+  private readonly onTranslationOutcome: GateObserver | undefined;
 
   /**
    * The standard provider, optionally wrapped.
@@ -404,31 +415,30 @@ export class IngestService {
      * to translate you must hold a provider, and the provider you hold asks the
      * registry first. Refused routes never reach the engine at all.
      *
-     * SCOPE. This gate is `programme-live`. A call-scoped session is therefore
-     * REFUSED by it rather than silently approved under a programme's approval
-     * -- fail-closed, and the honest state until call scope is wired
-     * separately. Approving one scope with another's evidence is the exact
-     * thing the directional registry exists to prevent.
+     * SCOPE IS THE CALLER'S, NOT THIS CONSTRUCTOR'S. It used to be fixed here
+     * at `programme-live` for every path in the service, with a comment saying
+     * a call would therefore be refused "fail-closed, and the honest state
+     * until call scope is wired separately". That was written as a safe
+     * placeholder and it behaved as one -- silently. A translated call ran for
+     * 55 seconds in production on 28 Sep with zero audio in either direction,
+     * no error and no warning, because refusing every segment IS the
+     * fail-closed behaviour and nothing distinguished it from an idle line.
+     *
+     * Each path now names the scope it is actually in, through
+     * `translationForScope`. This one -- the uploaded/recorded session store --
+     * is a programme, and says so.
      */
-    const rawTranslationProvider = buildTranslationProvider(config);
+    this.rawTranslationProvider = buildTranslationProvider(config);
     const gateWiring =
       deps.translationGate ??
-      buildTranslationGate({
-        scope: 'programme-live',
-        ...(config.translationRoutesDocument
+      buildTranslationGate(
+        config.translationRoutesDocument
           ? { documentPath: config.translationRoutesDocument }
-          : {}),
-      });
-    const translationProvider = new GatedTranslationProvider({
-      inner: rawTranslationProvider,
-      gate: gateWiring.gate,
-      ...(deps.onTranslationOutcome ? { onOutcome: deps.onTranslationOutcome } : {}),
-    });
+          : {},
+      );
     this.translationGateWiring = gateWiring;
-    // Held so the LIVE path can use the same instance. A second provider would
-    // mean two model loads, two warm-up costs, and two sets of behaviour to
-    // reason about for one product.
-    this.liveTranslationProvider = translationProvider;
+    this.onTranslationOutcome = deps.onTranslationOutcome;
+    const translationProvider = this.translationForScope('programme-live');
     this.sessions = new ProcessingSessionStore({
       ...(deps.programmeRouteQualified === undefined
         ? {}
@@ -608,6 +618,24 @@ export class IngestService {
 
     this.socket = io(this.config.gatewayUrl, {
       query: { role: 'ingest' },
+      /*
+       * THE CREDENTIAL THIS SOCKET NEVER PRESENTED.
+       *
+       * The gateway authenticated only the `operator` role, so `ingest` was
+       * a query parameter anybody could type -- and an ingest socket sets
+       * the programme delivery policy, which decides whether a protected
+       * broadcast's tracks may be relayed live. Both services already hold
+       * this token and already present it on every internal HTTP call
+       * between them; the socket simply never did.
+       *
+       * In `auth` rather than `query` because a query string reaches proxy
+       * and browser logs and an auth payload does not. Undefined where no
+       * token is configured, which the gateway then refuses -- the honest
+       * outcome for a deployment with no shared secret.
+       */
+      ...(this.config.internalIngressAuth.token === null
+        ? {}
+        : { auth: { token: this.config.internalIngressAuth.token } }),
       transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionDelay: 2000,
@@ -690,7 +718,9 @@ export class IngestService {
   }
 
   async createProcessingSession(upload: UploadedMediaFile): Promise<ProcessingSession> {
-    const session = await this.sessions.createFromUpload(upload);
+    const session = await this.sessions.createFromUpload(upload, undefined, {
+      waitForProcessing: false,
+    });
     logger.info('Processing session ready', {
       sessionId: session.id,
       streamId: session.streamId,
@@ -770,8 +800,37 @@ export class IngestService {
   // transcript. It cannot reach into session state, and so cannot grow into a
   // second, divergent copy of the pipeline.
 
-  get liveTranslation(): TimestampedTranslationProvider {
-    return this.liveTranslationProvider;
+  /**
+   * The translation provider for ONE scope, gated against that scope's
+   * approvals. The only way to get a translator out of this service.
+   *
+   * THERE IS NO UNSCOPED ACCESSOR, on purpose. `get liveTranslation()` used to
+   * be one, and three callers took it: the realtime ingress (calls AND
+   * programmes), the chat-message route, and the voice-note route. All three
+   * received a provider hard-wired to `programme-live`, so a chat message
+   * asked whether its language pair was approved for broadcast and a native
+   * call asked the same. On the production document that question's answer is
+   * no for French while the call and messaging answers are yes. Nobody could
+   * see it: the gate returns the original text, which for a message is correct
+   * behaviour and for a call means silence.
+   *
+   * A caller must now say what it is doing, and the type system will not let
+   * it decline to.
+   *
+   * EVERY SCOPE SHARES ONE ENGINE. The wrapper is per scope; the model behind
+   * it is the single instance built in the constructor, so this costs one
+   * small object rather than a second model load.
+   */
+  translationForScope(scope: TranslationScope): TimestampedTranslationProvider {
+    const existing = this.translationByScope.get(scope);
+    if (existing !== undefined) return existing;
+    const built = new GatedTranslationProvider({
+      inner: this.rawTranslationProvider,
+      gate: this.translationGateWiring.gateFor(scope),
+      ...(this.onTranslationOutcome ? { onOutcome: this.onTranslationOutcome } : {}),
+    });
+    this.translationByScope.set(scope, built);
+    return built;
   }
 
   /**

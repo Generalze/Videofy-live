@@ -16,6 +16,7 @@ WWW_DIR="${WWW_DIR:-/srv/videofy/www}"
 export VITE_GATEWAY_URL=/
 export VITE_CALL_PATH=/call/       # where the C7 site sends "Launch Live"
 export VITE_ACCOUNT_URL=/auth
+export VITE_GOOGLE_WEB_CLIENT_ID=692573915541-13t0122j4bd8vkgkainvh91cjt9vfdil.apps.googleusercontent.com
 export VITE_INGEST_URL=/media
 export VITE_PROGRESSIVE_TRANSLATED_AUDIO=true
 

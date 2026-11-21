@@ -551,6 +551,31 @@ export class ProgrammeMediaOrigin {
        * time would be a second answer that can disagree with this one.
        */
       const initBytes = await this.syncFile(initPath);
+      /*
+       * AND A ZERO-LENGTH INITIALISATION OBJECT IS NOT ONE EITHER.
+       *
+       * The segment above is checked and this was not, and the difference
+       * mattered more than the segment's, because EVERY fragment depends on
+       * this file. Nothing downstream would have caught it: the replay
+       * archive compares copied bytes against declared bytes and zero equals
+       * zero, verification compares found size against expected size and
+       * zero equals zero again, and the finalisation complaint counts
+       * segments and checks an init generation is PRESENT, never that it has
+       * any content.
+       *
+       * So a recording reached `available`, the manifest rendered, the init
+       * served 200 with no bytes, and the viewer's player failed with no
+       * signal anywhere on the server. That is the 44-byte audio incident in
+       * a new place, and the recovery path in programme-media-recovery.ts
+       * already checks exactly this -- it was only the live capture path
+       * that did not.
+       *
+       * Treated as ABSENT rather than broken, like a missing file: the
+       * packager writes the init as it opens the run and a zero-length
+       * moment is transient, so the next poll resolves it. Refusing the
+       * segment is what keeps an undecodable fragment out of the archive.
+       */
+      if (initBytes === 0) return null;
       await this.syncDirectory(running.directory);
       return { bytes, initBytes, initReference: initPath };
     } catch (error) {

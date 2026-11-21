@@ -33,6 +33,26 @@ export interface TranslationProviderResult {
   providerName?: string;
   modelId?: string | null;
   providerLatencyMs?: number | null;
+  /**
+   * FALSE WHEN `translatedText` IS THE ORIGINAL, UNTRANSLATED.
+   *
+   * The gate delivers the source text whenever it declines to translate -- an
+   * unapproved route, an engine that failed, a mangled phone number, text past
+   * the certified limit. For a MESSAGE that is right: the reader sees the
+   * original and is told it was not translated.
+   *
+   * ON A CALL IT WAS A LIE, and it was measured on two real phones on 22 Sep
+   * 2026. `en->fr` was unapproved, the gate correctly declined, the original
+   * English came back in this field, and the call path SYNTHESISED it. Both
+   * people heard a machine voice reading their own words back at them, with
+   * no way to tell it was not a translation -- worse than silence, because it
+   * also replaced the speaker's real voice.
+   *
+   * Optional, and absent means TRANSLATED: every provider that really
+   * translates keeps working untouched, and only the paths that hand back an
+   * original have to say so. Anything that VOICES this text must check it.
+   */
+  translated?: boolean;
 }
 
 export interface TimestampedTranslationProvider {

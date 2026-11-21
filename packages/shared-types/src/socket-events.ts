@@ -318,3 +318,45 @@ export interface TranslatedAudioFramePayload {
   channelCount: 1;
   pcmBase64: string;
 }
+
+/**
+ * WHY A REFUSAL CARRIES A CODE AND NOT ONLY A SENTENCE.
+ *
+ * FOUND BY AUDIT, 29 Sep 2026. The gateway refused a locked channel with
+ * "This programme is locked. Check the link and code you were given." The web
+ * player decided whether to show the join-code prompt by testing whether the
+ * error message contained the word "private" -- a word that appears in no
+ * gateway refusal anywhere in the repository.
+ *
+ * So the prompt could never appear. A viewer opening a locked link without a
+ * code had the refusal swallowed and sat on a blank page forever: the entire
+ * admission path for locked channels was dead from the browser, and no test
+ * on either side pinned the string.
+ *
+ * The wording was correct on both sides when each was written. It broke when
+ * the visibility vocabulary moved from "private" to the three-tier
+ * public/private/locked model and the sniff was not updated -- which is what
+ * always happens, because prose belongs to the person writing the screen and
+ * a branch condition does not. So the machine-readable half is separate now,
+ * and the sentence is free to be rewritten in any language without breaking a
+ * control flow.
+ */
+export const SOCKET_ERROR_CODES = {
+  /** The channel is locked and the join code was absent or wrong. */
+  CHANNEL_LOCKED: 'channel-locked',
+} as const;
+
+export type SocketErrorCode =
+  (typeof SOCKET_ERROR_CODES)[keyof typeof SOCKET_ERROR_CODES];
+
+/**
+ * What the gateway emits on `ERROR`.
+ *
+ * `message` is for a person to read. `code` is for the client to branch on,
+ * and is absent on refusals that predate this contract or that a client is
+ * not expected to act upon.
+ */
+export interface SocketErrorPayload {
+  message: string;
+  code?: SocketErrorCode;
+}

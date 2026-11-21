@@ -32,6 +32,8 @@ import {
 } from './account-authentication.js';
 import { reconcileVoiceMaterial } from './voice-material-reconciliation.js';
 import { VoiceProfileStore } from './voice-profile-store.js';
+import { createProgrammeSessionGuard } from './programme-session-guard.js';
+import type { ProgrammeAudienceAccess } from './programme-egress-routes.js';
 import { registerSourceMediaDeliveryRoute } from './source-media-delivery-route.js';
 import { registerViewerReadyMediaDeliveryRoute } from './viewer-ready-media-delivery-route.js';
 import { IngestService, buildTextToSpeechVoiceIdsByLanguage } from './ingest-service.js';
@@ -60,6 +62,8 @@ import {
   type SpeechProbabilityDetector,
 } from '@videofy-live/speech-activity';
 import { buildTranslationGate } from './translation-gate-wiring.js';
+import { scopeForServiceCategory } from './translation-gate.js';
+import { publicNigerianSynthesisState } from './nigerian-synthesis-route.js';
 import { registerQualityRoutes } from './quality-routes.js';
 import {
   nigerianReadiness,
@@ -109,7 +113,7 @@ import {
   buildLiveSynthesis,
   buildStreamingTranscriptionProvider,
   describeLiveEngine,
-  describeNaijaLingoPreflight,
+  describeNigerianVoicePreflight,
   preflightNigerianSpecialist,
 } from './live-provider-wiring.js';
 
@@ -227,16 +231,46 @@ const ingest = new IngestService(config, {
    * is NOT released from memory here: an audience is still forty-five seconds
    * behind and has to be able to fetch what was just published.
    */
+  /*
+   * AND THE RECORDING IS FINISHED HERE, which it was not until 29 Sep 2026.
+   *
+   * This handler drained the buffer and stopped. The only code that finalised
+   * a recording was `DELETE /programmes/:runId/media-origin`, and an audit
+   * found that route is called by NOTHING -- not the console, not the
+   * gateway, not a script. The professional path had a second exit, because
+   * the encoder exiting triggers `finish()`; the WebRTC path, which is the
+   * one this product actually uses, installs an `exited` promise that never
+   * resolves, so that exit does not exist either.
+   *
+   * So every recording production has ever made would have been begun and
+   * never finished: permanently `recording`, permanently 409 on playback, and
+   * permanently ineligible for expiry because the sweeper only considers
+   * settled recordings. The retention an operator chose would never have been
+   * applied to anything.
+   *
+   * ORDER MATTERS. `stop` collects the fragments produced between the last
+   * poll and the stop, then finalises; `programmeClosed` projects whatever
+   * that finalisation turned out to be into history. Reversing them writes
+   * history about a recording that has not settled yet.
+   *
+   * BOTH ARE NO-OPS WHERE THEY DO NOT APPLY. `stop` returns immediately for a
+   * run it is not producing, and `replayComposition` is null when Replay is
+   * off -- which is every deployment today. This must never throw into the
+   * socket handler, so the whole thing is caught: a broadcast that has ALREADY
+   * ENDED must not be able to fail.
+   */
   onProgrammeRunEnded: (runId) => {
     const buffer = programmeTimelines.buffer(runId);
-    if (buffer === null) return;
-    buffer.drain();
-    const released = buffer.advance();
-    logger.info('Programme run ended; draining what the buffer still held', {
-      runId,
-      releasedEvents: released.length,
-      publicOutputTimeMs: programmeTimelines.status(runId)?.cursor.publicOutputTimeMs ?? null,
-    });
+    if (buffer !== null) {
+      buffer.drain();
+      const released = buffer.advance();
+      logger.info('Programme run ended; draining what the buffer still held', {
+        runId,
+        releasedEvents: released.length,
+        publicOutputTimeMs: programmeTimelines.status(runId)?.cursor.publicOutputTimeMs ?? null,
+      });
+    }
+    void settleProgrammeRecording(runId);
   },
   /*
    * WHO HAS ACTUALLY JUDGED THIS LANGUAGE, asked of the route document.
@@ -314,7 +348,11 @@ registerVoiceNoteTranslationRoute(app, {
       timeoutMs: config.transcriptionTimeoutMs,
     },
   }),
-  translation: ingest.liveTranslation,
+  // A VOICE NOTE IS A MESSAGE. It is recorded, sent and read at the
+  // recipient's convenience; nothing about it is a broadcast. It asked the
+  // programme question until 28 Sep 2026 and was refused for every language
+  // approved for messaging but not for programmes -- which is all of them.
+  translation: ingest.translationForScope('messaging'),
   synthesis: () => streamingSynthesis,
   voiceIdFor: (targetLanguage) =>
     voiceNoteVoiceIds.get(targetLanguage) ?? config.textToSpeechDefaultVoiceId,
@@ -375,11 +413,47 @@ let programmeSpoolPressure: SpoolPressure | null = null;
  * runs after this handler is registered -- and a captured `null` would report
  * Replay as off on a deployment where it is running perfectly.
  */
-function replayBackendState(): { readonly state: string; readonly detail?: string } {
-  if (replayBackend !== null) return { state: 'ready' };
-  return replayDegraded === null
-    ? { state: 'off' }
-    : { state: 'degraded', detail: replayDegraded };
+function replayBackendState(): {
+  readonly state: string;
+  readonly detail?: string;
+  readonly begun?: number;
+  readonly settled?: number;
+  readonly unsettled?: number;
+  readonly warning?: string;
+} {
+  if (replayBackend === null) {
+    return replayDegraded === null
+      ? { state: 'off' }
+      : { state: 'degraded', detail: replayDegraded };
+  }
+  /*
+   * `ready` MEANT ONLY "A BACKEND OBJECT WAS CONSTRUCTED AT BOOT".
+   *
+   * It never asked whether a policy had ever resolved, a recording had ever
+   * begun, or -- the defect that made this matter -- whether a single one had
+   * ever been finished. Until 29 Sep 2026 none ever was, and this said
+   * `ready` throughout. That is the same shape as the backup that was
+   * completely dead behind green signals.
+   *
+   * These two numbers are the cheapest honest thing available: a recording
+   * that is begun and never settled makes `unsettled` climb and stay there.
+   */
+  const unsettled = recordingsBegun - recordingsSettled;
+  return {
+    state: 'ready',
+    begun: recordingsBegun,
+    settled: recordingsSettled,
+    unsettled,
+    // One in flight is a broadcast that is simply still on air. A backlog is
+    // not, and the run-ended signal is the thing to look at.
+    ...(unsettled > 1
+      ? {
+          warning:
+            `${unsettled} recordings have begun and not settled; ` +
+            'an unsettled recording never becomes playable and never expires',
+        }
+      : {}),
+  };
 }
 
 app.get('/health', (_req, res) => {
@@ -661,6 +735,18 @@ app.post('/microphone/sessions/:sessionId/stop', operatorOnly, (req, res) => {
  * message and are filled with a fixed marker rather than invented per call:
  * they exist for stream diagnostics this path does not produce.
  */
+/*
+ * MESSAGING SCOPE, named once for this route.
+ *
+ * The account service already asks its own registry whether this direction is
+ * approved for `messaging` before it calls here. This service then asked a
+ * SECOND question -- was it approved for `programme-live`? -- and refused on
+ * the answer, handing back the original text with `translated: false`. Two
+ * gates, one correct and one about a different product, and the second one
+ * won.
+ */
+const messageTranslation = ingest.translationForScope('messaging');
+
 app.post('/internal/text-translation', async (req, res) => {
   if (!assertInternalWebRtcRequest(req, res)) return;
   const body = (req.body ?? {}) as {
@@ -715,7 +801,7 @@ app.post('/internal/text-translation', async (req, res) => {
         const piece = raw.trim();
         if (piece.length === 0) return { text: '', translated: true };
         try {
-          const result = await ingest.liveTranslation.translate({
+          const result = await messageTranslation.translate({
             sessionId: 'internal-text',
             streamId: 'internal-text',
             segmentId: `internal-text-${index}`,
@@ -1097,7 +1183,41 @@ app.post('/internal/voice-cleanups/retry', async (req, res) => {
  * protected run is ungoverned, which is the correct answer for a programme
  * that holds nothing back.
  */
-registerGeneratedAudioDeliveryRoute(app, ingest, {
+/*
+ * THE AUDIENCE DOOR, SHARED WITH THE SESSION-KEYED ROUTES.
+ *
+ * Assigned where it is built, hundreds of lines below, because it needs the
+ * channel-visibility client. Read through a function so the guard registered
+ * here binds late -- and answers NO rather than yes if it is somehow asked
+ * before that assignment, which no request can do but which must not be a
+ * yes if one ever could.
+ */
+let programmeAudience: ProgrammeAudienceAccess | null = null;
+/**
+ * The audience door, or a loud failure.
+ *
+ * Every surface that admits a viewer reads it through here, so there is one
+ * policy object rather than several constructions of the same arguments
+ * drifting apart -- which is how one of them ends up being the only one that
+ * was hardened. Throwing is right: it can only be null during module
+ * initialisation, when nothing is serving, so a null here means the order of
+ * this file changed and somebody needs to know at boot rather than at the
+ * first locked broadcast.
+ */
+function audienceDoor(): ProgrammeAudienceAccess {
+  if (programmeAudience === null) {
+    throw new Error('the programme audience door was read before it was built');
+  }
+  return programmeAudience;
+}
+
+const programmeSessionAudience = createProgrammeSessionGuard({
+  runForSession: (sessionId) => programmeTimelines.runForSession(sessionId),
+  mayView: (runId, request) =>
+    programmeAudience === null ? 'forbidden' : programmeAudience.mayView(runId, request),
+});
+
+registerGeneratedAudioDeliveryRoute(app, ingest, programmeSessionAudience, {
   assess: (sessionId, segmentId) => {
     const runId = programmeTimelines.runForSession(sessionId);
     if (runId === null) return 'not-governed';
@@ -1116,8 +1236,13 @@ registerGeneratedAudioDeliveryRoute(app, ingest, {
     return event.programmeTimeMs <= status.cursor.publicOutputTimeMs ? 'public' : 'not-yet-public';
   },
 });
-registerSourceMediaDeliveryRoute(app, ingest);
-registerViewerReadyMediaDeliveryRoute(app, ingest);
+/*
+ * BOTH GUARDED SINCE 29 Sep 2026. These serve a broadcast's ORIGINAL file and
+ * its viewer encode, and until now asked nothing about who was asking -- on a
+ * delayed broadcast the original file is also the future.
+ */
+registerSourceMediaDeliveryRoute(app, ingest, programmeSessionAudience);
+registerViewerReadyMediaDeliveryRoute(app, ingest, programmeSessionAudience);
 
 // Records first, then the sweep, and only then the port. Serving before
 // hydration would let a call resolve a personal voice from an empty store and
@@ -1368,18 +1493,25 @@ programmeTimelines.onRunOpened((runId) => {
 const streamingTranscription = buildStreamingTranscriptionProvider(config);
 
 /**
- * Ask 9jaLingo two questions before anybody needs an answer, and say the result
- * in ONE line.
+ * Ask the APPROVED Nigerian voice whether it can speak, before anybody needs an
+ * answer, and say the result in ONE line.
  *
- * WHY AT BOOT AND NOT ON FIRST USE. The way "paste the key" goes wrong is
- * quiet: a key that is valid but has no plan, a key whose speaker catalogue
- * does not cover Yoruba, a header the vendor changed. All three produce a
- * fallback that sounds like a working product to anyone who does not speak the
- * language -- so the moment to find out is before the demo, not during it.
+ * WHOEVER IS APPROVED, not a fixed vendor. This used to ask 9jaLingo by name,
+ * so when the founder ruling of 2026-09-18 made ElevenLabs the approved voice
+ * the boot log would have gone on reporting in detail on the health of a vendor
+ * no sentence could reach -- a check that verifies nothing while reading as
+ * reassurance, which this repository has shipped twice and does not intend to
+ * ship again.
  *
- * IT CANNOT FAIL THE BOOT. A vendor outage must not become an outage here;
- * that coupling is exactly what the fallback exists to avoid. It reports, and
- * the report goes on /health so somebody who missed the log can still find it.
+ * WHY AT BOOT AND NOT ON FIRST USE. The way a pasted key goes wrong is quiet: a
+ * key that is valid but whose account does not contain the configured voice.
+ * That returns 200 to every check except the one that matters and 400 to the
+ * first sentence of a broadcast -- so the moment to find out is before the
+ * demo, not during it.
+ *
+ * IT CANNOT FAIL THE BOOT. A vendor outage must not become an outage here.
+ * It reports, and the report goes on /health so somebody who missed the log can
+ * still find it.
  *
  * NAMES ONLY. Nothing in this line is or contains a credential.
  */
@@ -1387,7 +1519,7 @@ if (liveSynthesis.nigerian !== null) {
   void preflightNigerianSpecialist()
     .then((preflight) => {
       liveSynthesis.nigerian?.recordPreflight(preflight);
-      const line = describeNaijaLingoPreflight(preflight);
+      const line = describeNigerianVoicePreflight(preflight);
       if (preflight.keyConfigured && preflight.reachable && preflight.problem === null) {
         logger.info(line);
       } else {
@@ -1395,7 +1527,7 @@ if (liveSynthesis.nigerian !== null) {
       }
     })
     .catch((error: unknown) => {
-      logger.warn('9jaLingo preflight could not run', {
+      logger.warn('the approved Nigerian voice preflight could not run', {
         message: error instanceof Error ? error.message : 'unknown failure',
       });
     });
@@ -1411,9 +1543,20 @@ if (liveSynthesis.nigerian !== null) {
  * that checks later.
  */
 /** Read at request time, like `liveEngine`; null only when synthesis is off. */
+/*
+ * REDACTED FOR THE PUBLIC SURFACE. `/health` answers anybody on the internet,
+ * and it carried the vendor's own free text -- which on 2 Oct 2026 read
+ * "Your subscription has a failed or incomplete payment". That is the
+ * operator's billing status on a public endpoint, and it is not a health
+ * fact. Whether synthesis works stays; why it does not, and the voice ids
+ * behind it, move to the guarded surface and the log.
+ */
 const nigerianSynthesis = liveSynthesis.nigerian === null
   ? null
-  : (): unknown => liveSynthesis.nigerian?.state();
+  : (): unknown => {
+      const state = liveSynthesis.nigerian?.state();
+      return state === undefined ? undefined : publicNigerianSynthesisState(state);
+    };
 
 const liveEngine = describeLiveEngine(config);
 if (!liveEngine.real) {
@@ -1449,22 +1592,45 @@ if (!liveEngine.real) {
  * failed closed says so, and one with no approved directions says that too
  * rather than looking identical to a working one.
  */
-const translationGate = buildTranslationGate({
-  scope: 'programme-live',
-  ...(process.env['TRANSLATION_ROUTES_DOCUMENT']
+const translationGate = buildTranslationGate(
+  process.env['TRANSLATION_ROUTES_DOCUMENT']
     ? { documentPath: process.env['TRANSLATION_ROUTES_DOCUMENT'] }
-    : {}),
-});
-logger.info('Translation route gate ready', {
-  scope: 'programme-live',
-  failedClosed: translationGate.failedClosed,
-  approvedDirections: translationGate.approvedDirections.length,
-  directions: translationGate.approvedDirections,
-  detail: translationGate.description,
-  ...(translationGate.failedClosed
-    ? { warning: 'every direction refuses; the ORIGINAL is still delivered untranslated' }
-    : {}),
-});
+    : {},
+);
+/*
+ * EVERY SCOPE, SAID SEPARATELY.
+ *
+ * This line used to name one scope, `programme-live`, and print
+ * `approvedDirections: 0, directions: []` for it -- on every deployment that
+ * has ever run, including ones whose document approved routes, because it
+ * read an `approvedDirections()` method the registry has never had. So the
+ * line was simultaneously reporting the wrong scope and reporting nothing
+ * about it, and it is the exact line where somebody should have caught a
+ * production call going silent.
+ *
+ * Three scopes, counted by asking the registry. `null` means the loaded
+ * object could not be enumerated and says so, rather than showing a zero.
+ */
+for (const scope of ['messaging', 'programme-live', 'call-live'] as const) {
+  const directions = translationGate.approvedDirectionsFor(scope);
+  logger.info('Translation route gate ready', {
+    scope,
+    failedClosed: translationGate.failedClosed,
+    approvedDirections: directions === null ? 'cannot-enumerate' : directions.length,
+    directions: directions ?? 'cannot-enumerate',
+    detail: translationGate.description,
+    ...(translationGate.failedClosed
+      ? { warning: 'every direction refuses; the ORIGINAL is still delivered untranslated' }
+      : {}),
+    ...(!translationGate.failedClosed && directions !== null && directions.length === 0
+      ? {
+          warning:
+            `no direction is approved for ${scope}; ` +
+            'every such request is delivered untranslated and a CALL is delivered silent',
+        }
+      : {}),
+  });
+}
 
 /*
  * THE QUALITY SURFACE. Registered from the SAME gate instance above, so the
@@ -1479,6 +1645,11 @@ logger.info('Translation route gate ready', {
 registerProgrammeRuntimeRoutes(app, {
   performance: programmePerformance,
   timelines: programmeTimelines,
+  /*
+   * The guard this surface always claimed to be behind and was not. Required
+   * by the deps type now, so a future composition cannot omit it silently.
+   */
+  operatorOnly,
   /*
    * So the console can tell an operator who decides their adverts. Counts and
    * a source only: a broadcaster reading which campaigns are held would be
@@ -1543,16 +1714,27 @@ const channelVisibility =
       })
     : VISIBILITY_UNRESOLVABLE;
 
+/*
+ * BUILT ONCE AND SHARED. The playlist and segment routes below ask it, and so
+ * do the three session-keyed media routes registered much earlier -- those
+ * asked nothing at all until 29 Sep 2026, which let a locked broadcast's
+ * original file be fetched by anyone holding a session id the gateway
+ * broadcasts to every listener.
+ */
+programmeAudience = createProgrammeAudienceAccess({
+  channelOf: (runId) => programmeTimelines.channelOf(runId),
+  visibility: channelVisibility,
+  authenticate,
+  entitlement: operatorEntitlement,
+  internalTokenAllowed: (presented) =>
+    internalIngressRequestAllowed(config.internalIngressAuth, presented),
+  // The audience door does not honour insecure mode; see its own docblock.
+  internalAuthEnforced: () => config.internalIngressAuth.mode === 'enforced',
+});
+
 registerProgrammeEgressRoutes(app, {
   egress: programmeEgress,
-  access: createProgrammeAudienceAccess({
-    channelOf: (runId) => programmeTimelines.channelOf(runId),
-    visibility: channelVisibility,
-    authenticate,
-    entitlement: operatorEntitlement,
-    internalTokenAllowed: (presented) =>
-      internalIngressRequestAllowed(config.internalIngressAuth, presented),
-  }),
+  access: audienceDoor(),
   spoolRoot: programmeMediaSpool,
   onFuturePeek: () => {
     /*
@@ -1737,6 +1919,51 @@ const programmeOrigin = new ProgrammeMediaOrigin({
       }),
 });
 
+/*
+ * BEGUN MINUS SETTLED, so this gap cannot recur in silence.
+ *
+ * The defect these count was not that finalisation was wrong. It was that
+ * finalisation never happened and NOTHING anywhere disagreed: the recording
+ * sat in `recording`, playback answered 409, expiry skipped it, and every
+ * health signal said ready. An audit found it by reading, which is the
+ * expensive way.
+ *
+ * A run that is begun and never settled now shows up as a number that only
+ * goes up, on /health, where a person or a probe can see it.
+ */
+let recordingsBegun = 0;
+let recordingsSettled = 0;
+
+/**
+ * The broadcast is over: stop producing, finalise the recording, and write
+ * down that the airing ended.
+ *
+ * A `function` declaration on purpose -- it is called from the
+ * `onProgrammeRunEnded` handler built hundreds of lines above this, and
+ * hoisting is what lets the handler sit next to the rest of the ingest
+ * wiring instead of being moved down here away from its siblings.
+ *
+ * NEVER THROWS. It runs on a socket event for a broadcast that has already
+ * ended; there is no caller left to handle a failure and nothing useful to
+ * do with one except say so.
+ */
+async function settleProgrammeRecording(runId: string): Promise<void> {
+  try {
+    // Collects the fragments produced since the last poll, THEN finalises.
+    await programmeOrigin.stop(runId);
+    // Projects whatever that finalisation turned out to be into history.
+    await replayComposition?.programmeClosed(runId, Date.now());
+    recordingsSettled += 1;
+  } catch (error) {
+    logger.error('the recording for a finished broadcast could not be settled', {
+      runId,
+      reason: error instanceof Error ? error.message : 'unknown',
+      consequence:
+        'the replay stays unfinished: playback will refuse it and retention will not expire it',
+    });
+  }
+}
+
 /** The gate's answer for a run this deployment is not recording. */
 function replayUnavailable(runId: string): {
   ok: false;
@@ -1768,6 +1995,7 @@ if (replayComposition !== null) {
      * the composition is written so that every failure inside it is a
      * diagnostic rather than an exception.
      */
+    recordingsBegun += 1;
     void replayComposition?.programmeOpened(identity, Date.now());
   });
 }
@@ -1791,14 +2019,10 @@ if (replayBackend !== null) {
     archive: replayBackend.archive,
     delivery: replayBackend.delivery,
     access: createReplayAudienceAccess({
-      channel: createProgrammeAudienceAccess({
-        channelOf: (runId) => programmeTimelines.channelOf(runId),
-        visibility: channelVisibility,
-        authenticate,
-        entitlement: operatorEntitlement,
-        internalTokenAllowed: (presented) =>
-          internalIngressRequestAllowed(config.internalIngressAuth, presented),
-      }),
+      // THE SAME DOOR the live path uses. This was a second construction of
+      // the identical arguments, which is how the insecure-mode hardening
+      // could have been applied to one and not the other.
+      channel: audienceDoor(),
       authenticate,
       entitlement: operatorEntitlement,
     }),
@@ -1902,14 +2126,17 @@ app.delete('/programmes/:runId/media-origin', operatorOnly, (req, res) => {
       res.status(400).json({ error: 'Not a run id.' });
       return;
     }
-    await programmeOrigin.stop(runId);
     /*
-     * THE BROADCAST IS OVER. The producer has already finalised the recording
-     * -- it knows when the last fragment landed and this does not -- so what
-     * happens here is bookkeeping: project whatever the finalisation turned out
-     * to be into history, and write down that the airing ended.
+     * THE SAME PATH THE RUN-ENDED SIGNAL TAKES, deliberately.
+     *
+     * These were two copies of the finalisation sequence, and only this one
+     * existed -- which mattered because nothing calls this route. Keeping one
+     * function means the operator's explicit stop and the gateway's
+     * end-of-run signal can never drift into doing different things, and
+     * settling twice is harmless: `stop` returns immediately for a run it is
+     * no longer producing.
      */
-    await replayComposition?.programmeClosed(runId, Date.now());
+    await settleProgrammeRecording(runId);
     res.status(200).json({ runId, producing: false });
   })();
 });
@@ -2338,6 +2565,9 @@ registerQualityRoutes(app, {
   registry: translationGate.registry,
   catalogue: () => ingest.targetLanguageCatalogue,
   scope: 'programme-live',
+  // This names models and review evidence -- C7's supply chain, not a
+  // viewer's business. The readiness surface beside it was already guarded.
+  operatorOnly,
 });
 logger.info('Route quality surface ready', {
   scope: 'programme-live',
@@ -2392,7 +2622,16 @@ if (streamingTranscription !== null) {
     auth: config.internalIngressAuth,
     openStream: createLiveStreamOpener({
       transcription: streamingTranscription,
-      translation: ingest.liveTranslation,
+      /*
+       * THE JOIN THIS SERVICE WAS MISSING. `'call-live'` appeared nowhere in
+       * media-ingest except its own type definition: every gate in the
+       * process was built for programmes, so a native call's translation was
+       * judged against broadcast approval and refused. The realtime ingress
+       * carries both kinds of stream and is the one place that knows which
+       * it has.
+       */
+      translationFor: (serviceCategory) =>
+        ingest.translationForScope(scopeForServiceCategory(serviceCategory)),
       // Captions still work without synthesis. A session with no synthesiser
       // must not fall back to a default voice speaking the wrong language.
       synthesis: streamingSynthesis,
@@ -2435,6 +2674,15 @@ if (streamingTranscription !== null) {
         : { speech: { createDetector: createSpeechDetector } }),
       onCaption: (event) => ingest.acceptLiveTranscript(event),
       log: (line, detail) => logger.debug(line, detail ?? {}),
+      /*
+       * THE LINE THAT WAS THROWN AWAY. A translated call went silent for 55
+       * seconds on 28 Sep 2026 and the pipeline said so on every segment --
+       * through `log`, which is `logger.debug`, on a box running
+       * LOG_LEVEL=info. Nothing was broken about the reporting except the
+       * level it spoke at, and that was enough to send the investigation
+       * elsewhere. Anything that decides a participant hears nothing warns.
+       */
+      warn: (line, detail) => logger.warn(line, detail ?? {}),
     }),
     log: (line, detail) => logger.warn(line, detail ?? {}),
   });

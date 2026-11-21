@@ -33,6 +33,8 @@ import type {
 import {
   parseShareableWebRtcSessionId,
   SOCKET_EVENTS,
+  SOCKET_ERROR_CODES,
+  type SocketErrorPayload,
   WebRtcSignallingClient,
 } from '@videofy-live/shared-types';
 import styles from './App.module.css';
@@ -1041,14 +1043,22 @@ export default function App(): React.ReactElement {
       setChannelDirectory(parseDirectoryEntries(entries));
     });
 
-    socket.on(SOCKET_EVENTS.ERROR, (error: { message?: string }) => {
+    socket.on(SOCKET_EVENTS.ERROR, (error: Partial<SocketErrorPayload>) => {
       /*
-       * A refusal to enter a private programme is the one error this page can
+       * A refusal to enter a LOCKED programme is the one error this page can
        * act on -- it turns into a prompt for the code. Everything else the
        * gateway refuses is left to the handlers that already report it, rather
        * than swallowed into a code box that would make no sense.
+       *
+       * ON THE CODE, NOT THE SENTENCE. This tested whether the message
+       * contained the word "private". The gateway says "This programme is
+       * locked", and has since the three-tier vocabulary replaced the old
+       * two-tier one -- so this branch never once fired, the prompt never
+       * appeared, and a viewer following a locked link sat on a blank page
+       * with the refusal silently swallowed. Found by audit on 29 Sep 2026,
+       * after nobody had been able to enter a locked channel from the web.
        */
-      if (typeof error?.message === 'string' && error.message.includes('private')) {
+      if (error?.code === SOCKET_ERROR_CODES.CHANNEL_LOCKED) {
         setChannelRefused(true);
         setChannelJoined(false);
       }

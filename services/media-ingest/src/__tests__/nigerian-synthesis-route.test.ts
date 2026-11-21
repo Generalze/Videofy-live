@@ -23,6 +23,8 @@ import {
 } from '@videofy-live/ai-registry';
 import {
   absentSpecialistState,
+  publicNigerianSynthesisState,
+  type NigerianVoicePreflight,
   createNigerianSynthesisRoute,
   type NigerianSynthesisOutcome,
 } from '../nigerian-synthesis-route.js';
@@ -294,7 +296,9 @@ describe('the state a console and /health read', () => {
     const state = absentSpecialistState();
     expect(state.specialistConfigured).toBe(false);
     expect(state.degraded).toBe(true);
-    expect(state.degradedReason).toMatch(/no naijalingo credential/u);
+    // The approved voice's own id: ElevenLabs since the 2026-09-18 ruling.
+    // Matched against the constant so this cannot drift again if it changes.
+    expect(state.degradedReason).toMatch(new RegExp(`no ${NIGERIAN_SPECIALIST_PROVIDER_ID} credential`, 'u'));
     expect(state.degradedReason).toMatch(/mispronounces/u);
   });
 
@@ -305,6 +309,12 @@ describe('the state a console and /health read', () => {
     });
     expect(route.state().preflight).toBeNull();
     route.recordPreflight({
+      // The report names WHO was asked. Without it, a surface reading this
+      // cannot tell a healthy approved vendor from a healthy rejected one.
+      providerId: 'naijalingo',
+      voiceCatalogueChecked: true,
+      canSynthesise: true,
+      synthesisProblem: null,
       keyConfigured: true,
       reachable: true,
       engineReady: true,
@@ -365,5 +375,75 @@ describe('the state a console and /health read', () => {
     const result = await route.provider.synthesize(request('yo-NG'));
     expect(result.degraded?.language).toBe('yo');
     expect(route.state().renderingByLanguage['yo']).toBe('degraded-fallback');
+  });
+});
+
+/**
+ * THE PUBLIC HEALTH SURFACE DOES NOT PUBLISH THE OPERATOR'S BILLING.
+ *
+ * `/health` answers 200 to anybody on the internet, by design -- a load
+ * balancer and an uptime probe both need it unauthenticated. It also carried
+ * the whole preflight object, free text included.
+ *
+ * On 2 Oct 2026 that free text was the vendor's own sentence: "Your
+ * subscription has a failed or incomplete payment. Complete the latest
+ * invoice to continue usage." A change intended to make a silent deployment
+ * explain itself would have explained it to the public.
+ *
+ * The founder asked whether customers needed to see that. They do not. These
+ * pin the line between a health fact and somebody's account.
+ */
+describe('what an unauthenticated caller may read', () => {
+  const blockedByBilling: NigerianVoicePreflight = {
+    providerId: 'elevenlabs',
+    keyConfigured: true,
+    reachable: true,
+    voiceCatalogueChecked: true,
+    canSynthesise: false,
+    synthesisProblem:
+      'HTTP 401: {"detail":{"message":"Your subscription has a failed or incomplete ' +
+      'payment. Complete the latest invoice to continue usage."}}',
+    engineReady: null,
+    totalSpeakers: 29,
+    speakerIdsByLanguage: { yo: ['neMPCpWtBwWZhxEC8qpe'] },
+    languagesWithoutSpeakers: [],
+    problem: 'some other vendor prose',
+  };
+
+  const published = (): string =>
+    JSON.stringify(publicNigerianSynthesisState(absentSpecialistState(blockedByBilling)));
+
+  it('never publishes the vendor sentence about an unpaid invoice', () => {
+    expect(published()).not.toContain('payment');
+    expect(published()).not.toContain('invoice');
+    expect(published()).not.toContain('subscription');
+  });
+
+  it('publishes no vendor prose at all, whatever it happens to say', () => {
+    // Pinned on the FIELDS, not on today's wording: the next message from a
+    // vendor will be different and must be withheld just the same.
+    const state = publicNigerianSynthesisState(absentSpecialistState(blockedByBilling));
+    expect(state.preflight?.synthesisProblem).toBeNull();
+    expect(state.preflight?.problem).toBeNull();
+  });
+
+  it('does not publish the supply chain behind the voices', () => {
+    const state = publicNigerianSynthesisState(absentSpecialistState(blockedByBilling));
+    expect(state.preflight?.speakerIdsByLanguage).toEqual({});
+    expect(state.preflight?.totalSpeakers).toBeNull();
+    expect(published()).not.toContain('neMPCpWtBwWZhxEC8qpe');
+  });
+
+  it('still says the service is degraded, because that IS a health fact', () => {
+    // Redacting the reason must not turn a broken deployment into a healthy
+    // looking one: a probe is entitled to know synthesis does not work.
+    const state = publicNigerianSynthesisState(absentSpecialistState(blockedByBilling));
+    expect(state.preflight?.canSynthesise).toBe(false);
+    expect(state.degraded).toBe(true);
+  });
+
+  it('leaves a state with no preflight alone', () => {
+    const state = absentSpecialistState(null);
+    expect(publicNigerianSynthesisState(state)).toEqual(state);
   });
 });

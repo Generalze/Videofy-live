@@ -72,26 +72,27 @@ describe('the first-deployment route', () => {
     expect(tts.ordered[1]?.role).toBe('fallback');
   });
 
-  it('PIN: 9jaLingo now routes for yo, and ONLY because a run earned it', () => {
+  it('PIN: yo routes to the APPROVED voice alone, and to nothing else', () => {
     /*
-     * This test used to assert the opposite, and both readings are the same
-     * rule seen at two moments. 9jaLingo sat at `configured` while no key
-     * existed and no request had ever been made; the C-AI1.2 benchmark on
-     * 2026-08-30 ran five real Yoruba syntheses through the deployed adapter,
-     * and the stage moved BECAUSE OF THAT and nothing else.
+     * This pin has now been written three times and each rewrite is the same
+     * rule under a new finding, not a new rule. It once asserted 9jaLingo did
+     * NOT route; then that it did, on the 2026-08-30 benchmark; now that
+     * ElevenLabs does and 9jaLingo does not, on the founder's ruling of
+     * 2026-09-18 that 9jaLingo does not work and ElevenLabs does.
      *
-     * What is still pinned is the ordering the founder ruled: for a Nigerian
-     * language the chain is the specialist, then AZURE, and nothing else --
-     * ElevenLabs is absent by design because it answers Yoruba with confident,
-     * wrong audio.
+     * What is pinned throughout is the RULE: a Nigerian language goes to the
+     * one vendor somebody has judged fit, and to nothing after it. Azure in
+     * particular is not a safety net here -- it answers Yoruba with confident,
+     * wrong audio, so a second chance is a second chance to be wrong.
      */
     const tts = route('tts', PROG_UPLOAD, { language: 'yo', minimumStage: 'integrated' });
-    expect(tts.ordered.map((c) => c.providerId)).toEqual(['naijalingo', 'azure']);
+    expect(tts.ordered.map((c) => c.providerId)).toEqual(['elevenlabs']);
     // The role is 'specialist', not 'primary'. That distinction is the whole
-    // Nigerian-language ruling in one word: this vendor leads because it is the
-    // one that speaks the language, not because it won a general ranking.
+    // Nigerian-language ruling in one word: this vendor leads because it has
+    // been judged fit for the language, not because it won a general ranking.
     expect(tts.ordered[0]?.role).toBe('specialist');
-    expect(tts.ordered.map((c) => c.providerId)).not.toContain('elevenlabs');
+    expect(tts.ordered.map((c) => c.providerId)).not.toContain('azure');
+    expect(tts.ordered.map((c) => c.providerId)).not.toContain('naijalingo');
   });
 
   it('PIN: a primary that cannot authenticate is refused, and the reason says so', () => {
@@ -192,27 +193,44 @@ describe('the route is service-aware', () => {
   });
 });
 
-describe('9jaLingo is a specialist, which is not the same as better', () => {
-  it('PIN: it leads for Nigerian languages only', () => {
+describe('the approved Nigerian voice is a qualification, not a ranking', () => {
+  it('PIN: it leads for Nigerian languages, as a specialist', () => {
     for (const language of NIGERIAN_SPECIALIST_LANGUAGES) {
-      // At `configured`, so the ORDERING rule is visible. The separate pin
-      // below proves that today's `integrated` requirement excludes it.
       const result = route('tts', PROG_UPLOAD, { language, minimumStage: 'configured' });
+      /*
+       * The ROLE is the assertion that matters. ElevenLabs is also the general
+       * primary, so the provider id alone would pass even if the Nigerian rule
+       * had been deleted entirely. `specialist` says it leads here because it
+       * was judged fit for THIS language -- which is the rule -- rather than
+       * because it happens to win the general ranking.
+       */
       expect(result.ordered[0], language).toMatchObject({
-        providerId: 'naijalingo',
+        providerId: 'elevenlabs',
         role: 'specialist',
       });
     }
   });
 
-  it('PIN: it does not appear at all for other languages', () => {
+  it('PIN: 9jaLingo speaks nothing, in any language', () => {
+    /*
+     * Founder ruling 2026-09-18: it does not work. It must not reappear as a
+     * fallback, a specialist, or a general candidate anywhere.
+     */
+    for (const language of [...NIGERIAN_SPECIALIST_LANGUAGES, 'es', 'en', 'fr', undefined]) {
+      const ids = route('tts', PROG_UPLOAD, { language, minimumStage: 'configured' })
+        .ordered.map((c) => c.providerId);
+      expect(ids, String(language)).not.toContain('naijalingo');
+    }
+  });
+
+  it('PIN: the Nigerian rule does not leak into other languages', () => {
     for (const language of ['es', 'en', 'fr', undefined]) {
       const ids = route('tts', PROG_UPLOAD, { language, minimumStage: 'configured' })
         .ordered.map((c) => c.providerId);
-      // A specialist that outranked the primary everywhere would just be a
-      // different primary.
-      expect(ids, String(language)).not.toContain('naijalingo');
+      // Elsewhere the ordinary chain still applies, Azure included: those
+      // languages never had the pronunciation problem this rule exists for.
       expect(ids[0], String(language)).toBe('elevenlabs');
+      expect(ids, String(language)).toContain('azure');
     }
   });
 
@@ -223,21 +241,20 @@ describe('9jaLingo is a specialist, which is not the same as better', () => {
     expect(isNigerianSpecialistLanguage(undefined)).toBe(false);
   });
 
-  it('PIN: being a specialist does not activate the language in the product', () => {
+  it('PIN: being routable does not activate the language in the product', () => {
     /*
-     * THE CLAIM THIS TEST MAKES SURVIVED THE STAGE CHANGE, and it is worth
-     * saying why. 9jaLingo is now `certified` on 2026-08-30 evidence, so it
-     * routes -- but ROUTING IS NOT ACTIVATION. That a chain exists for Yoruba
-     * says only who would speak it if the product asked; whether Yoruba is
-     * offered to anyone stays a demand-led product decision made elsewhere,
-     * and no table in this package switches a language on.
+     * THIS CLAIM HAS SURVIVED EVERY REWRITE OF THE VENDOR, and that is the
+     * point of it. A chain existing for Yoruba says only who would speak it if
+     * the product asked; whether Yoruba is OFFERED to anyone is a demand-led
+     * decision made where languages are configured, and no table in this
+     * package switches a language on.
      *
-     * The specialist rule itself is what is pinned: the chain is the
-     * specialist then Azure, and ElevenLabs is never in it.
+     * The routing rule is what is pinned: for a Nigerian language the chain is
+     * the approved voice and nothing after it.
      */
     const result = route('tts', PROG_UPLOAD, { language: 'yo', minimumStage: 'integrated' });
-    expect(result.ordered.map((c) => c.providerId)).toEqual(['naijalingo', 'azure']);
-    expect(result.ordered.map((c) => c.providerId)).not.toContain('elevenlabs');
+    expect(result.ordered.map((c) => c.providerId)).toEqual(['elevenlabs']);
+    expect(result.ordered.map((c) => c.providerId)).not.toContain('azure');
   });
 });
 
@@ -273,32 +290,35 @@ describe('local models are a separate path, never a quiet substitute', () => {
  * other ninety; and the degraded question could answer "no" for a language
  * nobody checked.
  */
-describe('ha/ig/yo/pcm: 9jaLingo, then Azure, then nothing', () => {
-  it('PIN: the chain is EXACTLY the specialist then Azure, for all four', () => {
+describe('ha/ig/yo/pcm: the approved voice, then nothing', () => {
+  it('PIN: the chain is EXACTLY the approved voice, for all four', () => {
     for (const language of ['ha', 'ig', 'yo', 'pcm']) {
       const ids = route('tts', PROG_UPLOAD, { language, minimumStage: 'configured' }).ordered.map(
         (c) => c.providerId,
       );
       // Not `toContain`, not `[0]`. The whole list, because the defect this
-      // replaces was an EXTRA member: ElevenLabs sat third and answered
-      // whenever the first two did not, in confident, wrong Yoruba.
-      expect(ids, language).toEqual(['naijalingo', 'azure']);
+      // guards against is an EXTRA member answering whenever the first does
+      // not, in confident, wrong Yoruba.
+      expect(ids, language).toEqual(['elevenlabs']);
     }
   });
 
-  it('PIN: ElevenLabs never speaks a Nigerian language, however the chain fails', () => {
+  it('PIN: nothing speaks a Nigerian language when the approved voice cannot', () => {
     for (const language of NIGERIAN_SPECIALIST_LANGUAGES) {
-      // Even with the specialist unusable -- no key, or a key that does not
-      // resolve -- the answer is Azure alone. "One more vendor behind the
-      // fallback" is not extra safety here; it is a third chance to serve
-      // fluent nonsense.
+      /*
+       * SILENCE IS THE CORRECT ANSWER HERE, and it is the assertion most worth
+       * pinning. With the approved voice unusable -- no key, or one that does
+       * not resolve -- the route is EMPTY. Azure would answer, fluently and
+       * wrongly, and a listener could not tell; a caller seeing an empty route
+       * and a stated reason can.
+       */
       const result = route('tts', PROG_UPLOAD, {
         language,
         minimumStage: 'configured',
-        isUsable: (id) => id !== 'naijalingo',
+        isUsable: (id) => id !== 'elevenlabs',
       });
-      expect(result.ordered.map((c) => c.providerId), language).toEqual(['azure']);
-      expect(result.refusals.join(' ')).toMatch(/naijalingo: credentials or authentication/);
+      expect(result.ordered.map((c) => c.providerId), language).toEqual([]);
+      expect(result.refusals.join(' ')).toMatch(/elevenlabs: credentials or authentication/);
     }
   });
 
@@ -315,10 +335,7 @@ describe('ha/ig/yo/pcm: 9jaLingo, then Azure, then nothing', () => {
     // One exported constant is the single source; media-ingest imports it too.
     // Asserting the resolver against it is what makes that claim checkable
     // rather than merely stated in a comment.
-    expect(NIGERIAN_TTS_ROUTE_ORDER).toEqual([
-      NIGERIAN_SPECIALIST_PROVIDER_ID,
-      NIGERIAN_FALLBACK_PROVIDER_ID,
-    ]);
+    expect(NIGERIAN_TTS_ROUTE_ORDER).toEqual([NIGERIAN_SPECIALIST_PROVIDER_ID]);
     expect(
       route('tts', PROG_UPLOAD, { language: 'yo', minimumStage: 'configured' }).ordered.map(
         (c) => c.providerId,
@@ -328,9 +345,12 @@ describe('ha/ig/yo/pcm: 9jaLingo, then Azure, then nothing', () => {
 
   it('PIN: anything but the specialist is DEGRADED for these languages, and only these', () => {
     for (const language of ['ha', 'ig', 'yo', 'pcm', 'YO-ng']) {
+      // Azure and 9jaLingo are both degraded for these languages now: the
+      // first pronounces them wrongly, the second does not work. Recognising
+      // them is why the constants are kept after leaving the route.
       expect(isDegradedNigerianSynthesis(language, 'azure'), language).toBe(true);
-      expect(isDegradedNigerianSynthesis(language, 'elevenlabs'), language).toBe(true);
-      expect(isDegradedNigerianSynthesis(language, 'naijalingo'), language).toBe(false);
+      expect(isDegradedNigerianSynthesis(language, 'naijalingo'), language).toBe(true);
+      expect(isDegradedNigerianSynthesis(language, 'elevenlabs'), language).toBe(false);
     }
     // A general language served by a general vendor is not degradation; saying
     // it was would make the marker meaningless everywhere it matters.

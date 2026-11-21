@@ -25,7 +25,7 @@ import { readSession } from './premium/operatorSession';
  * session the request is sent bare, and the service's own sentence --
  * "Sign in to operate." -- comes back as the error the console shows.
  */
-function operatorAuthorization(): Record<string, string> {
+export function operatorAuthorization(): Record<string, string> {
   const token = readSession()?.token;
   return token ? { Authorization: `Bearer ${token}` } : {};
 }

@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The C7 mark as an Android notification small icon.
+
+  NOTE ON THIS COMMENT: no double hyphen appears anywhere inside it. XML
+  forbids one in a comment, and AAPT2 rejects the resource outright, which
+  costs a whole build. The house prose style uses a double hyphen for a
+  dash; it cannot be used in this file.
+
+  WHY IT LIVES HERE AND NOT IN assets/. Call pushes are sent DATA-ONLY
+  (services/account/src/push/fcm-provider.ts: `dataOnly = kind === 'call'`),
+  so Android draws nothing from the payload and the default icon app.json
+  hands expo-notifications never reaches a call. The three call
+  notifications are posted by IncomingCallService itself and must name their
+  own drawable, which has to be a resource of this module.
+
+  MONOCHROME ON TRANSPARENCY. Android discards a small icon's colour
+  channels and tints the alpha silhouette with the notification's colour, so
+  both strokes are solid white and there is no background. The favicon's
+  teal and white split does not survive here and must not be attempted.
+
+  STROKED, NOT OUTLINED. A VectorDrawable strokes at draw time exactly as
+  SVG does, so the path data below is character for character the favicon's
+  (apps/ecosystem-web/public/c7-mark.svg, viewBox 0 0 64 64, the same data
+  src/ui/c7.tsx draws). Nothing was converted to filled outlines, so this
+  file can be diffed against the favicon by eye.
+
+  THE GROUP IS THE ONLY ARITHMETIC. The favicon's two strokes, with their
+  square caps and the 7's miter, occupy 49.010 x 47.080 of the 64 unit
+  viewBox (measured by assets/notification-icon.build.mjs, which rasterises
+  the same geometry). Scaled by 20/49.010 = 0.408080 and centred, the glyph
+  lands in x 2.000..22.000, y 2.394..21.606 of this 24 unit viewport: 83.3%
+  by 80.1%, which is the Material system icon keyline of 20 in 24. The old
+  PNG's fault was a glyph at 49% of its canvas; this is the correction.
+  Group transforms apply scale, then rotate, then translate, and the scale
+  applies to strokeWidth too, so 7.5 draws as 3.06 viewport units.
+
+  The 7's miter ratio at this angle is 1.75, inside the default miter limit
+  of 4, so the spike renders rather than being cut back to a bevel.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+  <group
+      android:scaleX="0.408080"
+      android:scaleY="0.408080"
+      android:translateX="-1.415629"
+      android:translateY="-1.058559">
+    <path
+        android:pathData="M45.5,17.6 A19.8,19.8,0,1,0,45.5,46.4"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="7.5"
+        android:strokeLineCap="square" />
+    <path
+        android:pathData="M34.5,17.6 L52,17.6 L40,50"
+        android:strokeColor="#FFFFFFFF"
+        android:strokeWidth="7.5"
+        android:strokeLineCap="square"
+        android:strokeLineJoin="miter" />
+  </group>
+</vector>

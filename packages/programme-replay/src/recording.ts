@@ -213,6 +213,32 @@ export function judgeInitialisation(
     );
   }
 
+  /*
+   * AN EMPTY INITIALISATION OBJECT IS NOT AN INITIALISATION OBJECT.
+   *
+   * Every fragment of a replay is decoded against this file, so an empty one
+   * makes the whole recording undecodable -- and nothing downstream could
+   * tell. The archive compares copied bytes against declared bytes, and zero
+   * equals zero; verification compares found size against expected size, and
+   * zero equals zero; finalisation checks an init generation is PRESENT,
+   * never that it holds anything. The recording reached `available`, the
+   * manifest rendered, the init served 200 with no bytes, and the viewer's
+   * player failed with nothing on the server to show for it.
+   *
+   * Found by audit 29 Sep 2026: the same shape as the mock speech engine
+   * that wrote 44-byte audio files while every signal downstream reported
+   * success. The producer refuses a zero-length init at the source now, and
+   * this is the rule in the shared domain, because a size check at only one
+   * layer is exactly how the defect comes back through the other archive.
+   */
+  if (initialisation.bytes <= 0) {
+    return refused(
+      'initialisation-empty',
+      `the initialisation object for run ${runId} generation ${initialisation.generation} ` +
+        'has no bytes; every fragment is decoded against it and none of them would play',
+    );
+  }
+
   const held = state.initialisations.find(
     (candidate) => candidate.offered.generation === initialisation.generation,
   );

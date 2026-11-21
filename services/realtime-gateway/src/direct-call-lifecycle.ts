@@ -52,6 +52,41 @@ export const TERMINAL_STATES: ReadonlySet<DirectCallState> = new Set([
   'ended',
 ]);
 
+/**
+ * A language tag SHAPED like one, or null.
+ *
+ * The caller's spoken language travels to the callee's ringing screen, so it
+ * is a string one person supplies and another person reads: it is checked
+ * before it is stored, never after. This is a SHAPE check and deliberately not
+ * a catalogue check -- the gateway is not the language authority, carries no
+ * catalogue, and a tag it did not recognise is not the same thing as a tag
+ * that is not a language. The phone holds the catalogue and decides what it
+ * can name; anything it cannot name it simply does not draw.
+ *
+ * Blank is not a choice: an absent, empty or malformed tag answers null, and a
+ * null reaches the ringing screen as NO language pill rather than as a guess.
+ */
+const LANGUAGE_TAG = /^[A-Za-z]{2,3}(?:-[A-Za-z0-9]{2,8})*$/u;
+
+export function directCallLanguageTag(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  /*
+   * The ceiling is a SEPARATE question from the shape: a tag can be perfectly
+   * well formed and still be long enough to wreck the line it lands on.
+   */
+  if (trimmed.length > 35) return null;
+  /*
+   * Blank, whitespace-only and everything else unshaped fail on this one
+   * line, because the pattern requires a primary subtag. An explicit
+   * emptiness check stood here first and a mutation run proved it could not
+   * be killed -- it was unreachable behind the pattern, which is dead logic
+   * dressed as a safety rail. The intent it carried lives in this comment
+   * instead: BLANK IS NOT A CHOICE, and null means the screen draws no pill.
+   */
+  return LANGUAGE_TAG.test(trimmed) ? trimmed : null;
+}
+
 /** Ringing window: nobody accepted -> NO ANSWER. Matches the push TTL. */
 export const RINGING_WINDOW_MS = 30_000;
 /**
@@ -77,6 +112,22 @@ export interface DirectCallRecord {
   readonly peerAccountId: string;
   readonly callerName: string;
   readonly mode: 'normal' | 'translated';
+  /**
+   * WHAT THE CALLER SPEAKS, so the callee's RINGING screen can say which way
+   * the translation runs before anybody answers.
+   *
+   * Until this existed the pre-answer wire carried ring, state, mode, caller
+   * account and caller name and no language of any kind, so the incoming
+   * screen could show that a call WOULD be translated but never from what.
+   * `call:state` has both seats' languages and does not exist until somebody
+   * joins, which is one moment too late for the screen that asks you to
+   * decide.
+   *
+   * ONLY HALF THE PAIR LIVES HERE, on purpose. The other half is the callee's
+   * own hearLanguage, which is that handset's own setting and needs no server
+   * to state it. Null when the caller sent nothing usable.
+   */
+  readonly callerSpeakLanguage: string | null;
   readonly createdAtMs: number;
   expiresAtMs: number;
   state: DirectCallState;
@@ -101,6 +152,8 @@ export interface DirectCallWire {
   readonly callerAccountId: string;
   readonly callerName: string;
   readonly peerAccountId: string;
+  /** What the caller speaks; null when it was never stated. See the record. */
+  readonly callerSpeakLanguage: string | null;
   expiresAtMs: number;
   readonly updatedAtMs: number;
   readonly answeredAtMs: number | null;
@@ -141,6 +194,7 @@ export function toDirectCallWire(record: DirectCallRecord): DirectCallWire {
     callerAccountId: record.callerAccountId,
     callerName: record.callerName,
     peerAccountId: record.peerAccountId,
+    callerSpeakLanguage: record.callerSpeakLanguage,
     expiresAtMs: record.expiresAtMs,
     updatedAtMs: record.updatedAtMs,
     answeredAtMs: record.answeredAtMs,
@@ -196,6 +250,8 @@ export class DirectCallLifecycle {
     peerAccountId: string;
     callerName: string;
     mode: 'normal' | 'translated';
+    /** What the caller speaks. Validated here; anything unusable becomes null. */
+    callerSpeakLanguage?: unknown;
     peerBusy: boolean;
   }): DirectCallWire {
     const at = this.now();
@@ -205,6 +261,7 @@ export class DirectCallLifecycle {
       peerAccountId: input.peerAccountId,
       callerName: input.callerName,
       mode: input.mode,
+      callerSpeakLanguage: directCallLanguageTag(input.callerSpeakLanguage),
       createdAtMs: at,
       expiresAtMs: at + RINGING_WINDOW_MS,
       state: 'calling',
@@ -221,9 +278,28 @@ export class DirectCallLifecycle {
       return toDirectCallWire(record);
     }
     this.arm(record, 'ringing-window', RINGING_WINDOW_MS, () => {
-      if (record.state === 'calling' || record.state === 'ringing') {
-        this.transition(record, record.reachedDevices === 0 ? 'unavailable' : 'no_answer');
-      }
+      /*
+       * NO ANSWER IS SOMETHING A PERSON DID. UNAVAILABLE IS SOMETHING A PHONE
+       * DID NOT DO.
+       *
+       * This used to read `reachedDevices === 0 ? 'unavailable' : 'no_answer'`,
+       * and "reached" meant the push service accepted the message -- which it
+       * does for a phone that is switched off, out of coverage or out of
+       * battery, because it queues the push for later. So an off phone rang
+       * the full window and the caller was told "no answer", and the callee
+       * was recorded as having ignored a call they never saw. The founder
+       * asked for the distinction on 10 Oct 2026.
+       *
+       * The honest signal is the ring ACKNOWLEDGEMENT: a device that is
+       * showing the incoming call says so (`ringingAck`), and the state moves
+       * to `ringing`. At the end of the window, `calling` means no device
+       * ever showed it -- unavailable, whatever the push service accepted --
+       * and `ringing` means somebody's phone rang and nobody picked up.
+       * `reachedDevices === 0` still ends the call at once in
+       * noteRingDispatch; it never has to wait for this timer.
+       */
+      if (record.state === 'calling') this.transition(record, 'unavailable');
+      else if (record.state === 'ringing') this.transition(record, 'no_answer');
     });
     return toDirectCallWire(record);
   }

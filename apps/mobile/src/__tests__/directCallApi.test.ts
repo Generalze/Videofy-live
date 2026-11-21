@@ -38,9 +38,52 @@ describe('createDirectCallApi', () => {
     });
     const api = createDirectCallApi({ gatewayUrl: 'https://gw/', sessionToken: () => 'tok', fetchImpl: f.fetchImpl });
     const check = await api.check('ring-1');
-    expect(check).toEqual({ ring: true, state: 'calling', mode: 'translated', callerAccountId: 'acct_a', callerName: 'Zoe' });
+    // An EXACT shape, deliberately: this object reaches the ringing screen, and
+    // a field that appears without anybody deciding to put it there is how a
+    // screen ends up showing something nobody measured. A gateway that sent no
+    // language answers null, never absent.
+    expect(check).toEqual({
+      ring: true,
+      state: 'calling',
+      mode: 'translated',
+      callerAccountId: 'acct_a',
+      callerName: 'Zoe',
+      callerSpeakLanguage: null,
+    });
     expect(f.calls[0]?.url).toBe('https://gw/calls/direct/ring-1');
     expect(f.calls[0]?.auth).toBe('Bearer tok');
+  });
+
+  it('carries the caller’s spoken language, and REFUSES one that is not a tag', async () => {
+    /*
+     * This string is chosen by one account and drawn on a different person's
+     * lock screen. The gateway checks it and so does this, because a client
+     * that trusts the server to have checked is one deployment away from not
+     * having been checked.
+     */
+    const base = { ring: true, state: 'calling', mode: 'translated', callerAccountId: 'a', callerName: 'Z' };
+    const cases: [unknown, string | null][] = [
+      ['yo', 'yo'],
+      ['pt-BR', 'pt-BR'],
+      ['  ha  ', 'ha'],
+      ['', null],
+      [undefined, null],
+      ['<script>alert(1)</script>', null],
+      ['Answer me now', null],
+      ['en_US', null],
+      [42, null],
+    ];
+    for (const [sent, expected] of cases) {
+      const f = fakeFetch({
+        '/calls/direct/ring-l': { status: 200, body: { ...base, callerSpeakLanguage: sent } },
+      });
+      const api = createDirectCallApi({
+        gatewayUrl: 'https://gw',
+        sessionToken: () => 'tok',
+        fetchImpl: f.fetchImpl,
+      });
+      expect((await api.check('ring-l'))?.callerSpeakLanguage, String(sent)).toBe(expected);
+    }
   });
 
   it('a stale push stays silent: expired is not a ring, and a 404 is not a ring', async () => {
@@ -108,6 +151,9 @@ describe('terminalStateAfterFailedResume', () => {
     mode: 'normal',
     callerAccountId: 'acct_a',
     callerName: 'Ada',
+    // Required, not optional: the parser always answers this question, and a
+    // caller that may omit it is one that can forget to.
+    callerSpeakLanguage: null,
   });
 
   it('ends the call when the server names a terminal state', () => {

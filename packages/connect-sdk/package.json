@@ -26,6 +26,7 @@
     "dev": "tsup --watch"
   },
   "dependencies": {
+    "@videofy-live/language-catalogue": "*",
     "socket.io-client": "^4.7.5"
   },
   "devDependencies": {

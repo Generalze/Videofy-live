@@ -152,6 +152,54 @@ def chrf(hyp: str, ref: str, max_n: int = 6, beta: float = 2.0) -> float:
 # --------------------------------------------------------------------------
 # Integrity checks. Each returns a defect string or None.
 # --------------------------------------------------------------------------
+from c7_language_routes import SCRIPT as SCRIPT_BY_LANGUAGE  # noqa: E402
+
+# Unicode character-name prefix -> ISO 15924 family the checker reasons in.
+# Han is shared: Japanese text is kanji plus kana, Korean may carry hanja, so
+# those two accept CJK alongside their own syllabaries rather than calling a
+# correct sentence wrong for containing a Chinese character.
+_SCRIPT_OF_NAME = (
+    ("LATIN", "Latn"), ("CYRILLIC", "Cyrl"), ("ARABIC", "Arab"), ("DEVANAGARI", "Deva"),
+    ("BENGALI", "Beng"), ("GUJARATI", "Gujr"), ("GURMUKHI", "Guru"), ("TAMIL", "Taml"),
+    ("TELUGU", "Telu"), ("KANNADA", "Knda"), ("MALAYALAM", "Mlym"), ("ORIYA", "Orya"),
+    ("SINHALA", "Sinh"), ("THAI", "Thai"), ("MYANMAR", "Mymr"), ("KHMER", "Khmr"),
+    ("LAO", "Laoo"), ("ETHIOPIC", "Ethi"), ("HEBREW", "Hebr"), ("GREEK", "Grek"),
+    ("ARMENIAN", "Armn"), ("GEORGIAN", "Geor"), ("HANGUL", "Kore"),
+    ("HIRAGANA", "Jpan"), ("KATAKANA", "Jpan"), ("CJK", "Hans"),
+)
+_ACCEPTS = {"Jpan": {"Jpan", "Hans"}, "Kore": {"Kore", "Hans"}, "Hant": {"Hant", "Hans"}}
+
+
+# Letters that are not prose and keep their script in ANY correct translation:
+# urls, hashtags, handles and identifier-shaped tokens such as OTP-483920. The
+# first international run flagged 45 correct outputs across 20 languages because
+# the only Latin letters in them were the ones the SOURCE put there.
+_NOT_PROSE = re.compile(r"https?://\S+|www\.\S+|[#@]\w+|\b[A-Z]{2,}-?\s?\d[\w-]*\b")
+
+
+def _dominant_wrong_script(text: str, expected: str) -> str | None:
+    """The script most of the letters are in, if it is not one the expected
+    language is written in; None when the text has no letters or is fine."""
+    counts: Counter = Counter()
+    for ch in _NOT_PROSE.sub(" ", text):
+        if not ch.isalpha():
+            continue
+        name = unicodedata.name(ch, "")
+        for prefix, script in _SCRIPT_OF_NAME:
+            if name.startswith(prefix):
+                counts[script] += 1
+                break
+        else:
+            counts["Other"] += 1
+    # Fewer than four letters is not prose -- it is what is left of an
+    # identifier or a url after the model rearranged it -- and no script can
+    # be judged from it. A real wrong-script failure has dozens.
+    if sum(counts.values()) < 4:
+        return None
+    dominant = counts.most_common(1)[0][0]
+    return None if dominant in _ACCEPTS.get(expected, {expected}) else dominant
+
+
 NEG_MARKERS = {
     # `\bn't\b` never matches: in "didn't" there is no word boundary before the
     # n. So every English contraction -- didn't, wasn't, don't, isn't -- read as
@@ -281,14 +329,24 @@ def check(case: Case, output: str, target: str) -> list[str]:
             found.append(f"repetition-loop({toks[i]})")
             break
 
-    # 6. TARGET LANGUAGE -- script is a floor, not a ceiling. These three are
-    # Latin-script, so anything else is a routing failure rather than a bad
-    # translation. It cannot detect "fluent Hausa when Yoruba was asked for";
-    # only a speaker can, which is why Phase 5 exists.
-    for ch in out:
-        if ch.isalpha() and not unicodedata.name(ch, "").startswith("LATIN"):
-            found.append("non-latin-script")
-            break
+    # 6. TARGET LANGUAGE -- script is a floor, not a ceiling. Output in the
+    # wrong writing system is a routing failure rather than a bad translation.
+    # It cannot detect "fluent Hausa when Yoruba was asked for"; only a speaker
+    # can, which is why Phase 5 exists.
+    #
+    # COMPARED AGAINST THE LANGUAGE'S OWN SCRIPT. This used to flag ANY
+    # non-Latin letter, which was right for the three Latin-script languages
+    # it was written for and would have called every correct Chinese, Arabic,
+    # Hindi and Russian output a defect the day a fourth language was added.
+    # The expected script comes from the catalogue; an unknown language is
+    # reported as unverified rather than judged by somebody else's alphabet.
+    expected = SCRIPT_BY_LANGUAGE.get(target)
+    if expected is None:
+        found.append(f"script-unverified({target})")
+    else:
+        wrong = _dominant_wrong_script(out, expected)
+        if wrong:
+            found.append(f"wrong-script({wrong}, expected {expected})")
 
     # Untranslated passthrough -- but NOT for non-linguistic input, where
     # returning the input unchanged is the CORRECT answer. An emoji, a bare

@@ -68,10 +68,27 @@ class VideofyMessagingService : FirebaseMessagingService() {
     val expiresAt = data["expiresAt"]?.toLongOrNull() ?: 0L
     val store = RingStore(this)
     store.mark(callId, "t4_push_received")
+    /*
+     * WHAT THE PHONE'S STANDING WAS WHEN THE PUSH ARRIVED. The absence of T4
+     * is what proved the 27 Sep defect; these two stamps are what tells the
+     * next one apart. A T4 that arrives late with the bucket at RARE or
+     * RESTRICTED says "delivered, but rationed"; no T4 at all still says
+     * "never delivered". Both travel to the gateway with the timeline as
+     * plain numbers (the timing route keeps any numeric stamp), so a person
+     * diagnosing a ringing complaint reads them from one log line.
+     */
+    val bucket = DeviceStandby.standbyBucket(this)
+    val exempt = DeviceStandby.batteryExemption(this)
+    store.note(callId, "t4_standby_bucket", bucket.toLong())
+    store.note(callId, "t4_battery_exempt", DeviceStandby.batteryExemptionCode(exempt))
+    Log.i(TAG, "call push arrived; standby bucket=$bucket batteryExemption=$exempt")
     if (expiresAt > 0 && System.currentTimeMillis() > expiresAt) {
       // Stale: the ringing window has already closed. Post-and-cancel keeps
-      // the high-priority quota honest without ringing anybody.
+      // the high-priority quota honest without ringing anybody. The stamps
+      // STAY: "arrived after its window" is a diagnosis, and the next
+      // foreground reports it (src/push/unreportedTimelines.ts).
       Log.i(TAG, "call push expired before arrival")
+      store.notRung(callId, NOT_RUNG_EXPIRED)
       IncomingCallService.postAndCancelExpired(this, callId)
       return
     }
@@ -83,10 +100,26 @@ class VideofyMessagingService : FirebaseMessagingService() {
       putExtra(IncomingCallService.EXTRA_MODE, data["mode"] ?: "normal")
       putExtra(IncomingCallService.EXTRA_EXPIRES_AT, expiresAt)
     }
-    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
+    /*
+     * ANDROID MAY REFUSE THE START. From Android 12 a background app in a
+     * restricted bucket can be refused a foreground service
+     * (ForegroundServiceStartNotAllowedException), and that is precisely a
+     * push that arrived and rang nobody. It used to throw out of Firebase's
+     * callback and leave no trace; now it is stamped with its reason and the
+     * next foreground carries the evidence to the gateway.
+     */
+    try {
+      if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent) else startService(intent)
+    } catch (error: Exception) {
+      Log.w(TAG, "the ring service could not be started: ${error.javaClass.simpleName}")
+      store.notRung(callId, NOT_RUNG_SERVICE_REFUSED)
+    }
   }
 
   companion object {
     private const val TAG = "VideofyCall"
+    /** RingStore.notRung reason codes stamped here; the table lives on RingStore.notRung. */
+    private const val NOT_RUNG_EXPIRED = 6L
+    private const val NOT_RUNG_SERVICE_REFUSED = 7L
   }
 }

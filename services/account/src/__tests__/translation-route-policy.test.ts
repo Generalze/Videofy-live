@@ -336,3 +336,75 @@ describe('language tags are compared the way the registry keys them', () => {
     ).toEqual({ kind: 'unavailable', reason: 'no-route' });
   });
 });
+
+describe('the messaging gate is deliberately stricter than the registry gate', () => {
+  /*
+   * RULED ON 2026-09-20, examined and KEPT. `mayTranslate` in the routes
+   * package refuses `required-not-done` only for the review-required
+   * languages; this gate refuses it for every language. The reasoning is in
+   * the docblock of `isApprovedForMessaging`. These tests exist so that
+   * closing the gap by loosening THIS file turns red, rather than passing as a
+   * tidy-up.
+   */
+  it('refuses an outstanding review on French, which is on nobody\'s review-required list', () => {
+    expect(
+      isApprovedForMessaging(
+        route({ sourceLanguage: 'en', targetLanguage: 'fr', humanReviewStatus: 'required-not-done' }),
+        'en',
+        'fr',
+      ),
+    ).toBe(false);
+  });
+
+  it('refuses it for Spanish and Portuguese too, so the rule does not depend on the language', () => {
+    for (const target of ['es', 'pt']) {
+      expect(
+        isApprovedForMessaging(
+          route({ sourceLanguage: 'en', targetLanguage: target, humanReviewStatus: 'required-not-done' }),
+          'en',
+          target,
+        ),
+        target,
+      ).toBe(false);
+    }
+  });
+
+  it('reports it as unapproved rather than as no route, so nobody goes hunting for a record', () => {
+    const decision = decideMessagingRoute({
+      sourceLanguage: 'en',
+      targetLanguage: 'fr',
+      records: [
+        route({ sourceLanguage: 'en', targetLanguage: 'fr', humanReviewStatus: 'required-not-done' }),
+      ],
+    });
+    expect(decision).toEqual({ kind: 'unavailable', reason: 'unapproved' });
+  });
+
+  it('lets the same route through once the review has PASSED', () => {
+    expect(
+      isApprovedForMessaging(
+        route({ sourceLanguage: 'en', targetLanguage: 'fr', humanReviewStatus: 'passed' }),
+        'en',
+        'fr',
+      ),
+    ).toBe(true);
+  });
+});
+
+describe('the shipped route document approves nothing for messaging', () => {
+  it('refuses every direction in the seed at this gate as well', async () => {
+    const { readFileSync } = await import('node:fs');
+    const { SEED_DOCUMENT_PATH } = await import('@videofy-live/translation-routes/document-file');
+    const seed = JSON.parse(readFileSync(SEED_DOCUMENT_PATH, 'utf8')) as {
+      routes: TranslationRouteRecord[];
+    };
+
+    expect(seed.routes.length).toBeGreaterThan(0);
+    for (const record of seed.routes) {
+      expect(
+        isApprovedForMessaging(record, record.sourceLanguage, record.targetLanguage),
+        `${record.sourceLanguage}->${record.targetLanguage}`,
+      ).toBe(false);
+    }
+  });
+});

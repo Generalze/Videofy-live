@@ -28,7 +28,7 @@ import * as Notifications from 'expo-notifications';
  * resolves without an import. It is exported from 'react' instead.
  */
 import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
-import { AppState, BackHandler, Platform, Pressable, StyleSheet, Text, ToastAndroid, View } from 'react-native';
+import { AppState, BackHandler, Linking, Platform, Pressable, StyleSheet, Text, ToastAndroid, View } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 import { AuthSessionManager, type AuthState } from './src/auth/authSessionManager';
 import { createSecureSessionStore } from './src/auth/secureSessionStore';
@@ -51,6 +51,17 @@ import { C7, C7Ground } from './src/ui/c7';
 import { Icon, type IconName } from './src/ui/icons';
 import { ProgrammesScreen } from './src/screens/ProgrammesScreen';
 import { SignInScreen } from './src/screens/SignInScreen';
+import { ProviderButtons } from './src/screens/ProviderButtons';
+import * as Google from 'expo-auth-session/providers/google';
+import {
+  describeCallbackError,
+  describeProviderFailure,
+  fetchProviders,
+  googleAuthRequestConfig,
+  readErrorFromUrl,
+  readHandoffFromUrl,
+  signInWithKingsChat,
+} from './src/auth/providerSignIn';
 import { SignUpScreen } from './src/screens/SignUpScreen';
 import { CallScreen } from './src/screens/CallScreen';
 import { CallHomeScreen } from './src/screens/CallHomeScreen';
@@ -63,19 +74,28 @@ import { PersonProfileScreen } from './src/screens/PersonProfileScreen';
 import { ProgrammeViewerScreen } from './src/screens/ProgrammeViewerScreen';
 import { BootScreen } from './src/screens/BootScreen';
 import { createDirectCallApi } from './src/call/directCallApi';
-import { routeCallPush, shouldDismissIncoming } from './src/call/incomingCallRouting';
+import {
+  applyCheckToRinging,
+  routeCallPush,
+  shouldDismissIncoming,
+} from './src/call/incomingCallRouting';
 import { foregroundPresentationFor } from './src/push/callNotificationPresentation';
 import { videofyCall } from './src/native/videofyCall';
 import { createAppLock } from './src/auth/appLock';
 import { LockScreen } from './src/screens/LockScreen';
+import type { TranslatedVoice } from './src/call/translatedVoice';
+import { createTranslatedVoiceSeam } from './src/call/translatedVoiceSeam';
+import { readRingingReadiness, shouldShowRingingBanner, type RingingReadiness } from './src/push/ringingReadiness';
+import { flushUnreportedTimelines } from './src/push/unreportedTimelines';
+import { RingingBanner } from './src/screens/RingingReadiness';
 
 /** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. */
 const GATEWAY_BASE_URL =
-  process.env['EXPO_PUBLIC_GATEWAY_URL'] ?? 'https://staging.consummate7.com';
+  process.env.EXPO_PUBLIC_GATEWAY_URL ?? 'https://staging.consummate7.com';
 
 /** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. */
 const ACCOUNT_BASE_URL =
-  process.env['EXPO_PUBLIC_ACCOUNT_URL'] ?? 'https://staging.consummate7.com/auth';
+  process.env.EXPO_PUBLIC_ACCOUNT_URL ?? 'https://staging.consummate7.com/auth';
 
 /*
  * THE BRAND SCREEN, NOT A WHITE FRAME (founder ruling 29 Aug 2026). The OS
@@ -91,6 +111,25 @@ const auth = new AuthSessionManager({
 });
 
 const authorizedFetch = (path: string, init?: RequestInit) => auth.authorizedFetch(path, init);
+
+/*
+ * THE VOICE ON THE JOIN IS NOT DECIDED HERE. The seam reads the session,
+ * hands the call screen its props and takes the profile's change; this file
+ * only passes those through (call/translatedVoiceSeam, and the guard in
+ * src/__tests__/appShellSeams.test.ts that holds it to that).
+ */
+const translatedVoiceSeam = createTranslatedVoiceSeam(auth);
+
+/**
+ * Who made this phone, for the one thing no API reaches: the vendor battery
+ * manager. Android's own exemption is read from the platform; this only
+ * decides whether the words name a second setting (push/ringingReadiness).
+ */
+const MANUFACTURER: string | null =
+  Platform.OS === 'android' ? ((Platform.constants as { Manufacturer?: string }).Manufacturer ?? null) : null;
+
+/** "Not now" on the ringing banner, remembered per install. The profile row keeps showing the reading regardless. */
+const RINGING_NOT_NOW_KEY = 'c7.ringing.notNow';
 
 /** The one-hour lock in front of the until-sign-out session; its stamps live in the secure store. */
 const appLock = createAppLock({
@@ -150,6 +189,31 @@ void Notifications.setNotificationChannelAsync('calls', {
   vibrationPattern: [0, 400, 200, 400, 200, 400],
   lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
   bypassDnd: false,
+}).catch(() => undefined);
+
+/*
+ * THE MESSAGES CHANNEL. Separate from calls, and that separation is the point:
+ * importance is a property of the CHANNEL and a person can change it per
+ * channel, so somebody who wants messages silent overnight can do that in
+ * Android settings without also silencing the phone ringing.
+ *
+ * HIGH rather than MAX -- a message is worth a sound and a heads-up banner,
+ * but MAX is for something being waited on right now, and an app that marks
+ * everything MAX loses the privilege for the one thing that needed it.
+ *
+ * A channel is created ONCE per install: Android ignores later changes to an
+ * existing channel, on purpose, so that an app cannot quietly undo a person's
+ * own choice about it.
+ */
+void Notifications.setNotificationChannelAsync('messages', {
+  name: 'Messages',
+  importance: Notifications.AndroidImportance.HIGH,
+  // No `sound`: that field names a file bundled in the APK, and naming one
+  // that is not there logs an error at every launch. Unset means the
+  // system's own notification sound, which is what a person expects.
+  enableVibrate: true,
+  // The words carry no message and no sender, so there is nothing to hide.
+  lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
 }).catch(() => undefined);
 
 const devices = new DeviceRegistrationService({
@@ -215,12 +279,25 @@ type ActiveCall =
   | { readonly kind: 'conference'; readonly callId: string; readonly setup?: ConferenceSetup };
 
 /**
- * The three languages the LIVE CALL chain carries today. A profile language
- * outside them is not an error and not a call language either: the call keeps
- * its own default rather than sending a code the far end will refuse.
+ * The profile language a call should enter with, or undefined when there
+ * isn't one.
+ *
+ * THIS USED TO KEEP ONLY en/es/fr, and that was the last link in the chain
+ * that made Nigerian-language translation unreachable. A Hausa profile
+ * arrived here and left as `undefined`, so the join carried no language, so
+ * the session opened with `targetLanguages:[]` and translation was never
+ * requested -- while the en<->ha route sat approved and live on the server.
+ * The comment justifying it said the far end would refuse the code; the far
+ * end's own schema takes any string and lets the store decide.
+ *
+ * Now it only declines to speak when the profile has nothing to say. Whether
+ * a language can actually be TRANSLATED is a server question, answered by the
+ * route registry, and whether it can be SPOKEN is answered by the voice
+ * chain -- neither is a decision this function is entitled to make.
  */
-function callLanguageOrUndefined(code: string | null | undefined): 'en' | 'es' | 'fr' | undefined {
-  return code === 'en' || code === 'es' || code === 'fr' ? code : undefined;
+function callLanguageOrUndefined(code: string | null | undefined): string | undefined {
+  const trimmed = code?.trim();
+  return trimmed === undefined || trimmed.length === 0 ? undefined : trimmed;
 }
 
 export default function App(): JSX.Element {
@@ -246,6 +323,13 @@ function AppInner(): JSX.Element {
     callId: string;
     caller: { accountId: string; name: string };
     mode: 'normal' | 'translated';
+    /**
+     * What the caller speaks, once the confirmation poll has told us. Absent
+     * on the first frame, because the push that woke this phone carries a name
+     * and a mode and no language -- so the pill appears a moment after the
+     * screen does, rather than the screen waiting for it.
+     */
+    callerSpeaks?: string | null;
   } | null>(null);
   const [deviceOutcome, setDeviceOutcome] = useState<RegistrationOutcome | null>(null);
   /** A channel a live-reminder push asked us to open; consumed by the Programmes tab. */
@@ -284,9 +368,25 @@ function AppInner(): JSX.Element {
    * belongs to the call-language wave; it is narrowed here rather than hidden.
    */
   const [callLanguages, setCallLanguages] = useState<{
-    speak?: 'en' | 'es' | 'fr';
-    hear?: 'en' | 'es' | 'fr';
+    speak?: string;
+    hear?: string;
   }>({});
+  /**
+   * The voice this account's translated words are spoken in, as the seam
+   * reports it -- a render copy for the profile row and nothing more. The
+   * join reads the seam directly. Until 27 Sep 2026 nothing on the phone
+   * carried this and every speaker was rendered in the default voice.
+   */
+  const [translatedVoice, setTranslatedVoice] = useState<TranslatedVoice | null>(translatedVoiceSeam.current());
+  useEffect(() => translatedVoiceSeam.watch(setTranslatedVoice), []);
+  /**
+   * WHETHER ANDROID WILL WAKE THIS APP FOR A CALL, as read from the
+   * platform -- on sign-in and on every return to the foreground, so the
+   * answer to "Allow background use" is what Android says and never what
+   * the dialog was assumed to have done. Null until the first read.
+   */
+  const [ringing, setRinging] = useState<RingingReadiness | null>(null);
+  const [ringingNotNow, setRingingNotNow] = useState(true);
   const handledColdStart = useRef(false);
   /*
    * ABOVE EVERY EARLY RETURN. This hook once sat just before the tab-bar
@@ -360,6 +460,24 @@ function AppInner(): JSX.Element {
           hasSession: hasSessionRef.current,
           check: (id) => directCalls.check(id),
         }).then((routing) => {
+          /*
+           * WHY A PUSH DID NOT BECOME A RINGING PHONE.
+           *
+           * `routeCallPush` works out a precise reason -- no session yet, the
+           * gateway could not be reached, the call is already declined -- and
+           * both branches below used to discard it. A phone that stays silent
+           * on an incoming call is the single worst failure this app has, and
+           * it left no evidence at all: no log, no counter, nothing to ask.
+           * That is the same shape as the production deployment that could not
+           * ring anybody for weeks while every service reported healthy.
+           *
+           * Metadata only -- the call id and the reason, never the push
+           * payload -- and it reaches logcat, which is somewhere a person
+           * holding the phone can actually be asked to read from.
+           */
+          if (routing.kind !== 'show') {
+            console.log(`[c7] call push not shown: ${routing.kind} -- ${routing.reason} (${callId})`);
+          }
           if (routing.kind === 'defer') {
             // NOT marked routed: the question was never answered.
             if (!deferredPushes.current.some((held) => held['callId'] === callId)) {
@@ -414,8 +532,18 @@ function AppInner(): JSX.Element {
     let live = true;
     const poll = setInterval(() => {
       void directCalls.check(callId).then((check) => {
-        if (!live || !shouldDismissIncoming(check)) return;
-        setIncomingCall((current) => (current?.callId === callId ? null : current));
+        if (!live) return;
+        if (shouldDismissIncoming(check)) {
+          setIncomingCall((current) => (current?.callId === callId ? null : current));
+          return;
+        }
+        /*
+         * THE CALLER'S LANGUAGE ARRIVES WITH THE CONFIRMATION, not with the
+         * push, which carries none. The fold is in ./src/call/incomingCallRouting
+         * and not inline here, because nothing tests this file: a decision made
+         * in the shell is a decision nothing can check.
+         */
+        setIncomingCall((current) => applyCheckToRinging(current, callId, check));
       });
     }, 2000);
     return () => {
@@ -524,6 +652,7 @@ function AppInner(): JSX.Element {
       devices.stopWatchingForRotation();
       setDeviceOutcome(null);
       setEmailVerified(null);
+      translatedVoiceSeam.refresh();
       return;
     }
     void devices.register().then(setDeviceOutcome);
@@ -531,6 +660,7 @@ function AppInner(): JSX.Element {
     void api.verification().then((result) => {
       if (result.ok) setEmailVerified(result.value.email === 'verified');
     });
+    translatedVoiceSeam.refresh();
     void api.me().then((result) => {
       if (result.ok) setMe(result.value);
       if (result.ok) {
@@ -547,6 +677,181 @@ function AppInner(): JSX.Element {
   }, [state.status]);
 
   const signIn = useCallback((email: string, password: string) => auth.signIn(email, password), []);
+
+  /*
+   * SIGNING IN WITH A PROVIDER.
+   *
+   * The hook has to be called unconditionally, every render, like every
+   * hook -- even on the screens where no sign-in surface exists. It costs
+   * nothing when there is no request to make, and making it conditional is
+   * the classic way to break the rules of hooks on the one render where
+   * somebody signs out.
+   */
+  const [googleRequest, googleResponse, promptGoogle] = Google.useIdTokenAuthRequest(
+    googleAuthRequestConfig(),
+  );
+  const [providerBusy, setProviderBusy] = useState(false);
+  const [providerError, setProviderError] = useState<string | null>(null);
+
+  /*
+   * Google answers through the hook rather than by returning from a call, so
+   * the result is picked up here. `id_token`, never an access token: the
+   * account service verifies the signature and the audience itself, and we
+   * want identity and nothing else.
+   */
+  useEffect(() => {
+    if (googleResponse === null) return;
+    if (googleResponse.type === 'dismiss' || googleResponse.type === 'cancel') {
+      // Their own decision. An error banner here is the app arguing with it.
+      setProviderBusy(false);
+      return;
+    }
+    if (googleResponse.type !== 'success') {
+      setProviderBusy(false);
+      setProviderError('That sign-in could not be completed. Please try again.');
+      return;
+    }
+    const idToken = googleResponse.params?.['id_token'];
+    if (typeof idToken !== 'string' || idToken.length === 0) {
+      setProviderBusy(false);
+      setProviderError('That sign-in could not be completed. Please try again.');
+      return;
+    }
+    setProviderBusy(true);
+    void auth
+      .signInWithGoogle(idToken)
+      .then((result) => {
+        /*
+         * On success nothing happens here on purpose: the session manager
+         * changes state and the app re-routes, exactly as the password path
+         * does. A second navigation would be a second source of truth about
+         * whether somebody is signed in.
+         */
+        if (!result.ok) setProviderError('That sign-in could not be completed. Please try again.');
+      })
+      .finally(() => setProviderBusy(false));
+  }, [googleResponse]);
+
+  const startGoogle = useCallback(() => {
+    setProviderError(null);
+    // No request means no client id reached this build; the button is not
+    // drawn in that case, so this is belt and braces.
+    if (googleRequest === null) {
+      setProviderError('That way of signing in is not available right now.');
+      return;
+    }
+    void promptGoogle();
+  }, [googleRequest, promptGoogle]);
+
+  const startKingsChat = useCallback(() => {
+    setProviderError(null);
+    setProviderBusy(true);
+    void signInWithKingsChat(ACCOUNT_BASE_URL)
+      .then(async (outcome) => {
+        if (!outcome.ok) {
+          setProviderError(
+            outcome.reason === 'refused'
+              ? describeCallbackError(outcome.detail)
+              : describeProviderFailure(outcome.reason),
+          );
+          return;
+        }
+        if (outcome.kind !== 'handoff') return;
+        const result = await auth.signInWithHandoff(outcome.handoff);
+        if (!result.ok) setProviderError('That sign-in could not be completed. Please try again.');
+      })
+      .finally(() => setProviderBusy(false));
+  }, []);
+
+  /*
+   * A COLD START FROM THE PROVIDER.
+   *
+   * `openAuthSessionAsync` normally returns the url itself, and that is the
+   * path almost every sign-in takes. But if Android reclaims the app while
+   * the browser is open, the return arrives as a launch url instead and the
+   * promise never resolves -- the sign-in would complete at the server and
+   * silently strand on the device. This is the other end of that.
+   */
+  useEffect(() => {
+    let live = true;
+    const adopt = (url: string | null | undefined) => {
+      if (!live) return;
+      const failure = readErrorFromUrl(url);
+      if (failure !== null) {
+        // The reason names the cause; the generic sentence hid 'no-email' for a day.
+        setProviderError(describeCallbackError(failure));
+        return;
+      }
+      const handoff = readHandoffFromUrl(url);
+      if (handoff === null) return;
+      setProviderBusy(true);
+      void auth
+        .signInWithHandoff(handoff)
+        .then((result) => {
+          if (!result.ok && live) {
+            setProviderError('That sign-in could not be completed. Please try again.');
+          }
+        })
+        .finally(() => {
+          if (live) setProviderBusy(false);
+        });
+    };
+    void Linking.getInitialURL().then(adopt);
+    const subscription = Linking.addEventListener('url', (event) => adopt(event.url));
+    return () => {
+      live = false;
+      subscription.remove();
+    };
+  }, []);
+
+  /*
+   * THE RIGHT TO WAKE, READ AND RE-READ. Three calls on 27 Sep 2026 whose
+   * push Google accepted and the handset never woke for. The reading is
+   * taken when a session exists and again every time the app returns to the
+   * foreground -- which is also what happens when Android's allow dialog
+   * closes, so the request's outcome is observed rather than presumed.
+   *
+   * THE SAME MOMENTS ARE THE APP'S NEXT OPPORTUNITY TO REPORT a push that
+   * arrived and rang nobody: every timeline still on the device goes to the
+   * gateway from here (push/unreportedTimelines), because the call screen's
+   * teardown -- the only other reporter -- never runs for a call that never
+   * reached a screen.
+   */
+  useEffect(() => {
+    if (state.status !== 'signed-in') {
+      setRinging(null);
+      return undefined;
+    }
+    const read = (): void => {
+      setRinging(readRingingReadiness(videofyCall, MANUFACTURER));
+      void flushUnreportedTimelines({
+        store: videofyCall,
+        gatewayUrl: GATEWAY_BASE_URL,
+        sessionToken: auth.callSessionToken(),
+        liveCallIds: liveCallIds.current,
+      });
+    };
+    read();
+    void SecureStore.getItemAsync(RINGING_NOT_NOW_KEY)
+      .then((value) => setRingingNotNow(value === '1'))
+      .catch(() => setRingingNotNow(false));
+    const subscription = AppState.addEventListener('change', (next) => {
+      if (next === 'active') read();
+    });
+    return () => subscription.remove();
+  }, [state.status]);
+
+  /** Android's own dialog, or its settings page where the dialog cannot be launched. The next foreground reads the answer. */
+  const allowBackground = useCallback(() => {
+    if (!videofyCall.requestBatteryExemption()) void Linking.openSettings().catch(() => undefined);
+  }, []);
+  const openAppSettings = useCallback(() => {
+    void Linking.openSettings().catch(() => undefined);
+  }, []);
+  const dismissRingingBanner = useCallback(() => {
+    setRingingNotNow(true);
+    void SecureStore.setItemAsync(RINGING_NOT_NOW_KEY, '1').catch(() => undefined);
+  }, []);
 
   /*
    * THE PHONE'S BACK BUTTON (founder 30 Aug: "nav back button exits the app,
@@ -622,6 +927,9 @@ function AppInner(): JSX.Element {
    */
   const inCallRef = useRef(false);
   inCallRef.current = activeCall !== null || incomingCall !== null;
+  /** The calls on screen right now, whose own teardown reports their timeline; the sweep leaves them alone. */
+  const liveCallIds = useRef<string[]>([]);
+  liveCallIds.current = [activeCall?.callId, incomingCall?.callId].filter((id): id is string => typeof id === 'string');
   useEffect(() => {
     if (state.status !== 'signed-in') {
       setLocked(false);
@@ -706,6 +1014,16 @@ function AppInner(): JSX.Element {
           onSignIn={signIn}
           onCreateAccount={() => setWantsAccount(true)}
           notice={NOTICE[state.status === 'signed-out' ? (state.reason ?? '') : '']}
+          providerError={providerError}
+          renderProviders={() => (
+            <ProviderButtons
+              accountBaseUrl={ACCOUNT_BASE_URL}
+              loadProviders={(url) => fetchProviders(url)}
+              onGoogle={startGoogle}
+              onKingsChat={startKingsChat}
+              busy={providerBusy}
+            />
+          )}
         />
       </>
     );
@@ -719,6 +1037,10 @@ function AppInner(): JSX.Element {
         <IncomingCallScreen
           caller={ringing.caller}
           mode={ringing.mode}
+          // The caller's half comes from the gateway, this phone's half from
+          // its own profile. Either being absent means no pill, not a guess.
+          callerSpeaks={ringing.callerSpeaks ?? null}
+          selfHears={callLanguages.hear ?? null}
           onAnswer={() => {
             setIncomingCall(null);
             videofyCall.reportAnswered(ringing.callId);
@@ -741,10 +1063,25 @@ function AppInner(): JSX.Element {
 
   if (activeCall !== null) {
     const ringPeer = activeCall.kind === 'direct' && activeCall.ring ? activeCall.peer : null;
+    /*
+     * THE ENDED SCREEN'S TWO BUTTONS, wired to the entry points that already
+     * exist: `callContact`, which every other Call control in the app goes
+     * through, and the chat the profile and the contact list open. Nothing new
+     * is invented here -- a direct call carries the peer, so the person is
+     * already in hand. A conference has no single peer and gets neither.
+     */
+    const endedPeer = activeCall.kind === 'direct' ? activeCall.peer : null;
+    const endedPerson: ContactPerson | null =
+      endedPeer === null
+        ? null
+        : { accountId: endedPeer.accountId, username: null, displayName: endedPeer.name };
     return (
       <>
         <StatusBar style="light" />
         <CallScreen
+          /* A new callId is a new call: the screen starts from nothing rather
+             than inheriting the last call's state through a re-render. */
+          key={activeCall.callId}
           call={
             activeCall.kind === 'direct'
               ? { kind: 'direct', callId: activeCall.callId, peer: activeCall.peer }
@@ -753,6 +1090,7 @@ function AppInner(): JSX.Element {
           displayName={callName ?? state.accountId}
           {...(callLanguages.speak === undefined ? {} : { speakLanguage: callLanguages.speak })}
           {...(callLanguages.hear === undefined ? {} : { hearLanguage: callLanguages.hear })}
+          {...translatedVoiceSeam.joinProps()}
           sessionToken={auth.callSessionToken()}
           onRing={
             ringPeer === null
@@ -766,6 +1104,19 @@ function AppInner(): JSX.Element {
             videofyCall.reportCallEnded(activeCall.callId);
             setActiveCall(null);
           }}
+          {...(endedPerson === null
+            ? {}
+            : {
+                onCallBack: () => {
+                  videofyCall.reportCallEnded(activeCall.callId);
+                  callContact(endedPerson);
+                },
+                onMessagePeer: () => {
+                  videofyCall.reportCallEnded(activeCall.callId);
+                  setActiveCall(null);
+                  setChatWith(endedPerson);
+                },
+              })}
         />
       </>
     );
@@ -870,13 +1221,25 @@ function AppInner(): JSX.Element {
       />
       <View style={styles.tabContent}>
         {tab === 'chats' && (
-          <ConversationsScreen
-            api={api}
-            selfId={state.accountId}
-            onOpen={setChatWith}
-            onOpenPerson={setViewingPerson}
-            onFindContacts={() => setTab('people')}
-          />
+          <>
+            {/*
+              THE MOMENT THAT MAKES SENSE: the first screen after sign-in, once
+              this phone is registered for pushes -- it can now be pushed, and
+              this is the remaining reason it might not wake. Drawn while the
+              request or the vendor sentence has something to say
+              (push/ringingReadiness decides), and only until "Not now".
+            */}
+            {ringing !== null && deviceOutcome?.ok === true && shouldShowRingingBanner(ringing, ringingNotNow) && (
+              <RingingBanner readiness={ringing} onAllow={allowBackground} onOpenSettings={openAppSettings} onDismiss={dismissRingingBanner} />
+            )}
+            <ConversationsScreen
+              api={api}
+              selfId={state.accountId}
+              onOpen={setChatWith}
+              onOpenPerson={setViewingPerson}
+              onFindContacts={() => setTab('people')}
+            />
+          </>
         )}
         {tab === 'people' && (
           <ContactsScreen
@@ -913,6 +1276,11 @@ function AppInner(): JSX.Element {
               void appLock.setBiometricsPreferred(on);
             }}
             sessionToken={() => auth.callSessionToken()}
+            translatedVoice={translatedVoice}
+            onTranslatedVoice={translatedVoiceSeam.accept}
+            ringing={ringing}
+            onAllowBackground={allowBackground}
+            onOpenAppSettings={openAppSettings}
             probeAvatar={async (accountId) => {
               try {
                 const response = await authorizedFetch(`/avatars/${encodeURIComponent(accountId)}`);

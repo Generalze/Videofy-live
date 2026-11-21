@@ -39,6 +39,21 @@ function access(options: {
   authenticate?: AuthenticateRequest;
   entitlement?: { allowedCount: number; hasEntitlement: (id: string) => boolean };
   internalToken?: string;
+  /**
+   * Whether this deployment enforces the internal token.
+   *
+   * Defaults to true because that is every real deployment. The case that
+   * matters is `false`, which is `insecure-explicit` mode -- see the bottom
+   * of this file.
+   */
+  internalAuthEnforced?: boolean;
+  /**
+   * The real allowance function's behaviour in insecure mode: yes to
+   * everybody, header or not. The previous fake required a configured AND
+   * presented token, which is the opposite of the dangerous branch and is
+   * why no test here could see the hole.
+   */
+  allowEveryInternalCaller?: boolean;
 }): ReturnType<typeof createProgrammeAudienceAccess> {
   return createProgrammeAudienceAccess({
     channelOf: options.channelOf ?? (() => 'ch_1'),
@@ -46,7 +61,9 @@ function access(options: {
     authenticate: options.authenticate ?? NOBODY,
     entitlement: options.entitlement ?? NO_OPERATORS,
     internalTokenAllowed: (presented) =>
-      options.internalToken !== undefined && presented === options.internalToken,
+      options.allowEveryInternalCaller === true ||
+      (options.internalToken !== undefined && presented === options.internalToken),
+    internalAuthEnforced: () => options.internalAuthEnforced !== false,
   });
 }
 
@@ -242,5 +259,60 @@ describe('reading visibility from the account service', () => {
       throw new Error('connection refused');
     });
     expect(await client.visibilityOf('ch_never')).toBeNull();
+  });
+});
+
+/**
+ * INSECURE MODE MUST NOT OPEN THE AUDIENCE DOOR.
+ *
+ * `internalIngressRequestAllowed` returns true for every caller, header or
+ * not, when the resolution is `insecure-explicit`. That is correct for what
+ * the mode is FOR -- letting a developer inject media without provisioning a
+ * secret -- and catastrophic here, because the internal-token branch runs
+ * before the visibility question. In that mode every anonymous request to
+ * every run was answered `allow`, locked channels included, and the whole
+ * three-tier visibility model was inert.
+ *
+ * Found by audit 29 Sep 2026. Neither environment was actually in that mode,
+ * so nothing leaked; the flag's documentation warns only about media
+ * injection and says nothing about audience access, which is how it would
+ * have been enabled by somebody being careful.
+ */
+describe('a deployment that does not enforce its internal token', () => {
+  const LOCKED = fixedVisibility('locked');
+
+  it('does not admit an anonymous caller to a locked broadcast', async () => {
+    const door = access({
+      visibility: LOCKED,
+      internalAuthEnforced: false,
+      allowEveryInternalCaller: true,
+    });
+    // No header at all, which is the shape the bypass admitted.
+    expect(await door.mayView('run_1', requestWith({}))).not.toBe('allow');
+  });
+
+  it('does not admit one who presents any token they like', async () => {
+    const door = access({
+      visibility: LOCKED,
+      internalAuthEnforced: false,
+      allowEveryInternalCaller: true,
+    });
+    const reply = await door.mayView('run_1', requestWith({ [INTERNAL_TOKEN_HEADER]: 'anything' }));
+    expect(reply).not.toBe('allow');
+  });
+
+  it('still admits the gateway where the token IS enforced', async () => {
+    // The fix must not cost the real caller its access.
+    const door = access({ visibility: LOCKED, internalToken: 'the-real-token' });
+    const reply = await door.mayView(
+      'run_1',
+      requestWith({ [INTERNAL_TOKEN_HEADER]: 'the-real-token' }),
+    );
+    expect(reply).toBe('allow');
+  });
+
+  it('refuses a caller who presents nothing even where enforcement is on', async () => {
+    const door = access({ visibility: LOCKED, internalToken: 'the-real-token' });
+    expect(await door.mayView('run_1', requestWith({}))).not.toBe('allow');
   });
 });

@@ -102,7 +102,7 @@ export function SignUpScreen({ onSignUp, onBackToSignIn }: SignUpScreenProps): J
   return (
     <KeyboardAvoidingView
       style={styles.fill}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <ScrollView contentContainerStyle={styles.screen} keyboardShouldPersistTaps="handled">
         <Text style={styles.brand}>CONSUMMATE 7</Text>

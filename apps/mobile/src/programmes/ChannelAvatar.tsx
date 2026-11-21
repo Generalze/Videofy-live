@@ -22,7 +22,7 @@ import { channelAvatarUri, type ChannelSummary } from '../api/channelDirectory';
 import { initials } from './programmeCatalogue';
 
 /** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. Staging mounts the account service at /auth. */
-const ACCOUNT_URL = process.env['EXPO_PUBLIC_ACCOUNT_URL'] ?? 'https://staging.consummate7.com/auth';
+const ACCOUNT_URL = process.env.EXPO_PUBLIC_ACCOUNT_URL ?? 'https://staging.consummate7.com/auth';
 
 /** Retry a failed picture after the account service's cache window. */
 const RETRY_MS = 60_000;

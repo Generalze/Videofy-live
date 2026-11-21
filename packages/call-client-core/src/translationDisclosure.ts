@@ -24,7 +24,16 @@
  * translation genuinely being expected for this listener.
  */
 
-/** The languages the call application offers. Kept in step with CALL_LANGUAGES. */
+/**
+ * The languages this disclosure has been WRITTEN IN. Not the languages a call
+ * offers, which come from the shared catalogue and number in the dozens.
+ *
+ * The distinction matters and the old comment ("kept in step with
+ * CALL_LANGUAGES") obscured it: this is a content limit, not a capability one.
+ * Adding a language to the product does not belong here; adding TRANSLATED
+ * DISCLOSURE COPY does, and until somebody writes that copy a caller falls
+ * back rather than being read a notice in a language they did not choose.
+ */
 export type DisclosureLanguage = 'en' | 'fr' | 'es';
 
 export interface TranslationDisclosure {

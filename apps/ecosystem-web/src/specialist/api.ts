@@ -248,6 +248,33 @@ export interface SourceValidationState {
   } | null;
 }
 
+/**
+ * One language's route QA set, as the server offers it to this person.
+ *
+ * DECIDED SERVER-SIDE. `unlocked` is the same gate the pickup consults --
+ * QUALIFIED here and TRANSLATION_REVIEWER here -- and `lockMessage` is the
+ * gate's own sentence. No engine, no sentence and no model appears anywhere in
+ * this shape; the set is a count and a fingerprint until it is picked up.
+ */
+export interface QaSetQueueEntry {
+  readonly language: string;
+  readonly englishName: string;
+  readonly nativeName: string;
+  readonly state: string;
+  readonly unlocked: boolean;
+  readonly lock: string | null;
+  readonly lockMessage: string | null;
+  readonly set: {
+    readonly qaSetId: string;
+    readonly version: string;
+    readonly sha256: string;
+    readonly itemCount: number;
+    readonly publishedAtMs: number;
+  } | null;
+  /** This person's pickup of the current set, if they have one. */
+  readonly assignment: { readonly assignmentId: string; readonly state: string } | null;
+}
+
 export interface SubmissionWire {
   readonly kind: string;
   readonly language: string;
@@ -374,6 +401,8 @@ export interface SpecialistApi {
   freezeSourceValidation(
     language: string,
   ): Promise<ApiResult<{ sha256: string; sourceCount: number; corrected: boolean }>>;
+  qaSets(): Promise<ApiResult<{ languages: readonly QaSetQueueEntry[] }>>;
+  pickUpQaSet(language: string): Promise<ApiResult<{ assignmentId: string; state: string }>>;
 }
 
 /**
@@ -448,6 +477,9 @@ export function createSpecialistApi(accountUrl: string, token: string | null): S
         `/specialists/source-validation/${encodeURIComponent(language)}/freeze`,
         json({}),
       ),
+    qaSets: () => request(base, token, '/specialists/qa-sets'),
+    pickUpQaSet: (language) =>
+      request(base, token, `/specialists/qa-sets/${encodeURIComponent(language)}/pickup`, json({})),
   };
 }
 

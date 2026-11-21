@@ -37,6 +37,13 @@ describe('call history words', () => {
     expect(callHistoryWords({ ...base, outcome: 'busy' }).title).toBe('Busy');
     expect(callHistoryWords({ ...base, outcome: 'declined' }).title).toBe('Call declined');
     expect(callHistoryWords({ ...base, outcome: 'unavailable' }).title).toBe('Couldn’t be reached');
+    // The callee's side: their phone was off, so the line says why rather
+    // than reading as a call they chose not to take.
+    expect(callHistoryWords({ ...base, outcome: 'unavailable', direction: 'incoming' })).toEqual({
+      title: 'Missed call',
+      detail: 'your phone couldn’t be reached',
+      missed: true,
+    });
     expect(callHistoryWords({ ...base, outcome: 'network' })).toEqual({
       title: 'Call dropped',
       detail: '4:12',

@@ -8,6 +8,7 @@ import {
   DirectCallLifecycle,
   RECONNECT_WINDOW_MS,
   RINGING_WINDOW_MS,
+  type DirectCallOutcomeRecord,
   type DirectCallState,
 } from '../direct-call-lifecycle.js';
 
@@ -15,6 +16,7 @@ function harness() {
   let now = 1_000_000;
   const timers: { fn: () => void; ms: number; handle: number; cleared: boolean }[] = [];
   const states: DirectCallState[] = [];
+  const outcomes: DirectCallOutcomeRecord[] = [];
   const lifecycle = new DirectCallLifecycle({
     now: () => now,
     setTimer: (fn, ms) => {
@@ -27,6 +29,7 @@ function harness() {
       if (timer) timer.cleared = true;
     },
     onState: (wire) => states.push(wire.state),
+    onOutcome: (record) => outcomes.push(record),
   });
   const fire = (ms: number) => {
     for (const timer of timers) {
@@ -46,7 +49,7 @@ function harness() {
       mode: 'normal',
       peerBusy,
     });
-  return { lifecycle, states, fire, create };
+  return { lifecycle, states, outcomes, fire, create };
 }
 
 describe('DirectCallLifecycle', () => {
@@ -88,17 +91,47 @@ describe('DirectCallLifecycle', () => {
     expect(h.lifecycle.decline('ring-1', 'acct_peer')).toBe(false);
   });
 
-  it('NO ANSWER after the ringing window; UNAVAILABLE when the ring reached nobody', () => {
+  it('NO ANSWER after the ringing window, when a phone showed the call and nobody picked up', () => {
     const h = harness();
     h.create();
     h.lifecycle.noteRingDispatch('ring-1', 1);
+    h.lifecycle.ringingAck('ring-1', 'acct_peer');
     h.fire(RINGING_WINDOW_MS);
     expect(h.lifecycle.get('ring-1')?.state).toBe('no_answer');
+  });
 
+  it('UNAVAILABLE at once when the ring reached nobody', () => {
     const none = harness();
     none.create();
     none.lifecycle.noteRingDispatch('ring-1', 0);
     expect(none.lifecycle.get('ring-1')?.state).toBe('unavailable');
+  });
+
+  it('UNAVAILABLE, not no-answer, when the push was accepted but no phone ever showed the call', () => {
+    /*
+     * The push service accepts a message for a phone that is switched off --
+     * it queues it -- so "reached one device" is not evidence anybody saw
+     * anything. This used to read as NO ANSWER after the full window, which
+     * told the caller their friend ignored them and recorded the callee as
+     * having missed a call they never saw. The founder asked for the
+     * distinction on 10 Oct 2026.
+     */
+    const h = harness();
+    h.create();
+    h.lifecycle.noteRingDispatch('ring-1', 1);
+    h.fire(RINGING_WINDOW_MS);
+    expect(h.lifecycle.get('ring-1')?.state).toBe('unavailable');
+    expect(h.outcomes.map((o) => o.outcome)).toEqual(['unavailable']);
+  });
+
+  it('a phone that wakes up after the window cannot revive an unavailable call', () => {
+    const h = harness();
+    h.create();
+    h.lifecycle.noteRingDispatch('ring-1', 1);
+    h.fire(RINGING_WINDOW_MS);
+    // Doze delayed the push; the ring arrives on the phone a minute late.
+    expect(h.lifecycle.ringingAck('ring-1', 'acct_peer')).toBe(false);
+    expect(h.lifecycle.get('ring-1')?.state).toBe('unavailable');
   });
 
   it('ANSWERING holds the ringing window open while a cold app comes up', () => {
@@ -172,13 +205,30 @@ describe('DirectCallLifecycle', () => {
     expect(h.lifecycle.get('ring-1')?.connectedAtMs).toBe(origin);
   });
 
-  it('the wire never carries anything but ids, names, mode, state and times', () => {
+  it('the wire never carries anything but ids, names, mode, state, times and the caller’s language', () => {
+    /*
+     * AN EXACT KEY SET, on purpose: this wire is served whole to the other
+     * party by GET /calls/direct/:callId, so a field added to the record
+     * reaches a stranger's phone the moment somebody writes it. The record
+     * holds more than this -- createdAtMs, reachedDevices and the whole
+     * state timeline -- and none of it belongs to the person being called.
+     *
+     * `callerSpeakLanguage` was added deliberately on 20 Sep 2026 and is the
+     * one thing here that is neither an id, a name, a mode, a state nor a
+     * time. It is admitted because the ringing screen has to say which way
+     * the translation runs BEFORE the person decides whether to answer, and
+     * `call:state` -- the only other record of a seat's languages -- does not
+     * exist until somebody has joined. It is shape-validated at the boundary,
+     * because it is a string one account supplies and a different person
+     * reads. Anything further wanting on to this wire needs the same argument
+     * written down next to it.
+     */
     const h = harness();
     const wire = h.create();
     expect(Object.keys(wire).sort()).toEqual(
       [
-        'callId', 'callerAccountId', 'callerName', 'expiresAtMs', 'mode', 'peerAccountId',
-        'state', 'updatedAtMs', 'answeredAtMs', 'connectedAtMs', 'endedByAccountId',
+        'callId', 'callerAccountId', 'callerName', 'callerSpeakLanguage', 'expiresAtMs', 'mode',
+        'peerAccountId', 'state', 'updatedAtMs', 'answeredAtMs', 'connectedAtMs', 'endedByAccountId',
       ].sort(),
     );
   });

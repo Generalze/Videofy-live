@@ -42,7 +42,10 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-LANGUAGE_NAMES = {"yo": "Yoruba", "ha": "Hausa", "ig": "Igbo", "pcm": "Nigerian Pidgin"}
+# Every catalogue language, from one table, so a packet for a language the
+# builder has never met still carries the reviewer's own name for it instead of
+# a bare code in the instructions.
+from c7_language_routes import NAMES as LANGUAGE_NAMES  # noqa: E402
 
 # The reviewer's questions, verbatim from the directive. Order preserved: the
 # categorical yes/no judgements come before the 1-5 scales, because a reviewer

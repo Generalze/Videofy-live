@@ -13,7 +13,7 @@ evaluation. Every row below carries its licence before its score.
 
 | engine | licence | commercial? | ha | yo | ig | pcm |
 |---|---|---|---|---|---|---|
-| **OPUS-MT** (current) | CC-BY-4.0 | yes | **unusable** | middling | middling | none |
+| **OPUS-MT** (current) | Apache-2.0 [^opusmt] | yes | **unusable** | middling | middling | none |
 | **NLLB-200** | CC-BY-NC-4.0 | **NO** | best measured | good | good | yes |
 | **MADLAD-400** | Apache-2.0 | yes | fair | **very poor** | untested | yes |
 | **AfriNLLB** | NLLB-derived | **NO** | — | — | — | — |
@@ -104,3 +104,13 @@ anyone plans around this endpoint.
 
 Nothing here is certified. `humanLanguageReview` remains `required-not-done`
 for all three languages, and a score never replaces a speaker.
+
+[^opusmt]: **Corrected 2026-09-25. This row said CC-BY-4.0 and was wrong for
+    the model weights.** The Helsinki-NLP model cards for `opus-mt-en-fr`,
+    `opus-mt-fr-en` and `opus-mt-en-alv` all declare `license: apache-2.0`,
+    verified at source and, for `en-alv`, on our own disk. The likeliest origin
+    of the CC-BY claim is the OPUS *corpora* the models were trained on, which
+    carry their own mixed terms — a different question from the terms on the
+    released weights, and conflating the two put two contradictory licences in
+    our own records for a month. The reading, and what Apache-2.0 does and does
+    not oblige us to do, is in [../licences/opus-mt.md](../licences/opus-mt.md).
