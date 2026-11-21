@@ -14,6 +14,7 @@ def test_default_config():
         "SPEECH_WORKER_MODE",
         "MOCK_PHRASE_INTERVAL_MS",
         "LOG_LEVEL",
+        "INTERNAL_WEBRTC_TOKEN",
     ]:
         os.environ.pop(key, None)
 
@@ -25,17 +26,20 @@ def test_default_config():
     assert config.mode == "mock"
     assert config.mock_phrase_interval_s == 4.0
     assert config.log_level == "INFO"
+    assert config.internal_service_token == ""
 
 
 def test_env_override(monkeypatch):
     monkeypatch.setenv("GATEWAY_URL", "http://gateway:9000")
     monkeypatch.setenv("TARGET_LANGUAGE", "es")
     monkeypatch.setenv("MOCK_PHRASE_INTERVAL_MS", "2000")
+    monkeypatch.setenv("INTERNAL_WEBRTC_TOKEN", "test-internal-token")
 
     config = load_config()
     assert config.gateway_url == "http://gateway:9000"
     assert config.target_language == "es"
     assert config.mock_phrase_interval_s == 2.0
+    assert config.internal_service_token == "test-internal-token"
 
 
 def test_invalid_numeric_config_fails(monkeypatch):

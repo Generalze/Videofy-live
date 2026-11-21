@@ -103,6 +103,7 @@ describe('Python worker to Node gateway smoke', () => {
         EVENT_ID: 'python-smoke-event',
         GATEWAY_URL: gatewayUrl,
         LOG_LEVEL: 'INFO',
+        INTERNAL_WEBRTC_TOKEN: 'f'.repeat(64),
         MOCK_PHRASE_INTERVAL_MS: '100',
         SOURCE_LANGUAGE: 'en',
         SPEECH_WORKER_PORT: String(workerHealthPort),
