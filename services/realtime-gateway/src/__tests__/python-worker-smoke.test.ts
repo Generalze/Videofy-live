@@ -55,7 +55,7 @@ describe('Python worker to Node gateway smoke', () => {
         GATEWAY_HOST: '127.0.0.1',
         GATEWAY_PORT: String(gatewayPort),
         CORS_ORIGINS: 'http://127.0.0.1',
-        LOG_LEVEL: 'error',
+        LOG_LEVEL: 'info',
         VIDEOFY_AUTH_SECRET: OPERATOR_SECRET,
         // The gateway refuses to start without this: unset, its internal media
         // API would accept audio from anyone who can reach the port. That guard
@@ -74,6 +74,8 @@ describe('Python worker to Node gateway smoke', () => {
       stdio: 'pipe',
     });
     processes.push(gateway);
+    gateway.stdout.on('data', (chunk: Buffer) => process.stdout.write(chunk));
+    gateway.stderr.on('data', (chunk: Buffer) => process.stderr.write(chunk));
     await waitForHttp(`${gatewayUrl}/health`);
 
     const listener = connect('listener', gatewayUrl);
@@ -100,7 +102,7 @@ describe('Python worker to Node gateway smoke', () => {
         ...process.env,
         EVENT_ID: 'python-smoke-event',
         GATEWAY_URL: gatewayUrl,
-        LOG_LEVEL: 'ERROR',
+        LOG_LEVEL: 'INFO',
         MOCK_PHRASE_INTERVAL_MS: '100',
         SOURCE_LANGUAGE: 'en',
         SPEECH_WORKER_PORT: String(workerHealthPort),
@@ -109,6 +111,8 @@ describe('Python worker to Node gateway smoke', () => {
       stdio: 'pipe',
     });
     processes.push(worker);
+    worker.stdout.on('data', (chunk: Buffer) => process.stdout.write(chunk));
+    worker.stderr.on('data', (chunk: Buffer) => process.stderr.write(chunk));
 
     const [listenerPayload, operatorPayload] = await Promise.all([frenchEvent, operatorEvent]);
 
