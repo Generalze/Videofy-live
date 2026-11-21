@@ -35,7 +35,7 @@ export function render(element: ReactElement): {
 } {
   let renderer: ReactTestRenderer | null = null;
   act(() => {
-    renderer = create(element);
+    renderer = create(element as unknown as Parameters<typeof create>[0]);
   });
   const made = renderer as ReactTestRenderer | null;
   if (made === null) throw new Error('render produced nothing');
