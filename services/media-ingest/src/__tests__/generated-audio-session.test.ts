@@ -421,10 +421,11 @@ describe('generated-audio sessions', () => {
       { supportedLanguages: ['es'], targetLanguage: 'fr' },
     );
 
-    const textOnlySession = await unsupportedLanguage.store.createFromUpload(
+    const textOnlyCreated = await unsupportedLanguage.store.createFromUpload(
       upload({ targetLanguage: 'fr' }),
       async () => validProbe,
     );
+    const textOnlySession = await waitForSettledSession(unsupportedLanguage.store, textOnlyCreated.id);
     expect(textOnlySession.translation.status).toBe('translated');
     expect(textOnlySession.generatedAudio).toMatchObject({
       status: 'generated',
@@ -438,10 +439,11 @@ describe('generated-audio sessions', () => {
       }),
       { voiceId: 'missing' },
     );
-    const voiceSession = await unsupportedVoice.store.createFromUpload(
+    const voiceCreated = await unsupportedVoice.store.createFromUpload(
       upload({ originalName: 'voice.mp4' }),
       async () => validProbe,
     );
+    const voiceSession = await waitForSettledSession(unsupportedVoice.store, voiceCreated.id);
     expect(voiceSession.state).toBe('failed');
     expect(voiceSession.generatedAudio.events[0]?.error).toBe('Unsupported Piper voice: missing.');
   });
@@ -451,7 +453,8 @@ describe('generated-audio sessions', () => {
       ttsProvider(async () => await new Promise<TextToSpeechProviderResult>(() => undefined)),
       { timeoutMs: 1 },
     );
-    const timedOut = await timeout.store.createFromUpload(upload(), async () => validProbe);
+    const timeoutCreated = await timeout.store.createFromUpload(upload(), async () => validProbe);
+    const timedOut = await waitForSettledSession(timeout.store, timeoutCreated.id);
     expect(timedOut.state).toBe('failed');
     expect(timedOut.generatedAudio.status).toBe('failed');
     expect(timedOut.generatedAudio.events[0]?.error).toMatch(/timed out/);
@@ -461,10 +464,11 @@ describe('generated-audio sessions', () => {
         throw new Error('piper failed');
       }),
     );
-    const failedSession = await failed.store.createFromUpload(
+    const failedCreated = await failed.store.createFromUpload(
       upload({ originalName: 'provider.mp4' }),
       async () => validProbe,
     );
+    const failedSession = await waitForSettledSession(failed.store, failedCreated.id);
     expect(failedSession.state).toBe('failed');
     expect(failedSession.generatedAudio.failedSegments).toBe(3);
   });
@@ -480,7 +484,8 @@ describe('generated-audio sessions', () => {
         return { audioPath: input.outputPath, providerLatencyMs: 5 };
       }),
     );
-    const failed = await store.createFromUpload(upload(), async () => validProbe);
+    const created = await store.createFromUpload(upload(), async () => validProbe);
+    const failed = await waitForSettledSession(store, created.id);
     const failedSegmentId =
       failed.generatedAudio.events.find((event) => event.status === 'failed')?.segmentId ?? '';
 
@@ -549,7 +554,8 @@ describe('generated-audio sessions', () => {
       }),
     );
 
-    const session = await store.createFromUpload(upload(), async () => validProbe);
+    const created = await store.createFromUpload(upload(), async () => validProbe);
+    const session = await waitForSettledSession(store, created.id);
 
     expect(session.state).toBe('failed');
     expect(partialPath).not.toBe('');
