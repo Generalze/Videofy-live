@@ -193,7 +193,8 @@ describe('generated-audio sessions', () => {
       }),
     );
 
-    const session = await store.createFromUpload(upload(), async () => validProbe);
+    const created = await store.createFromUpload(upload(), async () => validProbe);
+    const session = await waitForSettledSession(store, created.id);
 
     expect(session.state).toBe('completed');
     expect(session.generatedAudio).toMatchObject({
@@ -226,7 +227,8 @@ describe('generated-audio sessions', () => {
       }),
     );
 
-    const session = await store.createFromUpload(upload(), async () => validProbe);
+    const created = await store.createFromUpload(upload(), async () => validProbe);
+    const session = await waitForSettledSession(store, created.id);
 
     expect(session.state).toBe('completed');
     expect(session.generatedAudio.failedSegments).toBe(0);
@@ -241,7 +243,8 @@ describe('generated-audio sessions', () => {
       }),
     );
 
-    const session = await store.createFromUpload(upload(), async () => validProbe);
+    const created = await store.createFromUpload(upload(), async () => validProbe);
+    const session = await waitForSettledSession(store, created.id);
 
     expect(session.generatedAudio.events.map((event) => event.sequence)).toEqual([0, 1, 2]);
     expect(session.generatedAudio.events.map((event) => [event.startMs, event.endMs])).toEqual([
@@ -278,10 +281,11 @@ describe('generated-audio sessions', () => {
       },
     );
 
-    const session = await store.createFromUpload(
+    const created = await store.createFromUpload(
       upload({ targetLanguages: ['es', 'fr'] }),
       async () => validProbe,
     );
+    const session = await waitForSettledSession(store, created.id);
 
     expect(session.state).toBe('completed');
     expect(session.transcription.events).toHaveLength(3);
@@ -317,10 +321,11 @@ describe('generated-audio sessions', () => {
       { supportedLanguages: ['es'] },
     );
 
-    const session = await store.createFromUpload(
+    const created = await store.createFromUpload(
       upload({ targetLanguages: ['es', 'fr'] }),
       async () => validProbe,
     );
+    const session = await waitForSettledSession(store, created.id);
 
     expect(session.state).toBe('completed');
     expect(session.translation.events).toHaveLength(6);
@@ -352,7 +357,8 @@ describe('generated-audio sessions', () => {
       { onGeneratedAudioReady: (event) => readyEvents.push(event) },
     );
 
-    const session = await store.createFromUpload(upload(), async () => validProbe);
+    const created = await store.createFromUpload(upload(), async () => validProbe);
+    const session = await waitForSettledSession(store, created.id);
     const firstEvent = session.generatedAudio.events[0];
     expect(firstEvent).toBeDefined();
     expect(readyEvents.map((event) => event.sequence)).toEqual([0, 1, 2]);
@@ -557,4 +563,17 @@ async function waitUntil(predicate: () => boolean, timeoutMs = 1000): Promise<vo
     if (Date.now() - startedAt > timeoutMs) throw new Error('Timed out waiting for condition');
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
+}
+
+async function waitForSettledSession(
+  store: ProcessingSessionStore,
+  sessionId: string,
+): Promise<NonNullable<ReturnType<ProcessingSessionStore['get']>>> {
+  await waitUntil(() => {
+    const state = store.get(sessionId)?.state;
+    return state === 'completed' || state === 'failed';
+  });
+  const session = store.get(sessionId);
+  if (!session) throw new Error(`Processing session ${sessionId} disappeared`);
+  return session;
 }
