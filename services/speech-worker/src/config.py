@@ -19,6 +19,7 @@ class WorkerConfig:
     sequence_start: int
     log_level: str
     health_port: int
+    internal_service_token: str
 
     # Provider placeholders for future implementations
     # whisper_model: str = "base"       # local Whisper / faster-whisper
@@ -40,6 +41,7 @@ def load_config() -> WorkerConfig:
         sequence_start=_read_positive_int("SEQUENCE_START", 1),
         log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
         health_port=_read_port("SPEECH_WORKER_PORT", 8001),
+        internal_service_token=os.getenv("INTERNAL_WEBRTC_TOKEN", ""),
     )
 
 

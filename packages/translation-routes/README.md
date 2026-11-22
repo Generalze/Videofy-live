@@ -49,15 +49,55 @@ direction, per scope. An engine-wide flag is exactly the mechanism that would
 carry `en->es` evidence into `en->yo` production, which is the defect this
 package exists to make impossible.
 
-## Promoting evidence
+## Approving a route
 
 Records live in a JSON document, so a measured, licensed, reviewed route is
-promoted by **editing one file** — no code change, no release. Every rule still
-applies to that file:
+promoted **without a code change and without a release**. Do not hand-edit the
+document to do it. There is a command, and it exists because getting four
+fields consistent by hand on the first attempt, against a validator that
+refuses the whole file if you do not, is not a control — it is a dare.
+
+```sh
+npm run routes:approve -- approve \
+  --source en --target fr --scope messaging \
+  --approver "who is doing this" \
+  --review-engine opus-mt --review-model Helsinki-NLP/opus-mt-en-fr \
+  --review-model-version <rev> --review-corpus-hash <sha> \
+  --review-corpus-version <v> --review-evaluator "who read it" \
+  --review-assessed-at <iso> --review-method "what they did" \
+  --review-score 8 --review-scale "sentences materially correct out of 8" \
+  --review-reference docs/reviews/en-fr.md
+```
+
+A block the specialist programme emitted is handed over as a FILE, not as
+thirteen flags: save the `reviewEvidence` object from the account service to
+disk and name it with `--review-from <file>` in place of every `--review-*`
+flag. The evaluator field carries a reviewer's display name, which may hold
+`$(...)` and backticks; a file is data the shell never reads.
+
+Add `--dry-run` to see the answer without writing. Turn one off with:
+
+```sh
+npm run routes:approve -- revoke --source en --target fr --all --approver "you"
+```
+
+**Revocation demands nothing.** No evidence, no review, no reason. Withdrawing
+is always allowed, including from a document that is currently invalid.
+
+`npm run routes:approve -- show` lists every direction and what it may do.
+
+The full act — what approving means, what evidence it costs, who may do it —
+is [docs/APPROVING_A_TRANSLATION_ROUTE.md](../../docs/APPROVING_A_TRANSLATION_ROUTE.md).
+
+Every rule still applies to whatever ends up in that file:
 
 - `productionApproved` with `technicalEvidence: null` → **document refused**
 - a scope `approved` while human review is outstanding for `yo`, `ha`, `ig` or
   `pcm` → **document refused**
+- a scope `approved` on `yo`, `ha`, `ig` or `pcm` while human review is declared
+  `not-required` → **document refused**. Those four need a reader; saying one is
+  unnecessary is not a way to satisfy that, and `passed` is the only value that
+  opens a scope there
 - `productionApproved` without established commercial use → **document refused**
 - a scope `approved` on a route that is not `productionApproved` → **document
   refused** (scopes *narrow* production approval; they never grant it)
@@ -78,9 +118,9 @@ points at the document in force. With nothing set, the shipped seed is used.
 
 ## The seed
 
-`routes/translation-routes.seed.json` holds **twelve directions, every one
-unapproved**: `en<->yo`, `en<->ha`, `en<->ig`, `en<->pcm`, `en<->es`, `en<->fr`.
-It grants nothing. It exists so promoting a route means editing a record that
+`routes/translation-routes.seed.json` holds **fourteen directions, every one
+unapproved**: `en<->yo`, `en<->ha`, `en<->ig`, `en<->pcm`, `en<->es`, `en<->fr`,
+`en<->pt`. It grants nothing. It exists so promoting a route means editing a record that
 already names the direction, and so that `en<->pcm` — which **no model in this
 deployment covers** — is a declared gap (`provider: "unassigned"`, which
 validation refuses to approve) rather than an absence nobody noticed.

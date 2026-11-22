@@ -27,12 +27,42 @@
  * backgrounding -- all of them stop the tracks. An un-stopped camera keeps
  * the privacy indicator lit after the call, which to the person holding the
  * phone is an app watching them.
+ *
+ * THREE TREATMENTS OF ONE DIRECT CALL (founder's board, 20 Sep 2026), and the
+ * phase that picks between them comes from `directCallPhase` -- the SAME
+ * condition the timer row already used, not a second opinion about whether a
+ * call is up.
+ *
+ *   PLACING  the ring, and an arc that is a measurement: the share of the
+ *            server's own ring window (`expiresAtMs`) that has gone. One red
+ *            Cancel. The translation line under it is drawn from
+ *            `translationReadiness`, never from a timer.
+ *   LIVE     the speech indicator, the timer, the language pair, and the dual
+ *            caption card. Each of those four is a projection of something the
+ *            server said; none of them animates on its own.
+ *   ENDED    the dimmed person, the duration in words, and a summary card.
+ *
+ * EVERY ONE OF THEM CAN BE ABSENT, and that is the design rather than a gap.
+ * No language pair until `call:state` carries both halves; no caption card
+ * until a caption arrives; no nested translation until that caption actually
+ * has one; no arc without a deadline to measure against. This app spent a
+ * night telling people "Hearing translated voice" while producing silence, and
+ * the rule that came out of it is the one every absence above obeys: never
+ * show a state you have not measured.
  */
-import { useCallback, useEffect, useRef, useState, type JSX } from 'react';
-import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState, type JSX, type ReactNode } from 'react';
+import {
+  ActivityIndicator,
+  Pressable,
+  ScrollView,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 import { setAudioModeAsync } from 'expo-audio';
 import { RTCView } from 'react-native-webrtc';
-import type { DirectCallStateSnapshot } from '@videofy-live/call-client-core';
+import type { CallCaptionEvent, DirectCallStateSnapshot } from '@videofy-live/call-client-core';
 import { AvatarView } from '../media/AvatarView';
 import { useBottomInset } from '../ui/insets';
 import {
@@ -40,19 +70,49 @@ import {
   C7Mark,
   CALL_COLORS,
   CallBackdrop,
+  CallStatePill,
+  CaptionCard,
   EndCallButton,
+  Eyebrow,
   GlassDock,
   RoundControl,
+  SpeechIndicator,
+  SummaryCard,
 } from '../ui/callTheme';
 import { createAudioRouter, resolveRoute, type AudioRoute } from '../call/audioRoute';
-import { elapsedSinceMs, formatElapsed, observeServerClock } from '../call/callTimer';
+import {
+  callTickIntervalMs,
+  callTickWanted,
+  elapsedSinceMs,
+  formatElapsed,
+  monotonicRingProgress,
+  observeRingWindow,
+  observeServerClock,
+  ringProgress,
+  startCallTick,
+} from '../call/callTimer';
 import { TERMINAL_DIRECT_STATES } from '../call/directCallApi';
-import { connectedRow, stateLine } from '../call/callDisplay';
+import {
+  connectedRow,
+  directCallPhase,
+  stateLine,
+  translatedAudioUnavailableLine,
+} from '../call/callDisplay';
+import { captionCard, captionSpeaking, nextCaption } from '../call/callCaption';
+import { callScreenView, type DockControl } from '../call/callScreenModel';
+import { type CallLanguagePair } from '../call/callLanguages';
+import {
+  applyCaptionEvidence,
+  applyTranslatedAudioDiagnostic,
+  NO_TRANSLATION_SIGNALS,
+} from '../call/translationReadiness';
 import { Icon } from '../ui/icons';
 import { videofyCall } from '../native/videofyCall';
 import { reportRingTimeline } from '../call/ringTimeline';
+import type { TranslatedVoice } from '../call/translatedVoice';
 import {
   CallConnection,
+  type CallTranslatedAudioDiagnostic,
   type CallTransportEvent,
   type RemoteStream,
 } from '../call/callConnection';
@@ -66,10 +126,18 @@ import {
 import type { ConferenceSetup } from '../conference/conferenceSetup';
 
 /** Not a secret; compiled into the bundle like every EXPO_PUBLIC_ value. */
-const GATEWAY_URL = process.env['EXPO_PUBLIC_GATEWAY_URL'] ?? 'https://staging.consummate7.com';
+const GATEWAY_URL = process.env.EXPO_PUBLIC_GATEWAY_URL ?? 'https://staging.consummate7.com';
 
 /** The developer switch. Off in every build a person installs. */
-const DIAGNOSTICS = process.env['EXPO_PUBLIC_CALL_DIAGNOSTICS'] === '1';
+const DIAGNOSTICS = process.env.EXPO_PUBLIC_CALL_DIAGNOSTICS === '1';
+
+/**
+ * HOW LONG THE SCREEN WAITS FOR A LOST END ACKNOWLEDGEMENT before ending
+ * itself anyway. Tens of seconds, deliberately: the figure it replaces was
+ * 600 ms, which is inside an ordinary mobile round trip, so the commonest way
+ * to finish a call was also the one way to never see the ended screen.
+ */
+const END_SAFETY_MS = 20_000;
 
 /**
  * An optional local override, normally empty. ICE servers come from the
@@ -77,7 +145,7 @@ const DIAGNOSTICS = process.env['EXPO_PUBLIC_CALL_DIAGNOSTICS'] === '1';
  * shipped in a bundle.
  */
 function iceOverride(): { urls: string | string[]; username?: string; credential?: string }[] {
-  const raw = process.env['EXPO_PUBLIC_ICE_SERVERS'];
+  const raw = process.env.EXPO_PUBLIC_ICE_SERVERS;
   if (raw === undefined || raw.trim().length === 0) return [];
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -119,8 +187,10 @@ export type ActiveCallDescriptor =
 export interface CallScreenProps {
   readonly call: ActiveCallDescriptor;
   readonly displayName: string;
-  readonly speakLanguage?: 'en' | 'es' | 'fr';
-  readonly hearLanguage?: 'en' | 'es' | 'fr';
+  readonly speakLanguage?: string;
+  readonly hearLanguage?: string;
+  /** The voice this account's translated words are spoken in (call/translatedVoice); absent = the shared default. */
+  readonly translatedVoice?: TranslatedVoice;
   /** Null is valid: it means this client can JOIN but not CREATE a call. */
   readonly sessionToken: string | null;
   /**
@@ -130,6 +200,15 @@ export interface CallScreenProps {
    */
   readonly onRing?: ((callId: string) => Promise<number | null>) | undefined;
   readonly onLeave: () => void;
+  /*
+   * THE BOARD'S TWO BUTTONS ON THE ENDED SCREEN, and they are optional because
+   * absent is a real answer: a screen given no way to place a call falls back
+   * to the sentence that used to stand in for both of them. They are wired in
+   * App.tsx to the same two entry points the contact list and the profile use
+   * -- `callContact` and the chat -- rather than to anything invented here.
+   */
+  readonly onCallBack?: (() => void) | undefined;
+  readonly onMessagePeer?: (() => void) | undefined;
 }
 
 export function CallScreen({
@@ -137,9 +216,12 @@ export function CallScreen({
   displayName,
   speakLanguage,
   hearLanguage,
+  translatedVoice,
   sessionToken,
   onRing,
   onLeave,
+  onCallBack,
+  onMessagePeer,
 }: CallScreenProps): JSX.Element {
   const callId = call.callId;
   const role: 'caller' | 'callee' = onRing === undefined ? 'callee' : 'caller';
@@ -194,12 +276,72 @@ export function CallScreen({
    * This only keeps the control responsive and un-pressable twice.
    */
   const [ending, setEnding] = useState(false);
+  /**
+   * THIS PHONE'S OWN END, ACKNOWLEDGED -- a local fact about a local action.
+   *
+   * Pressing End is how most calls finish, and for one commit it was the one
+   * way to finish a call that never reached the ended screen: `onLeave()` was
+   * called 600 ms after the request settled unless the gateway's terminal state
+   * had already landed, and 600 ms is inside an ordinary mobile round trip. The
+   * screen carrying "Call ended", the duration, the verdict, the summary card
+   * and both of the board's buttons was simply never drawn on the commonest
+   * path, and the failure only appears off a fast network.
+   *
+   * The earlier ruling this does NOT reopen: the screen must not claim a call
+   * is over while the request is still in flight -- that is one device
+   * disagreeing with the other. This is set once `end()` has SETTLED, which is
+   * the gateway having taken the request; the server's own `call:direct:state`
+   * then agrees when it arrives, and if it never does, nobody is left holding a
+   * live call screen.
+   */
+  const [endedHere, setEndedHere] = useState(false);
   const [mode, setMode] = useState<'normal' | 'translated' | null>(null);
   const [connectedAtMs, setConnectedAtMs] = useState<number | null>(null);
   const clockOffset = useRef<number | null>(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
   /** Frozen at the moment the call ended, so the final duration stays on screen. */
   const [finalElapsedMs, setFinalElapsedMs] = useState<number | null>(null);
+
+  /*
+   * THE RING WINDOW. The server stamps a deadline on every `call:direct:state`
+   * and ends the call itself when it passes, so the outgoing arc has something
+   * real to be a share of. The denominator is the FIRST remaining figure this
+   * screen saw -- see callTimer's `observeRingWindow` for why it is captured
+   * once and not recomputed.
+   */
+  const [ringExpiresAtMs, setRingExpiresAtMs] = useState<number | null>(null);
+  const ringWindowMs = useRef<number | null>(null);
+  /** The furthest through the window the arc has been. It never goes back. */
+  const ringSeen = useRef<number | null>(null);
+
+  /*
+   * THE UTTERANCE ON SCREEN, and when it last changed on THIS phone's clock.
+   *
+   * One state, not two: the change stamp is what the speech indicator measures
+   * age against, and a stamp kept in a ref beside a piece of state is a stamp
+   * that can be updated for a caption the merge refused.
+   */
+  const [caption, setCaption] = useState<{
+    readonly event: CallCaptionEvent;
+    readonly changedAtMs: number;
+    /** THIS phone's own words, echoed back by the gateway. */
+    readonly self: boolean;
+  } | null>(null);
+  /** The person's own choice to hide the caption card. Never hides a fault. */
+  const [captionsShown, setCaptionsShown] = useState(true);
+  /** The pair `call:state` records, or null while it cannot be measured. */
+  const [languages, setLanguages] = useState<CallLanguagePair | null>(null);
+  /** False once the GATEWAY said this deployment has no translation engine. */
+  const [engineReal, setEngineReal] = useState<boolean | null>(null);
+  /**
+   * EVERYTHING THIS PHONE HAS MEASURED ABOUT TRANSLATED SPEECH: the playback
+   * path, whether anything was actually played or captioned, and whether frames
+   * arrived and were refused. Folded by `applyTranslatedAudioDiagnostic`, which
+   * is where the rules about what outranks what can be read and tested -- the
+   * screen used to keep one field here and silently drop `refused` and the
+   * proofs on the floor.
+   */
+  const [signals, setSignals] = useState(NO_TRANSLATION_SIGNALS);
 
   /*
    * THE VIDEO PATH, STAMPED. "Video did not work" on a phone has four
@@ -247,6 +389,20 @@ export function CallScreen({
     setServerState(wire.state);
     setMode(wire.mode);
     if (wire.connectedAtMs !== null) setConnectedAtMs(wire.connectedAtMs);
+    /*
+     * The ring deadline, and the window it is measured against. `expiresAtMs`
+     * of 0 is the normaliser's "the wire carried none" -- it becomes null here
+     * rather than a deadline in 1970, which would draw a full arc on a call
+     * that has only just started.
+     */
+    const expires = wire.expiresAtMs > 0 ? wire.expiresAtMs : null;
+    ringWindowMs.current = observeRingWindow(
+      ringWindowMs.current,
+      expires,
+      clockOffset.current,
+      Date.now(),
+    );
+    setRingExpiresAtMs(expires);
   }, []);
 
   useEffect(() => {
@@ -268,6 +424,7 @@ export function CallScreen({
       },
       ...(speakLanguage === undefined ? {} : { speakLanguage }),
       ...(hearLanguage === undefined ? {} : { hearLanguage }),
+      ...(translatedVoice === undefined ? {} : { translatedVoice }),
       sessionToken,
       ...(iceOverride().length > 0 ? { iceServers: iceOverride() } : {}),
       onRemoteStream: (id, stream: RemoteStream) => {
@@ -340,12 +497,104 @@ export function CallScreen({
       onIceServers: (count) => {
         if (live) setIceCount(count);
       },
+      /*
+       * TRANSLATED SPEECH, STAMPED. On 19 Sep 2026 a translated call was
+       * indistinguishable, from this phone, from a call that was never
+       * translated: the server said 305 frames delivered and the handset had
+       * no signal of any kind. These stamps travel with the ring timeline, so
+       * "the translation never arrived", "it arrived and was refused" and
+       * "this build cannot play it" are three different answers instead of
+       * one silence. Counts and stamps only; never audio, never text.
+       */
+      /*
+       * ONE UTTERANCE, AS IT WAS SAID AND AS IT WAS TRANSLATED.
+       *
+       * The merge decides; this only records WHEN it accepted something, which
+       * is what the speech indicator measures age against. A refused caption --
+       * a straggler from a superseded media revision, a partial after its own
+       * final -- leaves the state object identical, so a stuck stream cannot
+       * keep the indicator alive by re-sending.
+       */
+      onCaption: (event: CallCaptionEvent, origin) => {
+        if (!live) return;
+        stamp('caption_received');
+        /*
+         * A CAPTION CARRYING A TRANSLATION IS PROOF. The engine ran, its output
+         * was addressed to this seat, and it arrived -- which is more than
+         * "Listening for translated speech" ever meant. Counted whether or not
+         * the merge puts this particular revision on screen.
+         */
+        setSignals((current) => applyCaptionEvidence(current, event, Date.now()));
+        setCaption((current) => {
+          const accepted = nextCaption(current?.event ?? null, event);
+          if (accepted === null) return current;
+          if (current !== null && accepted === current.event) return current;
+          return { event: accepted, changedAtMs: Date.now(), self: origin.self };
+        });
+      },
+      onLanguages: (pair) => {
+        if (live) setLanguages(pair);
+      },
+      /*
+       * THE SERVER SAYING IT CANNOT TRANSLATE. Kept apart from the handset's
+       * own translated-audio diagnostic: "this build has no native track" and
+       * "this deployment has no engine" look identical on screen and send an
+       * investigation to two different places.
+       */
+      onTranslationEngine: () => {
+        if (!live) return;
+        stamp('xlate_engine_unavailable');
+        setEngineReal(false);
+      },
+      onTranslatedAudio: (event: CallTranslatedAudioDiagnostic) => {
+        if (!live) return;
+        stamp(`xlate_${event.kind}`);
+        /*
+         * EVERY KIND REACHES THE DECISION, and for one commit only two did.
+         * `listening` means a socket handler is bound and was showing
+         * "Listening for translated speech" for whole calls in which nothing
+         * arrived, while `refused` -- frames arriving and being turned away,
+         * the 19 Sep post-mortem's worst state -- and `played`, the only
+         * audible proof there is, were dropped here.
+         */
+        /*
+         * STAMPED, NOT LATCHED. "Playing translated speech" is present tense
+         * and the stamp is what keeps it honest: one frame at second three
+         * used to hold that sentence -- and the ended screen's "· translated"
+         * -- for the rest of a call in which every later frame was refused.
+         */
+        setSignals((current) => applyTranslatedAudioDiagnostic(current, event, Date.now()));
+        if (event.kind === 'originals') {
+          videoStamps.current['xlate_originals_suppressed'] = event.suppressed ? 1 : 0;
+        }
+        if (event.kind === 'unavailable') {
+          // The reason, not just the fact. A build that cannot play translated
+          // audio and a native track that threw read identically otherwise,
+          // and only one of them is fixed by building again.
+          videoStamps.current['xlate_unavailable_threw'] = event.error === undefined ? 0 : 1;
+          setTransportLog((current) => [
+            ...current.slice(-4),
+            `${new Date().toLocaleTimeString()} ${translatedAudioUnavailableLine(event.error)}`,
+          ]);
+        }
+      },
       onVideoDiagnostic: (event) => {
         if (!live) return;
         stamp(`video_${event.kind.replace(/-/g, '_')}`);
         if (event.kind === 'outbound' || event.kind === 'inbound') {
           videoStamps.current[`video_${event.kind}_frames`] = event.frames;
           videoStamps.current[`video_${event.kind}_bytes`] = event.bytes;
+        }
+        /*
+         * THE HOLD, AS A NUMBER. `stamp` records a first-seen time and an
+         * `_n` count per point and drops everything else, so the stated
+         * device proof -- `video_remote_idle (heldMs 2000)` -- named a figure
+         * the timeline did not carry, and a human checking a handset would
+         * have been looking for something that could not appear. It appears
+         * now, under its own key, the way the rebuild verdict's numbers do.
+         */
+        if (event.kind === 'remote-idle') {
+          videoStamps.current['video_remote_held_ms'] = event.heldMs;
         }
         /*
          * The verdict is the whole point of the rebuild watch, so it travels
@@ -359,6 +608,16 @@ export function CallScreen({
         }
         if (event.kind === 'outbound-silent' || event.kind === 'attach-failed' || event.kind === 'acquisition-failed') {
           setTransportLog((current) => [...current.slice(-4), `${new Date().toLocaleTimeString()} video ${event.kind}`]);
+        }
+        /*
+         * The negotiation stages, on screen. Offer-sent is the one that
+         * matters: with it, a silent camera is a media fault; without it,
+         * nothing was ever asked of the far side and the gateway's own drop
+         * counter will read zero for the honest reason that it was handed
+         * nothing to drop.
+         */
+        if (event.kind === 'signalling') {
+          setTransportLog((current) => [...current.slice(-4), `${new Date().toLocaleTimeString()} sig ${event.stage}`]);
         }
       },
       onError: (message) => {
@@ -434,7 +693,16 @@ export function CallScreen({
   }, [callId, displayName, sessionToken]);
 
   // The timer ticks while there is an origin and the call has not ended.
-  const terminal = serverState !== null && TERMINAL_DIRECT_STATES.has(serverState);
+  const serverTerminal = serverState !== null && TERMINAL_DIRECT_STATES.has(serverState);
+  const terminal = serverTerminal || endedHere;
+  /*
+   * WHAT THE SCREEN SAYS THE CALL IS DOING: the server's own word, or 'ended'
+   * once this phone's End was acknowledged and the server has not said
+   * otherwise. The server's word always wins where it has one -- a call the
+   * gateway ended as `declined` or `busy` keeps those words and the sentence
+   * that explains them.
+   */
+  const callState = !serverTerminal && endedHere ? 'ended' : serverState;
   /*
    * The state the SERVER says the call is in right now, or null before the
    * first wire arrives. Every sentence on this screen comes from here; nothing
@@ -442,7 +710,7 @@ export function CallScreen({
    */
   // The peer's name only exists on a direct call; a conference has a roster.
   const peerName = call.kind === 'direct' ? call.peer.name : '';
-  const connectedRowState = connectedRow(serverState, connectedAtMs, peerName);
+  const connectedRowState = connectedRow(callState, connectedAtMs, peerName);
   /*
    * The other half of the pair stamped on arrival. An effect runs only after
    * React has rendered, so reaching here is evidence the screen actually
@@ -451,12 +719,20 @@ export function CallScreen({
   useEffect(() => {
     if (serverState !== null && TERMINAL_DIRECT_STATES.has(serverState)) stamp('terminal_applied');
   }, [serverState, stamp]);
-  useEffect(() => {
-    if (connectedAtMs === null || terminal) return undefined;
-    setNowMs(Date.now());
-    const timer = setInterval(() => setNowMs(Date.now()), 1000);
-    return () => clearInterval(timer);
-  }, [connectedAtMs, terminal]);
+  /*
+   * ONE TICK, TWO THINGS TO ADVANCE. It used to run only once there was an
+   * origin to count from, which is right for the timer and leaves the outgoing
+   * ring arc frozen for the whole of the ring -- the phase it exists for. It
+   * now also runs while there is a deadline, and faster then: a second-by-second
+   * arc steps, and a stepping arc reads as a rendering fault rather than a
+   * measurement.
+   */
+  const tickIntervalMs = callTickIntervalMs(connectedAtMs);
+  const ticking = callTickWanted({ terminal, connectedAtMs, ringExpiresAtMs });
+  useEffect(
+    () => startCallTick({ ticking, intervalMs: tickIntervalMs, onTick: setNowMs }),
+    [ticking, tickIntervalMs],
+  );
 
   // Freeze the duration at the moment the call ends.
   useEffect(() => {
@@ -465,12 +741,21 @@ export function CallScreen({
     }
   }, [terminal, connectedAtMs, finalElapsedMs]);
 
-  // A terminal telephone state ends the screen after the words are read.
+  /*
+   * NOBODY IS STRANDED BY AN ACKNOWLEDGEMENT THAT NEVER COMES.
+   *
+   * The safety net, and all that is left of the 600 ms timer: if the End
+   * request neither settles nor draws a terminal state out of the gateway, the
+   * screen ends itself anyway -- after a duration measured in tens of seconds,
+   * not inside one round trip. What happens next is the model's decision, not
+   * this one's: an ended screen with something to act on waits for the person,
+   * and one with nothing on it dismisses itself.
+   */
   useEffect(() => {
-    if (!terminal) return undefined;
-    const timer = setTimeout(() => onLeave(), 2500);
+    if (!ending || terminal) return undefined;
+    const timer = setTimeout(() => setEndedHere(true), END_SAFETY_MS);
     return () => clearTimeout(timer);
-  }, [terminal, onLeave]);
+  }, [ending, terminal]);
 
   // A refused knock ends the screen the same way: the words, then out.
   const refused = admission !== null && admission !== 'pending' && admission !== 'admitted';
@@ -536,39 +821,171 @@ export function CallScreen({
       return;
     }
     /*
-     * THE SERVER ENDS THE CALL; THIS ONLY ASKS.
+     * THE SERVER ENDS THE CALL FOR BOTH; PRESSING END IS THE LOCAL FACT THAT
+     * THIS ONE IS OVER.
      *
-     * This used to set 'ended' locally before `end()` resolved, so the screen
-     * could claim a call was over while the server still had it open -- the
-     * caller's own device disagreeing with the callee's. `ending` keeps the
-     * button responsive and disabled without asserting anything untrue.
+     * The distinction this keeps: the screen still does not say "ended" while
+     * the request is in flight -- that would be this device disagreeing with
+     * the other one about a call the server still holds open, which is the
+     * reason the local state was taken out in the first place. But once `end()`
+     * has settled, the gateway has the request and this handset is done. The
+     * screen shows the ended screen on that, rather than waiting for
+     * `call:direct:state` to agree.
      *
-     * The screen still leaves on its own after the request settles: a person
-     * who pressed End must never be held on a call screen because an
-     * acknowledgement was lost.
+     * WHAT THIS REPLACES, and why. It used to schedule `onLeave()` 600 ms after
+     * the same moment unless the terminal state had beaten it. 600 ms is inside
+     * an ordinary mobile round trip, so on a real handset on mobile data the
+     * screen carrying the verdict, the summary card, Call back and Message was
+     * never drawn at all -- on the path most calls take. Nobody is stranded by
+     * a lost acknowledgement either: see `END_SAFETY_MS` above.
      */
     const link = connection.current;
     setEnding(true);
-    void (link?.end() ?? Promise.resolve(false)).finally(() => {
-      setTimeout(() => onLeave(), 600);
-    });
+    void (link?.end() ?? Promise.resolve(false))
+      .catch(() => false)
+      .then(() => {
+        setEndedHere(true);
+      });
   }, [call.kind, onLeave, terminal]);
 
+  /*
+   * THE SCREEN THIS IS ACTUALLY RUNNING ON. Every layout decision the dock and
+   * the caption slot make used to be a constant chosen against one 360dp phone;
+   * the same handset reports about 320dp at Android's "Larger" display setting,
+   * and a constant cannot see that.
+   */
+  const screenSize = useWindowDimensions();
   const tiles = Object.entries(remotes);
   const peerVideo = tiles.find(([, tile]) => tile.url !== null)?.[1].url ?? null;
   const elapsedMs =
     finalElapsedMs ??
     (connectedAtMs === null ? null : elapsedSinceMs(connectedAtMs, clockOffset.current, nowMs));
-  const modeLabel =
-    call.kind === 'direct'
-      ? mode === 'translated'
-        ? 'Translated call'
-        : mode === 'normal'
-          ? 'Normal call'
-          : 'Direct call'
-      : 'Conference';
   const knock = knockWords(knocking);
   const firstKnock = knocking[0];
+
+  /*
+   * THE BOARD'S THREE TREATMENTS, and everything each of them may draw.
+   *
+   * Each value below is null whenever the thing it describes has not been
+   * measured, and every use of it is guarded. That is what keeps this screen
+   * from doing again what it did in September: saying a state out loud that
+   * nothing had established.
+   */
+  const phase = directCallPhase({
+    serverState: callState,
+    elapsedMs,
+    connectedRowShown: connectedRowState.show,
+  });
+  /*
+   * THE ARC NEVER GROWS. The denominator is frozen at the first window seen, so
+   * the Answer grace period -- which pushes `expiresAtMs` forward mid-ring --
+   * computed a smaller elapsed share and snapped the arc from a fifth back to
+   * full in one frame, where it then sat motionless for six seconds. That reads
+   * as a ring that restarted. The high-water mark is kept here, beside the
+   * other two figures captured once per call, and the rule itself is
+   * `monotonicRingProgress` where it can be tested.
+   */
+  const arc = monotonicRingProgress(
+    ringSeen.current,
+    ringProgress({
+      expiresAtMs: ringExpiresAtMs,
+      windowMs: ringWindowMs.current,
+      offsetMs: clockOffset.current,
+      localNowMs: nowMs,
+    }),
+  );
+  if (arc !== null) ringSeen.current = arc;
+  /*
+   * EVERY DECISION THIS SCREEN MAKES, MADE SOMEWHERE IT CAN BE PROVEN.
+   *
+   * Ten mutants applied to the wiring below -- the nested translation card fed
+   * the original sentence, the translation line un-gated onto every call,
+   * the caption seam cut at this end -- survived a green 440-test suite,
+   * because nothing in the repository could see a prop. `callScreenView` is
+   * ordinary TypeScript and the JSX beneath is a render of what it returns.
+   */
+  const view = callScreenView({
+    kind: call.kind,
+    phase,
+    serverState: callState,
+    role,
+    peerName,
+    translation: { mode, engine: engineReal, ...signals },
+    languages,
+    connectedRow: connectedRowState,
+    caption: captionCard(caption?.event ?? null),
+    captionIsSelf: caption?.self ?? false,
+    speaking: captionSpeaking({
+      caption: caption?.event ?? null,
+      changedAtMs: caption?.changedAtMs ?? null,
+      nowMs,
+    }),
+    captionsShown,
+    elapsedMs,
+    ringElapsed: arc,
+    nowMs,
+    widthDp: screenSize.width,
+    heightDp: screenSize.height,
+    muted,
+    speakerOn,
+    cameraOn,
+    cameraStarting,
+    canCallBack: onCallBack !== undefined,
+    canMessage: onMessagePeer !== undefined,
+  });
+
+  /*
+   * THE ONLY AUTOMATIC EXIT LEFT, and the model decides whether there is one.
+   * A terminal state used to unmount this screen 2500 ms later whatever was on
+   * it, which was harmless when the only control was Close: the board's Call
+   * back and Message buttons then appeared and vanished before a hand could
+   * reach them, and the summary card could not be read. Where there is
+   * something to press or read, the person dismisses the screen.
+   */
+  const autoDismissMs = view.autoDismissMs;
+  useEffect(() => {
+    if (autoDismissMs === null) return undefined;
+    const timer = setTimeout(() => onLeave(), autoDismissMs);
+    return () => clearTimeout(timer);
+  }, [autoDismissMs, onLeave]);
+
+  /** The dock's glyph and its action, by the id the model named. */
+  const dockIcon = (control: DockControl): ReactNode => {
+    const tint = control.active ? CALL_COLORS.ground : CALL_COLORS.text;
+    if (control.id === 'mute') return <Icon name={muted ? 'mic-off' : 'mic'} size={26} color={tint} />;
+    if (control.id === 'speaker') return <Icon name="speaker" size={26} color={tint} />;
+    if (control.id === 'camera') {
+      return <Icon name={cameraOn ? 'camera' : 'camera-off'} size={26} color={tint} />;
+    }
+    /*
+     * A CAPTIONS GLYPH, NOT THE TRANSLATE ONE. This control hides and shows the
+     * caption card; it cannot turn translation off -- that is `call:mode:set`,
+     * which the gateway grants to the call owner alone and this client has
+     * never sent. A teal translate glyph that went dark when pressed told
+     * people they had stopped the translation, on a product whose named defect
+     * class is claiming a translation state nothing measured.
+     */
+    return <Icon name="captions" size={24} color={tint} />;
+  };
+  /**
+   * THE READINESS SENTENCE THE VIDEO BRANCH CARRIES.
+   *
+   * This asked `warn` and got the wrong answer to the right question. The one
+   * state the surface exists for -- translated captions arriving and no audio
+   * played, the 19 Sep failure -- is not amber, so a video call showed nothing
+   * whatsoever during exactly that call while an audio call showed the
+   * sentence. The model answers it now, in one field, from the readiness kind:
+   * `onVideo` is "the person is missing the translation", which is the question
+   * a surface with room for one line has to ask.
+   */
+  const videoStateLine =
+    view.readinessLine !== null && view.readinessLine.onVideo ? view.readinessLine.words : null;
+  const dockPress = (control: DockControl): void => {
+    if (control.id === 'mute') toggleMute();
+    else if (control.id === 'speaker') toggleSpeaker();
+    else if (control.id === 'camera') toggleCamera();
+    else setCaptionsShown((shown) => !shown);
+  };
 
   return (
     <View style={styles.screen}>
@@ -626,69 +1043,200 @@ export function CallScreen({
                   {elapsedMs !== null ? formatElapsed(elapsedMs) : stateLine(serverState, role, call.peer.name)}
                 </Text>
               </View>
-            </View>
-          ) : (
-            <View style={styles.identity}>
-              <AvatarHalo
-                accountId={call.peer.accountId}
-                name={call.peer.name}
-                size={124}
-                pulsing={!terminal && elapsedMs === null}
-              />
-              <Text style={styles.peerName}>{call.peer.name}</Text>
-              <View style={styles.modePill}>
-                <Text style={styles.modePillLabel}>{modeLabel}</Text>
-              </View>
-              {elapsedMs !== null && connectedRowState.show ? (
-                <>
-                  {/*
-                    * THE TIMER SHOWS WHEN; THE WORDS SHOW WHAT.
-                    *
-                    * `connectedAtMs` says when two-way audio was FIRST proven
-                    * and never moves again -- which is exactly right for a
-                    * duration and exactly wrong for a status. This row used to
-                    * read "Connected" whenever that value existed, so a server
-                    * that had gone back to `connecting` after a renegotiation
-                    * still showed Connected, and the screen quietly disagreed
-                    * with the call.
-                    *
-                    * The elapsed time keeps running across a reconnect, because
-                    * the call did not restart; the sentence beneath it is
-                    * whatever the server currently says.
-                    */}
-                  <Text style={styles.timer}>{formatElapsed(elapsedMs)}</Text>
-                  <View style={styles.stateRow}>
-                    <View style={[styles.stateDot, connectedRowState.warn && styles.stateDotWarn]} />
-                    <Text style={[styles.stateLine, styles.stateConnected, connectedRowState.warn && styles.stateWarn]}>
-                      {connectedRowState.words}
-                    </Text>
-                  </View>
-                </>
-              ) : (
-                <>
-                  <Text style={styles.stateLine}>{stateLine(serverState, role, call.peer.name)}</Text>
-                  {terminal && elapsedMs !== null && (
-                    <Text style={styles.timerSmall}>{formatElapsed(elapsedMs)}</Text>
+              {/*
+                * THE HONEST-STATE SURFACE DOES NOT VANISH WHEN A CAMERA COMES
+                * ON. This branch rendered nothing from the view model at all,
+                * so every measured-state fix in three rounds was silently
+                * bounded to audio-only calls -- on a product whose pitch is
+                * translated VIDEO calling. A translation FAULT and the ended
+                * verdict are the two that cannot wait for the full-screen
+                * video wave: one is the September defect's only dissenting
+                * voice, the other is the call's verdict on itself. The caption
+                * card and the summary belong with that wave and are not drawn
+                * here rather than being half-drawn here.
+                */}
+              {(videoStateLine !== null || view.endedLine !== null) && (
+                <View style={styles.peerVideoState}>
+                  {view.endedLine !== null && (
+                    <Text style={styles.peerVideoEnded}>{view.endedLine}</Text>
                   )}
-                </>
-              )}
-              {(serverState === 'unavailable' ||
-                serverState === 'no_answer' ||
-                serverState === 'busy' ||
-                serverState === 'declined') && (
-                <Text style={styles.hint}>You can message them instead, or call again later.</Text>
-              )}
-              {cameraStarting && <Text style={styles.hint}>Starting camera…</Text>}
-              {!cameraOn && !terminal && (
-                <View style={styles.cameraNotice}>
-                  <Icon name="camera-off" size={26} color={CALL_COLORS.muted} />
-                  <View style={{ gap: 2, flexShrink: 1 }}>
-                    <Text style={styles.cameraNoticeTitle}>Your camera is off</Text>
-                    <Text style={styles.cameraNoticeBody}>This is an audio-only call</Text>
-                  </View>
+                  {videoStateLine !== null && (
+                    <Text
+                      style={[
+                        styles.peerVideoWarn,
+                        view.readinessLine?.warn !== true && styles.peerVideoQuiet,
+                      ]}
+                    >
+                      {videoStateLine}
+                    </Text>
+                  )}
                 </View>
               )}
             </View>
+          ) : (
+            /*
+             * THE CAPTION CARD HAS ITS OWN SPACE, DIRECTLY ABOVE THE DOCK.
+             *
+             * It used to sit at the bottom of one long scrolling column, and a
+             * reviewer computed the consequence from the styles as written: on a
+             * 360x800 phone the stage is 462dp and the column above the card is
+             * 479dp, so at rest not one pixel of the card was on screen. The
+             * ScrollView had turned "clipped" into "invisible unless you scroll
+             * a live call by hand" -- for the one element that shows this
+             * product's billable unit working.
+             *
+             * So the column SCROLLS and the card DOES NOT: the identity block
+             * takes what is left (and compresses -- see `compactIdentity`),
+             * while the card keeps a bounded slot of its own with its own
+             * internal scroll for a long utterance. The dock did not grow to
+             * pay for this; it shrank to one row, which is where the space
+             * came from.
+             */
+            <>
+            <ScrollView
+              style={styles.stageScroll}
+              contentContainerStyle={styles.stageScrollContent}
+              showsVerticalScrollIndicator={false}
+            >
+              <View style={styles.identity}>
+                {view.eyebrow !== null && <Eyebrow>{view.eyebrow}</Eyebrow>}
+                {/*
+                  * THE SPEECH INDICATOR, above the name, on a live call only.
+                  * It is a measurement of the caption stream -- see
+                  * callCaption's `captionSpeaking` -- and it moves only for the
+                  * OTHER person: the gateway delivers a speaker their own words
+                  * too, and these bars sit above the peer's face.
+                  */}
+                {view.speech !== null && (
+                  <SpeechIndicator
+                    active={view.speech.active}
+                    accessibilityLabel={view.speech.accessibilityLabel}
+                  />
+                )}
+                <AvatarHalo
+                  accountId={call.peer.accountId}
+                  name={call.peer.name}
+                  // The avatar is the first thing to yield to the caption card.
+                  size={view.compactIdentity ? 92 : 124}
+                  pulsing={view.halo.pulsing}
+                  ring={view.halo.ring}
+                  measure={view.halo.measure}
+                  dim={view.halo.dim}
+                />
+                {/* One line. A long name at 34pt wrapped to three and pushed the
+                    caption card off the bottom of a column already over budget. */}
+                <Text
+                  numberOfLines={1}
+                  adjustsFontSizeToFit
+                  minimumFontScale={0.6}
+                  style={[
+                    styles.peerName,
+                    view.compactIdentity && styles.peerNameCompact,
+                    view.halo.dim && styles.peerNameEnded,
+                  ]}
+                >
+                  {call.peer.name}
+                </Text>
+                {/* ONE pill (the board), and the model decides which. */}
+                {view.pill !== null && (
+                  <View style={styles.pillRow}>
+                    <CallStatePill
+                      kind={view.pill.kind}
+                      label={view.pill.label}
+                      accessibilityLabel={view.pill.accessibilityLabel}
+                    />
+                  </View>
+                )}
+
+                {/*
+                  * THE TIMER SHOWS WHEN; THE WORDS SHOW WHAT.
+                  *
+                  * `connectedAtMs` says when two-way audio was FIRST proven and
+                  * never moves again -- exactly right for a duration and exactly
+                  * wrong for a status. This row used to read "Connected"
+                  * whenever that value existed, so a server that had gone back
+                  * to `connecting` after a renegotiation still showed Connected.
+                  */}
+                {view.timer !== null && (
+                  <Text style={[styles.timer, view.compactIdentity && styles.timerCompact]}>
+                    {view.timer}
+                  </Text>
+                )}
+                {view.connected !== null && (
+                  <View style={styles.stateRow}>
+                    <View style={[styles.stateDot, view.connected.warn && styles.stateDotWarn]} />
+                    <Text
+                      style={[
+                        styles.stateLine,
+                        styles.stateConnected,
+                        view.connected.warn && styles.stateWarn,
+                      ]}
+                    >
+                      {view.connected.words}
+                    </Text>
+                  </View>
+                )}
+
+                {view.stateLine !== null && <Text style={styles.stateLine}>{view.stateLine}</Text>}
+
+                {/* `4 min 51 s · translated`, or nothing: a call that never
+                    connected has no duration to state, and a call whose
+                    translation was never measured claims nothing about it. */}
+                {view.endedLine !== null && <Text style={styles.endedLine}>{view.endedLine}</Text>}
+
+                {/*
+                  * THE TRANSLATION LINE. Drawn only for a call the server has
+                  * called translated, and worded from what was actually measured
+                  * -- the gateway's engine verdict, this phone's playback path,
+                  * refusals, and the proofs. It survives onto the ended screen
+                  * when it is a FAULT, because a fault is a verdict about the
+                  * whole call and the line beneath it must not be the last word.
+                  */}
+                {view.readinessLine !== null && (
+                  <Text
+                    style={[styles.readiness, view.readinessLine.warn && styles.readinessWarn]}
+                  >
+                    {view.readinessLine.words}
+                  </Text>
+                )}
+
+                {/* ===== THE CALL SUMMARY, on the ended screen. ===== */}
+                {view.summary !== null && (
+                  <SummaryCard title={view.summary.title} rows={view.summary.rows} />
+                )}
+
+                {view.hint !== null && <Text style={styles.hint}>{view.hint}</Text>}
+                {cameraStarting && <Text style={styles.hint}>Starting camera…</Text>}
+                {view.cameraNotice && (
+                  <View style={styles.cameraNotice}>
+                    <Icon name="camera-off" size={26} color={CALL_COLORS.muted} />
+                    <View style={{ gap: 2, flexShrink: 1 }}>
+                      <Text style={styles.cameraNoticeTitle}>Your camera is off</Text>
+                      <Text style={styles.cameraNoticeBody}>This is an audio-only call</Text>
+                    </View>
+                  </View>
+                )}
+              </View>
+            </ScrollView>
+            {/* ===== THE DUAL CAPTION, in the space that is kept for it. ===== */}
+            {view.caption !== null && (
+              <View style={[styles.captionSlot, { maxHeight: view.captionSlotMaxDp }]}>
+                <ScrollView
+                  style={styles.captionScroll}
+                  contentContainerStyle={styles.captionScrollContent}
+                  showsVerticalScrollIndicator
+                >
+                  <CaptionCard
+                    speaker={view.caption.speaker}
+                    sourceLabel={view.caption.sourceLabel}
+                    original={view.caption.original}
+                    interim={view.caption.interim}
+                    translation={view.caption.translation}
+                  />
+                </ScrollView>
+              </View>
+            )}
+            </>
           )}
         </View>
       )}
@@ -771,33 +1319,66 @@ export function CallScreen({
 
       <View style={[styles.dockWrap, { paddingBottom: bottomInset + 12 }]}>
         <GlassDock>
-          <View style={styles.controlsRow}>
-            <RoundControl
-              icon={<Icon name={muted ? 'mic-off' : 'mic'} size={26} color={muted ? CALL_COLORS.ground : CALL_COLORS.text} />}
-              label={muted ? 'Unmute' : 'Mute'}
-              active={muted}
-              onPress={toggleMute}
-            />
-            <RoundControl
-              icon={<Icon name="speaker" size={26} color={speakerOn ? CALL_COLORS.ground : CALL_COLORS.text} />}
-              label="Speaker"
-              active={speakerOn}
-              onPress={toggleSpeaker}
-            />
-            <RoundControl
-              icon={<Icon name={cameraOn ? 'camera' : 'camera-off'} size={26} color={cameraOn ? CALL_COLORS.ground : CALL_COLORS.text} />}
-              label={cameraOn ? 'Camera on' : 'Camera off'}
-              active={cameraOn}
-              disabled={cameraStarting}
-              onPress={toggleCamera}
-            />
+          <View style={[styles.controlsRow, view.dockCompact && styles.controlsRowCompact]}>
+            {/*
+              * THE DOCK IS A FIXED SET FOR THE WHOLE OF A PHASE, and which set
+              * belongs to which phase is `callScreenView`'s answer. One red
+              * button while a call is being placed; the same four for the whole
+              * of a live call, so nothing arrives mid-call and shifts the hand
+              * reaching for End sideways; and on the ended screen the board's
+              * two round buttons instead of live controls acting on a dead call.
+              *
+              * ONE ROW, WHICH IS WHERE THE CAPTION CARD'S SPACE CAME FROM. Five
+              * LABELLED controls need 458dp and no portrait phone has it, so
+              * the row wrapped and the dock took a third of the screen. Five
+              * icon-only controls fit 360dp; `dockLabels` is the model's answer
+              * to whether the words fit, and the words are the accessibility
+              * names whether they are drawn or not. `flexWrap` stays as the
+              * last resort for a very large system font.
+              */}
+            {view.dock.map((control) => (
+              <RoundControl
+                key={control.id}
+                icon={dockIcon(control)}
+                label={control.label}
+                active={control.active}
+                disabled={control.disabled}
+                showLabel={view.dockLabels}
+                compact={view.dockCompact}
+                onPress={() => dockPress(control)}
+              />
+            ))}
+            {view.endedActions.includes('call-back') && (
+              <RoundControl
+                icon={<Icon name="phone" size={26} color={CALL_COLORS.text} />}
+                label="Call back"
+                showLabel={view.dockLabels}
+                compact={view.dockCompact}
+                onPress={() => onCallBack?.()}
+              />
+            )}
+            {view.endedActions.includes('message') && (
+              <RoundControl
+                icon={<Icon name="message" size={26} color={CALL_COLORS.text} />}
+                label="Message"
+                showLabel={view.dockLabels}
+                compact={view.dockCompact}
+                onPress={() => onMessagePeer?.()}
+              />
+            )}
             <EndCallButton
-              label={call.kind === 'direct' ? 'End call' : 'Leave'}
+              label={view.endLabel}
               onPress={hangUp}
-              // Pressed once means once. The screen leaves when the request
-              // settles; it does not claim the call ended before the server says.
-              disabled={ending}
-              icon={<Icon name="hangup" size={30} color="#ffffff" />}
+              /*
+               * Pressed once means once -- WHILE the request is in flight. It
+               * used not to say "while": `ending` never cleared, so once the
+               * ended screen became reachable by pressing End, the same button
+               * arrived on it reading "Close" and refusing to be pressed.
+               */
+              disabled={ending && !terminal}
+              showLabel={view.dockLabels}
+              compact={view.dockCompact}
+              icon={<Icon name="hangup" size={28} color="#ffffff" />}
             />
           </View>
         </GlassDock>
@@ -831,16 +1412,40 @@ const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: CALL_COLORS.ground },
   top: { paddingTop: 52, paddingHorizontal: 22 },
   stage: { flex: 1, justifyContent: 'center' },
+  stageScroll: { flex: 1 },
+  // `flexGrow` keeps the column centred while it fits and lets it scroll once
+  // it does not, which is the whole point: nothing is clipped by the dock.
+  stageScrollContent: { flexGrow: 1, justifyContent: 'center', paddingVertical: 12 },
+  /*
+   * THE CARD'S OWN SPACE. Bounded, so it can never take the screen, and
+   * `flexShrink: 0` so the column above it is what yields when the two compete
+   * -- which is the whole ruling: the avatar, the clock and the name give way,
+   * the card does not. A long utterance scrolls INSIDE it rather than pushing
+   * anything off the bottom of the phone.
+   */
+  /*
+   * `maxHeight` is supplied by the model at render time (`captionSlotMaxDp`),
+   * because a flat 216 clipped the last line of an ordinary three-line
+   * translation on every phone, including one with 276dp of stage going spare.
+   */
+  captionSlot: { flexShrink: 0, paddingHorizontal: 16, paddingTop: 6 },
+  captionScroll: { flexGrow: 0 },
+  captionScrollContent: { paddingBottom: 2 },
   identity: { alignItems: 'center', gap: 10, paddingHorizontal: 28 },
   peerName: { color: CALL_COLORS.text, fontSize: 34, fontWeight: '600', fontFamily: 'serif', marginTop: 6, textAlign: 'center', letterSpacing: -0.3 },
+  // With a caption card on screen the name is a label, not the headline.
+  peerNameCompact: { fontSize: 24, marginTop: 2 },
   stateLine: { color: CALL_COLORS.muted, fontSize: 16, textAlign: 'center' },
   stateConnected: { color: CALL_COLORS.teal },
   stateWarn: { color: '#d9a441' },
   stateRow: { flexDirection: 'row', alignItems: 'center', gap: 8 },
   stateDot: { width: 8, height: 8, borderRadius: 4, backgroundColor: CALL_COLORS.teal },
   stateDotWarn: { backgroundColor: '#d9a441' },
-  modePill: { borderRadius: 999, borderWidth: 1, borderColor: 'rgba(62,201,192,0.5)', paddingHorizontal: 14, paddingVertical: 5, backgroundColor: 'rgba(62,201,192,0.08)' },
-  modePillLabel: { color: CALL_COLORS.teal, fontSize: 13, fontWeight: '600' },
+  pillRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', flexWrap: 'wrap', gap: 8 },
+  peerNameEnded: { color: CALL_COLORS.muted },
+  endedLine: { color: CALL_COLORS.text, fontSize: 16, fontVariant: ['tabular-nums'], textAlign: 'center' },
+  readiness: { color: CALL_COLORS.muted, fontSize: 14, textAlign: 'center', lineHeight: 20, marginTop: 2 },
+  readinessWarn: { color: '#d9a441' },
   cameraNotice: {
     marginTop: 18,
     flexDirection: 'row',
@@ -866,6 +1471,9 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     marginTop: 4,
   },
+  // 56pt of clock is the ended screen's and the plain live call's; with a
+  // caption card to fit, the clock is the second thing to yield after the face.
+  timerCompact: { fontSize: 36, marginTop: 0 },
   timerSmall: { color: CALL_COLORS.muted, fontSize: 18, fontVariant: ['tabular-nums'] },
   hint: { color: CALL_COLORS.faint, fontSize: 13, textAlign: 'center', lineHeight: 19, marginTop: 8 },
   code: { color: CALL_COLORS.teal, fontSize: 24, fontFamily: 'monospace', letterSpacing: 2, marginTop: 6 },
@@ -887,6 +1495,23 @@ const styles = StyleSheet.create({
   },
   peerVideoName: { color: CALL_COLORS.text, fontSize: 14, fontWeight: '600', flex: 1 },
   peerVideoTimer: { color: CALL_COLORS.text, fontSize: 14, fontVariant: ['tabular-nums'] },
+  /* The two sentences that must survive a camera coming on. */
+  peerVideoState: {
+    position: 'absolute',
+    left: 12,
+    right: 12,
+    bottom: 12,
+    gap: 4,
+    borderRadius: 16,
+    backgroundColor: 'rgba(7,12,20,0.72)',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+  },
+  peerVideoEnded: { color: CALL_COLORS.text, fontSize: 15, fontVariant: ['tabular-nums'] },
+  peerVideoWarn: { color: '#d9a441', fontSize: 14, lineHeight: 20 },
+  // The caption-only state belongs here too and is not a fault; amber would be
+  // a claim the phone cannot make. It is drawn in the ordinary text colour.
+  peerVideoQuiet: { color: CALL_COLORS.text },
 
   tiles: { paddingHorizontal: 12, gap: 12 },
   tile: { gap: 6 },
@@ -922,7 +1547,20 @@ const styles = StyleSheet.create({
   diag: { color: CALL_COLORS.faint, fontSize: 11, fontFamily: 'monospace' },
 
   dockWrap: { paddingHorizontal: 14 },
-  controlsRow: { flexDirection: 'row', justifyContent: 'space-around', alignItems: 'flex-start' },
+  controlsRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    alignItems: 'flex-start',
+    // Six, which is what callTheme's arithmetic has claimed for two rounds
+    // while this said eight: the row measured 358 against 360 rather than the
+    // 350 the comment computed, and two dp is not a margin.
+    columnGap: 6,
+    rowGap: 14,
+  },
+  // The narrow-screen row, chosen by `dockCompact` rather than fallen into by
+  // `flexWrap`. See ../call/callScreenModel.ts.
+  controlsRowCompact: { columnGap: 4 },
 
   confTitle: { color: CALL_COLORS.text, fontSize: 20, fontWeight: '600', fontFamily: 'serif', marginTop: 10, letterSpacing: -0.2 },
 

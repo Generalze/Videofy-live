@@ -15,7 +15,7 @@
 import type { ContactPerson, PresenceState, SuggestedPerson } from '../api/client';
 
 /** Not a secret: `EXPO_PUBLIC_` values are compiled into the bundle. */
-export const WEB_URL = process.env['EXPO_PUBLIC_WEB_URL'] ?? 'https://staging.consummate7.com';
+export const WEB_URL = process.env.EXPO_PUBLIC_WEB_URL ?? 'https://staging.consummate7.com';
 
 export const LANGUAGE_NAMES: Readonly<Record<string, string>> = {
   en: 'English',

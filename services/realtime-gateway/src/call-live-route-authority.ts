@@ -112,15 +112,45 @@ export function createCallLiveRouteAuthority(
   return {
     approved(sourceLanguage, targetLanguage) {
       /*
+       * BLANK IS NOT A LANGUAGE, AND TWO BLANKS ARE NOT "THE SAME LANGUAGE".
+       *
+       * MEASURED IN PRODUCTION, 22 Sep 2026. A translated en/fr call connected
+       * on a route that is `unapproved` for call-live, and nobody was refused.
+       * The registry was right -- asked directly it answers allowed=false for
+       * both directions -- and the call still ran, because the caller's client
+       * had not resolved its profile yet and sent NO languages. Two empty
+       * strings reached here, compared equal, and took the same-language
+       * shortcut below as though there were nothing to translate. The pair
+       * then heard a machine voice reading their own words back at them for
+       * three minutes.
+       *
+       * An absent language is a question this call cannot answer yet, and the
+       * answer to a question you cannot answer is no.
+       */
+      const source = normalise(sourceLanguage);
+      const target = normalise(targetLanguage);
+      if (source.length === 0 || target.length === 0) return false;
+      /*
        * SAME LANGUAGE IS NOT A TRANSLATION. Nothing is produced, so nothing
        * needs approving -- and refusing it would block an ordinary call
        * between two people who already share a language.
        */
-      if (normalise(sourceLanguage) === normalise(targetLanguage)) return true;
+      if (source === target) return true;
       return registry.mayTranslate(sourceLanguage, targetLanguage, 'call-live').allowed;
     },
     explain(sourceLanguage, targetLanguage) {
-      if (normalise(sourceLanguage) === normalise(targetLanguage)) {
+      const source = normalise(sourceLanguage);
+      const target = normalise(targetLanguage);
+      if (source.length === 0 || target.length === 0) {
+        // Named precisely, because "not approved" would send the next person
+        // to the route document when the fault is that nobody said a language.
+        return (
+          'this call did not state both languages, so no call-live route could ' +
+          'be checked. A translated call is refused until it says what is spoken ' +
+          'and what is to be heard.'
+        );
+      }
+      if (source === target) {
         return `${sourceLanguage}->${targetLanguage} needs no translation`;
       }
       const decision = registry.mayTranslate(sourceLanguage, targetLanguage, 'call-live');

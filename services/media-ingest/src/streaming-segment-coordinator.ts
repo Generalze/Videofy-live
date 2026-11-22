@@ -75,6 +75,13 @@ export interface SegmentCommitRecord {
   readonly hadText: boolean;
 }
 
+/**
+ * How long one segment may stay open under `stabilized` before it is
+ * committed regardless. See `armMaxUtterance` for why this has a default at
+ * all rather than being a deployment's business.
+ */
+export const DEFAULT_MAX_UTTERANCE_MS = 15_000;
+
 export interface StreamingSegmentCoordinatorDeps {
   readonly sessionId: string;
   readonly streamId: string;
@@ -84,7 +91,13 @@ export interface StreamingSegmentCoordinatorDeps {
   readonly commitPolicy: SegmentCommitPolicy;
   /** Window for `stabilized`; ignored by `aggressive`. */
   readonly stabilizationMs?: number;
-  /** Backstop so a speaker who never pauses still produces segments. */
+  /**
+   * Backstop so a speaker who never pauses still produces segments.
+   *
+   * Absent means the policy decides: `stabilized` gets
+   * `DEFAULT_MAX_UTTERANCE_MS`, `aggressive` needs none. An explicit 0
+   * disables it.
+   */
   readonly maxUtteranceMs?: number;
   readonly onEvent: (event: TranscriptEvent) => void;
   readonly now?: () => number;
@@ -354,7 +367,36 @@ export class StreamingSegmentCoordinator {
   }
 
   private armMaxUtterance(): void {
-    const limit = this.deps.maxUtteranceMs;
+    /*
+     * A DEFAULT, BECAUSE "NO BACKSTOP" IS NEVER A SENSIBLE STATE HERE.
+     *
+     * FOUND BY AUDIT, 29 Sep 2026. This option was plumbed through three
+     * layers -- coordinator, pipeline, session host -- and the composition
+     * root passed it at none of them, so the backstop was armed on no stream
+     * this service has ever run.
+     *
+     * Under `stabilized`, which is what a PROGRAMME uses, a segment closes
+     * only after a 300 ms gap, and every incoming partial cancels the pending
+     * boundary. A presenter in full flow produces partials faster than that,
+     * so the segment never closes and NOTHING reaches translation or
+     * synthesis for the length of the monologue. Captions keep flowing,
+     * because those are partials, so every signal looks alive.
+     *
+     * Making the caller supply it is what failed. The commit policy already
+     * says whether a backstop is needed: `aggressive` commits on the first
+     * signal and cannot hang, `stabilized` can. So the default is derived
+     * from the policy rather than remembered.
+     *
+     * FIFTEEN SECONDS is a backstop, not a target. The 300 ms gap wins on
+     * ordinary speech; this only fires for somebody who has spoken fifteen
+     * continuous seconds without one, which is already pathological. A
+     * sentence cut at a clause boundary translates worse than a whole one and
+     * infinitely better than silence. Explicitly setting 0 still disables it,
+     * for a caller that genuinely wants no bound.
+     */
+    const limit =
+      this.deps.maxUtteranceMs ??
+      (this.deps.commitPolicy === 'stabilized' ? DEFAULT_MAX_UTTERANCE_MS : undefined);
     if (limit === undefined || limit <= 0) return;
     this.maxHandle = this.timers.setTimer(() => {
       this.maxHandle = null;

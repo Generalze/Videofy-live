@@ -46,9 +46,28 @@ export interface SignInScreenProps {
   readonly onCreateAccount: () => void;
   /** Shown when a session ended by itself rather than by choice. */
   readonly notice?: string | undefined;
+  /**
+   * The "or continue with" row, composed by the caller.
+   *
+   * A SLOT rather than a set of handlers, because the provider flows need
+   * hooks -- Google's request is one -- and hooks belong where the app is
+   * composed, not inside a presentational screen. It also keeps this screen
+   * renderable in a test without a browser or a native module anywhere near
+   * it. Absent means no row, which is the normal state while the switches
+   * are off.
+   */
+  readonly renderProviders?: () => JSX.Element | null;
+  /** A provider sign-in's own failure, shown above the password button. */
+  readonly providerError?: string | null;
 }
 
-export function SignInScreen({ onSignIn, onCreateAccount, notice }: SignInScreenProps): JSX.Element {
+export function SignInScreen({
+  onSignIn,
+  onCreateAccount,
+  notice,
+  renderProviders,
+  providerError,
+}: SignInScreenProps): JSX.Element {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -81,7 +100,7 @@ export function SignInScreen({ onSignIn, onCreateAccount, notice }: SignInScreen
   return (
     <KeyboardAvoidingView
       style={styles.fill}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
     >
       <ScrollView contentContainerStyle={styles.screen} keyboardShouldPersistTaps="handled">
         <Text style={styles.brand}>CONSUMMATE 7</Text>
@@ -128,9 +147,11 @@ export function SignInScreen({ onSignIn, onCreateAccount, notice }: SignInScreen
           />
         </View>
 
-        {error !== null && (
+        {/* One place for both, so a provider failure cannot end up somewhere
+            the eye is not already looking after a failed attempt. */}
+        {(error ?? providerError ?? null) !== null && (
           <View style={styles.error} accessibilityLiveRegion="polite">
-            <Text style={styles.errorText}>{error}</Text>
+            <Text style={styles.errorText}>{error ?? providerError}</Text>
           </View>
         )}
 
@@ -150,6 +171,8 @@ export function SignInScreen({ onSignIn, onCreateAccount, notice }: SignInScreen
             <Text style={styles.buttonLabel}>Sign in</Text>
           )}
         </Pressable>
+
+        {renderProviders?.() ?? null}
 
         <Pressable onPress={onCreateAccount} style={styles.link} accessibilityRole="button">
           <Text style={styles.linkLabel}>Create a C7 account</Text>

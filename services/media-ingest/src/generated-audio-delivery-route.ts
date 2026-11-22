@@ -45,32 +45,44 @@ export interface GeneratedAudioReleaseGuard {
 export function registerGeneratedAudioDeliveryRoute(
   app: express.Express,
   ingest: GeneratedAudioDeliveryService,
+  /**
+   * The audience door. REQUIRED, so this route cannot be registered without
+   * one -- it was registered without one until 29 Sep 2026, and the session
+   * id it keys on is broadcast to every listener on the channel.
+   */
+  audience: express.RequestHandler,
   guard?: GeneratedAudioReleaseGuard,
 ): void {
-  app.get('/sessions/:sessionId/generated-audio/segments/:segmentId/audio', async (req, res) => {
-    try {
-      const release = guard?.assess(req.params.sessionId, req.params.segmentId) ?? 'not-governed';
-      if (release === 'not-yet-public') {
-        /*
-         * Refused, and told apart from "no such segment" in the status rather
-         * than the body: an operator needs to see somebody counting, and a
-         * caller learns nothing they did not already suppose.
-         */
-        res.status(403).json({ error: 'That segment has not been released yet.' });
-        return;
+  app.get(
+    '/sessions/:sessionId/generated-audio/segments/:segmentId/audio',
+    audience,
+    async (req, res) => {
+      try {
+        const release =
+          guard?.assess(String(req.params['sessionId']), String(req.params['segmentId'])) ??
+          'not-governed';
+        if (release === 'not-yet-public') {
+          /*
+           * Refused, and told apart from "no such segment" in the status
+           * rather than the body: an operator needs to see somebody counting,
+           * and a caller learns nothing they did not already suppose.
+           */
+          res.status(403).json({ error: 'That segment has not been released yet.' });
+          return;
+        }
+        const targetLanguage =
+          typeof req.query['language'] === 'string' ? req.query['language'] : undefined;
+        const file = await ingest.getGeneratedAudioFile(
+          String(req.params['sessionId']),
+          String(req.params['segmentId']),
+          targetLanguage,
+        );
+        sendGeneratedAudioFile(req.headers.range, file, res);
+      } catch (error) {
+        sendIngestError(res, error);
       }
-      const targetLanguage =
-        typeof req.query['language'] === 'string' ? req.query['language'] : undefined;
-      const file = await ingest.getGeneratedAudioFile(
-        req.params.sessionId,
-        req.params.segmentId,
-        targetLanguage,
-      );
-      sendGeneratedAudioFile(req.headers.range, file, res);
-    } catch (error) {
-      sendIngestError(res, error);
-    }
-  });
+    },
+  );
 }
 
 export function sendGeneratedAudioFile(

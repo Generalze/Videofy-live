@@ -1,0 +1,353 @@
+{
+ "engine": "m2m100",
+ "languages": [
+  "ko"
+ ],
+ "resolved": {},
+ "refused": [],
+ "load_seconds": {
+  "m2m100": 1.6
+ },
+ "peak_rss_mb": 5303.3,
+ "rows": [
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "money",
+   "source": "The price is two thousand naira per bag.",
+   "output": "가격은 가방 당 2천 나이라입니다.",
+   "latency_ms": 2831.8,
+   "defects": [
+    "quantity-unverified:2000",
+    "lexical-unverified:naira"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "money",
+   "source": "Please send 45,000 naira to my account today.",
+   "output": "오늘 내 계좌에 45,000 나이라를 보내 주십시오.",
+   "latency_ms": 2700.2,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "money",
+   "source": "I have received the money you sent.",
+   "output": "당신이 보낸 돈을 받았습니다.",
+   "latency_ms": 1880.5,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "money",
+   "source": "I have not received the money you sent.",
+   "output": "당신이 보낸 돈을 받지 못했습니다.",
+   "latency_ms": 2011.7,
+   "defects": [
+    "negation-unverified(ko)"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "money",
+   "source": "Your balance is 12,500 naira.",
+   "output": "당신의 균형은 12,500 나이라입니다.",
+   "latency_ms": 1996.9,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "phone",
+   "source": "Call me on 08031234567 when you arrive.",
+   "output": "08031234567에 전화하면 도착합니다.",
+   "latency_ms": 2570.8,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "account",
+   "source": "Transfer to account 0123456789 at First Bank.",
+   "output": "첫 번째 은행에서 0123456789 계좌로 송금합니다.",
+   "latency_ms": 3417.7,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "otp",
+   "source": "Your verification code is 483920. Do not share it.",
+   "output": "귀하의 인증 코드는 483920.이를 공유하지 마십시오.",
+   "latency_ms": 3462.1,
+   "defects": [
+    "negation-unverified(ko)"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "url",
+   "source": "Read more at https://consummate7.com/help before you call.",
+   "output": "당신이 전화를 걸기 전에 https://consummate7.com/help에 더 많은 것을 읽으십시오.",
+   "latency_ms": 3989.2,
+   "defects": [
+    "wrong-script(Latn, expected Kore)"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "datetime",
+   "source": "The event starts at four thirty on the fifteenth of March.",
+   "output": "이벤트는 3월 15일 4시 30분에 시작됩니다.",
+   "latency_ms": 2685.1,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "datetime",
+   "source": "The meeting has been moved to 15 March at 4:30.",
+   "output": "회의는 3월 15일 오후 4시 30분으로 옮겨졌다.",
+   "latency_ms": 3543.3,
+   "defects": [
+    "lexical-unverified:March"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "entity",
+   "source": "My name is Zoe and I work in Lagos.",
+   "output": "제 이름은 Zoe이고 Lagos에서 일하고 있습니다.",
+   "latency_ms": 2860.5,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "entity",
+   "source": "Adebayo travelled from Abeokuta to Kano last night.",
+   "output": "Adebayo는 어제 밤 Abeokuta에서 Kano로 여행했습니다.",
+   "latency_ms": 2682.9,
+   "defects": [
+    "wrong-script(Latn, expected Kore)"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "negation",
+   "source": "Do not send the payment yet.",
+   "output": "아직 지불을 보내지 마십시오.",
+   "latency_ms": 1961.7,
+   "defects": [
+    "negation-unverified(ko)"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "negation",
+   "source": "I did not say that I would not come.",
+   "output": "나는 오지 않을 것이라고 말하지 않았다.",
+   "latency_ms": 2271.8,
+   "defects": [
+    "negation-unverified(ko)"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "negation",
+   "source": "She has not arrived at the office.",
+   "output": "그녀는 사무실에 도착하지 않았다.",
+   "latency_ms": 2419.1,
+   "defects": [
+    "negation-unverified(ko)"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "health",
+   "source": "Take one tablet twice a day after eating.",
+   "output": "식사 후 하루에 두 번 약을 복용하십시오.",
+   "latency_ms": 3342.4,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "health",
+   "source": "Do not give this medicine to a child under five years old.",
+   "output": "이 약을 5 세 미만의 어린이에게주지 마십시오.",
+   "latency_ms": 2933.9,
+   "defects": [
+    "lexical-unverified:five",
+    "negation-unverified(ko)"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "agriculture",
+   "source": "The rains will start next month, so prepare the land now.",
+   "output": "다음 달에 비가 오기 시작하니 이제 땅을 준비하십시오.",
+   "latency_ms": 2899.5,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "business",
+   "source": "We need to sign the agreement before the end of the month.",
+   "output": "우리는 달이 끝나기 전에 계약에 서명해야합니다.",
+   "latency_ms": 4228.4,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "broadcast",
+   "source": "Good morning everyone, and welcome to this broadcast.",
+   "output": "안녕하세요 여러분, 그리고 이 방송에 오신 것을 환영합니다.",
+   "latency_ms": 3570.5,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "conversation",
+   "source": "How are you doing this evening?",
+   "output": "당신은 오늘 밤 어떻게 지내십니까?",
+   "latency_ms": 2032.5,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "conversation",
+   "source": "Please send me the address before you leave.",
+   "output": "떠나기 전에 주소를 보내주시기 바랍니다.",
+   "latency_ms": 2183.1,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "multi",
+   "source": "I am on my way. Please wait for me at the gate. I will be there soon.",
+   "output": "나는 길을 가고있다.내가 곧 그곳에있을 것이다.",
+   "latency_ms": 3281.5,
+   "defects": [
+    "omission(2/3 clauses, 38% length)"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "multi",
+   "source": "The meeting is cancelled. We will meet tomorrow instead.",
+   "output": "회의는 취소되었는데, 내일 회의가 다가옵니다.",
+   "latency_ms": 3274.1,
+   "defects": [
+    "omission(1/2 clauses, 45% length)"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "long",
+   "source": "Thank you for your message. I have spoken to the supplier and the goods will arrive on Friday morning. Please make sure somebody is at the shop to receive them, and call me if there is any problem with the delivery.",
+   "output": "당신의 메시지 감사합니다.나는 공급자와 이야기하고 물건은 금요일 아침에 도착합니다.당신이 가게에있는 누군가가 그들을받을 수 있는지 확인하고, 배달에 문제가있는 경우 나에게 전화하십시오.",
+   "latency_ms": 9153.2,
+   "defects": [
+    "lexical-unverified:Friday"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "blank",
+   "source": "",
+   "output": "",
+   "latency_ms": 0.0,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "emoji-only",
+   "source": "👍👍",
+   "output": "",
+   "latency_ms": 758.8,
+   "defects": [
+    "empty-output"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "number-only",
+   "source": "45000",
+   "output": "45000원",
+   "latency_ms": 736.5,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "code-only",
+   "source": "OTP-483920",
+   "output": "오프화이트 483920",
+   "latency_ms": 1946.5,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "punctuation",
+   "source": "???!!!",
+   "output": "다들 다들 다들 다들 다들 다들 다들 다들 다들",
+   "latency_ms": 2789.7,
+   "defects": [
+    "invented-from-non-linguistic('다들 다들 다들 다들 다들 다들 다들 다들 다들')",
+    "repetition-loop(다들)"
+   ]
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "mixed",
+   "source": "Abeg send the money before 5pm 🙏",
+   "output": "Abeg는 오후 5시 이전에 돈을 보냅니다.",
+   "latency_ms": 2723.0,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "emoji-text",
+   "source": "Congratulations on the new baby 🎉 we are very happy for you.",
+   "output": "새로 태어난 아기를 축하합니다  우리는 당신을 위해 매우 행복합니다.",
+   "latency_ms": 4008.9,
+   "defects": []
+  },
+  {
+   "engine": "m2m100",
+   "direction": "en->ko",
+   "category": "hashtag",
+   "source": "Join us tonight #VideofyLive for the broadcast.",
+   "output": "오늘 밤 #VideofyLive에 우리와 함께 방송하십시오.",
+   "latency_ms": 3013.7,
+   "defects": []
+  }
+ ]
+}

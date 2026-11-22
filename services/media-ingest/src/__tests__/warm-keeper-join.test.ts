@@ -18,9 +18,33 @@
  * So these assertions are about the JOIN and nothing else: does building the
  * live stack produce warm-up traffic on a timer, and does it stop when nobody
  * is using it. Related lesson: [[unwired-seam-tally]].
+ *
+ * THE APPROVED VOICE NO LONGER SCALES TO ZERO, and this suite is kept anyway.
+ * Since the founder ruling of 2026-09-18 the Nigerian languages go to
+ * ElevenLabs, which is always up, so on today's configuration there is nothing
+ * to keep awake -- see the sibling assertion in `nigerian-language-wiring`
+ * that no keeper is built for it, because an unread ping every four minutes is
+ * a real bill.
+ *
+ * The ruling is mocked below so the JOIN is still proved: when the approved
+ * vendor IS one that sleeps, the wiring keeps it awake and real demand feeds
+ * the keeper. Deleting this suite would leave that join unproved for whoever
+ * next selects such a vendor, which is exactly how it came to be unwired the
+ * first time.
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { buildLiveSynthesis } from '../live-provider-wiring.js';
+
+vi.mock('@videofy-live/ai-registry', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@videofy-live/ai-registry')>();
+  return {
+    ...actual,
+    // A vendor whose capacity scales to zero, which is the whole subject here.
+    NIGERIAN_SPECIALIST_PROVIDER_ID: 'naijalingo',
+    NIGERIAN_TTS_ROUTE_ORDER: ['naijalingo'],
+  };
+});
+
+const { buildLiveSynthesis } = await import('../live-provider-wiring.js');
 
 interface Probe {
   readonly warmUps: () => number;

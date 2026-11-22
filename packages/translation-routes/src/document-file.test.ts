@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
-import { documentOf, route } from './document.fixtures.js';
+import { approvedBy, documentOf, route } from './document.fixtures.js';
 import {
   ROUTE_DOCUMENT_PATH_ENV_VAR,
   SEED_DOCUMENT_PATH,
@@ -66,6 +66,7 @@ describe('reading the document', () => {
             provider: 'opus-mt',
             modelId: 'Helsinki-NLP/opus-mt-en-fr',
             productionApproved: true,
+            approval: approvedBy('messaging'),
             humanReviewStatus: 'passed',
             licenceStatus: {
               licence: 'Apache-2.0',

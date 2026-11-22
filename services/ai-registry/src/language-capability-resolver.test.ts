@@ -5,6 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { LANGUAGE_CATALOGUE } from '@videofy-live/language-catalogue';
+import { NIGERIAN_SPECIALIST_PROVIDER_ID } from './commercial-routing.js';
 import { COMMERCIAL_PROVIDERS, type CommercialProvider } from './commercial-providers.js';
 import {
   isOfferableSource,
@@ -86,7 +87,7 @@ describe('resolveLanguageCapabilities', () => {
      * documentation is not evidence either.
      */
     const neverRun: CommercialProvider[] = COMMERCIAL_PROVIDERS.map((provider) => {
-      if (provider.providerId === 'naijalingo') {
+      if (provider.providerId === NIGERIAN_SPECIALIST_PROVIDER_ID) {
         return { ...provider, integrationStage: 'configured', liveObservations: [] };
       }
       return provider.providerId === 'deepgram'
@@ -101,7 +102,10 @@ describe('resolveLanguageCapabilities', () => {
     });
     const yoruba = row('yo', resolveLanguageCapabilities({ providers: neverRun }));
     expect(yoruba.tts).toBe(true);
-    expect(yoruba.providers.tts).toBe('naijalingo');
+    expect(yoruba.providers.tts).toBe(NIGERIAN_SPECIALIST_PROVIDER_ID);
+    // Stripped of its observations the approved voice is back to a CLAIM, and
+    // reads as limited however explicit its documentation is. That is the rule,
+    // and it does not care which vendor is currently approved.
     expect(yoruba.state).toBe('limited');
   });
 
@@ -276,12 +280,19 @@ describe('the stage matrix', () => {
 });
 
 describe('the Nigerian specialist rule', () => {
-  it('never lets a general vendor rise above limited for ha, ig, yo or pcm', () => {
+  it('never lets a general vendor serve ha, ig, yo or pcm at all', () => {
     /*
      * Azure with those four languages VERIFIED and a live observation naming
      * them -- the strongest evidence the model can express. It still must not
-     * read as available, because the evidence is about HTTP, and the 2026-08-26
+     * serve them, because the evidence is about HTTP and the 2026-08-26
      * listening test is about the audio.
+     *
+     * STRONGER SINCE 2026-09-18. It used to read `limited` and degraded: Azure
+     * was the one named fallback, so imperfect Yoruba beat silence. The chain
+     * is now the approved voice alone, so without it the honest answer is that
+     * nothing can speak the language -- `unavailable`, with a reason naming
+     * the key that would fix it. Silence a listener can be told about beats
+     * audio they cannot tell is wrong.
      */
     const overClaimingAzure: CommercialProvider[] = COMMERCIAL_PROVIDERS.map((provider) =>
       provider.providerId === 'azure'
@@ -307,28 +318,45 @@ describe('the Nigerian specialist rule', () => {
     );
     const rows = resolveLanguageCapabilities({
       providers: overClaimingAzure,
-      // 9jaLingo is registered but NOT configured on this deployment.
-      configuredProviderIds: ['deepgram', 'elevenlabs', 'azure', 'google-cloud', 'opus-mt', 'm2m100', 'nllb-200', 'piper', 'mms-tts'],
+      // The APPROVED voice is not configured on this deployment; Azure is.
+      configuredProviderIds: ['deepgram', 'azure', 'google-cloud', 'opus-mt', 'm2m100', 'nllb-200', 'piper', 'mms-tts'],
     });
     for (const code of NIGERIAN) {
       const language = row(code, rows);
-      expect(language.stageStates.tts, code).toBe('limited');
+      // Azure over-claims as hard as the model allows and still serves none of
+      // them: it is not in the chain, so its evidence cannot promote it in.
+      expect(language.stageStates.tts, code).toBe('unavailable');
+      expect(language.providers.tts, code).not.toBe('azure');
       expect(STATE_RANK[language.targetState], code).toBeLessThanOrEqual(STATE_RANK.limited);
-      expect(language.degraded, code).toBe(true);
-      expect(language.providers.tts, code).toBe('azure');
-      expect(language.reason, code).toMatch(/DEGRADED/);
-      expect(language.reason, code).toMatch(/9jaLingo/);
-      expect(language.reason, code).toMatch(/NAIJALINGO_API_KEY/);
     }
   });
 
-  it('stops being degraded once the specialist is configured, and still does not overstate', () => {
+  it('is QUALIFIED once the approved voice is configured, on the listening that earned it', () => {
+    /*
+     * The positive case of the same rule, and the one that changed on
+     * 2026-09-18. ElevenLabs does not LIST these languages -- its published
+     * set is 29 languages and none of them are Nigerian -- and it is verified
+     * for them anyway, on a founder listening that judged all three better
+     * than the specialist. For these four a published list has never been the
+     * evidence that counts; a person hearing it is.
+     */
     const rows = resolveLanguageCapabilities({
-      configuredProviderIds: ['deepgram', 'azure', 'naijalingo', 'opus-mt', 'm2m100', 'nllb-200'],
+      configuredProviderIds: ['deepgram', 'elevenlabs', 'opus-mt', 'm2m100', 'nllb-200'],
     });
     for (const code of NIGERIAN) {
       const language = row(code, rows);
-      expect(language.providers.tts, code).toBe('naijalingo');
+      expect(language.providers.tts, code).toBe('elevenlabs');
+      expect(language.degraded, code).toBeUndefined();
+    }
+  });
+
+  it('stops being degraded once the approved voice is configured, and still does not overstate', () => {
+    const rows = resolveLanguageCapabilities({
+      configuredProviderIds: ['deepgram', 'azure', 'elevenlabs', 'opus-mt', 'm2m100', 'nllb-200'],
+    });
+    for (const code of NIGERIAN) {
+      const language = row(code, rows);
+      expect(language.providers.tts, code).toBe('elevenlabs');
       expect(language.degraded, code).toBeUndefined();
     }
 

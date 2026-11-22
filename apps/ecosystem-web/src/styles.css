@@ -2064,6 +2064,74 @@ button:focus-visible {
   color: #ffffff;
 }
 
+/*
+ * The provider row.
+ *
+ * Below the password form, not above it: an account with a password is the
+ * way in that always works, and the providers are an alternative to it
+ * rather than the headline. The whole block renders nothing at all while
+ * both switches are off, so these rules are usually unused -- which is why
+ * nothing above them reserves space for it.
+ */
+.join-providers {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.75rem;
+  margin-top: 1.25rem;
+}
+
+/*
+ * A rule either side of the words. aria-hidden on the element, because "or
+ * continue with" read aloud between a submit button and two more buttons
+ * adds nothing a screen reader has not already been told by the buttons.
+ */
+.join-providers-label {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  margin: 0;
+  color: var(--c7-text-muted, #aab5c9);
+  font-size: 0.82rem;
+  text-transform: lowercase;
+}
+
+.join-providers-label::before,
+.join-providers-label::after {
+  content: '';
+  flex: 1;
+  height: 1px;
+  background: rgba(255, 255, 255, 0.14);
+}
+
+/*
+ * Google renders its own button in here and sizes it itself, so this sets
+ * the box and nothing inside it. Styling Google's button is also against
+ * their branding terms.
+ */
+.join-provider-slot {
+  display: flex;
+  justify-content: center;
+  min-height: 44px;
+  width: 100%;
+}
+
+.join-provider-button {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  color: #ffffff;
+}
+
+.join-provider-button:hover:not(:disabled) {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.join-provider-button:disabled {
+  opacity: 0.6;
+  cursor: progress;
+}
+
 .join-done h3 {
   font-size: 1.5rem;
 }

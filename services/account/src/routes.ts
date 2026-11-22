@@ -148,6 +148,24 @@ export interface AccountRouteDependencies {
    * list and profiles simply omit it -- never a made-up 'away'.
    */
   readonly presence?: PresenceRegistry;
+  /**
+   * Tells somebody that a person has asked to add them. Optional: without it
+   * the contact graph behaves exactly as before and simply stays silent.
+   */
+  readonly push?: {
+    notify: (
+      accountId: string,
+      notification: {
+        kind: 'system';
+        privacy: 'visible';
+        urgency: 'normal';
+        title: string;
+        body: string;
+        data: Readonly<Record<string, string>>;
+        collapseId?: string;
+      },
+    ) => Promise<unknown>;
+  };
 }
 
 interface Body {
@@ -1299,6 +1317,41 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
   });
 
   /**
+   * Which standard voice speaks this person's TRANSLATED WORDS: male or
+   * female. Set at registration and, until 27 Sep 2026, frozen there -- the
+   * store could change it (`setVoiceGender`) and no route reached it, so
+   * nobody could. Returned on sign-in and `GET /sessions/current`, which is
+   * where the phone reads it for the call join.
+   *
+   * A VOICE PREFERENCE, NOT A GENDER. The field is named `voiceGender` on
+   * the wire because that is the contract the session already carries; what
+   * it names is how the words are rendered, nothing about the person. There
+   * is no gender on the profile, and adding one is the founder's decision.
+   */
+  app.post('/accounts/voice', (req, res) => {
+    const caller = callerAccountId(req);
+    if (caller === null) {
+      res.status(401).json({ error: 'Sign in to continue.' });
+      return;
+    }
+    const requested = voiceGenderOf(req.body);
+    if (requested === undefined) {
+      res.status(400).json({ error: 'Choose the male or the female voice.' });
+      return;
+    }
+    void deps.store
+      .setVoiceGender(caller.accountId, requested)
+      .then((record) => {
+        if (!record) {
+          res.status(401).json({ error: 'Sign in to continue.' });
+          return;
+        }
+        res.status(200).json({ voiceGender: record.voiceGender ?? null });
+      })
+      .catch(() => res.status(500).json({ error: 'That could not be saved.' }));
+  });
+
+  /**
    * The language this person's calls enter with. Speak and hear both preload
    * from it on the join screen; either can still be changed per call.
    */
@@ -1631,6 +1684,38 @@ export function registerAccountRoutes(app: express.Express, deps: AccountRouteDe
            * "waiting on them" from "they never saw it".
            */
           if (outcome.ok || outcome.reason === 'blocked' || outcome.reason === 'already-requested') {
+            /*
+             * ONLY `outcome.ok` NOTIFIES, and that is the whole point of
+             * putting this inside the branch rather than after it.
+             *
+             * `blocked` and `already-requested` answer like a success on
+             * purpose (see above). Pushing on either would undo that in the
+             * one place it matters most: a blocked person would learn they
+             * are blocked by watching whether the other phone lit up, and a
+             * repeat request would become a way to ring somebody at will.
+             *
+             * VISIBLE, AND NAMELESS. `discreet` would be the instinct here --
+             * "X wants to add you" on a lock screen discloses a relationship
+             * to whoever is holding the phone -- but discreet notifications
+             * are redacted to nothing and then sent data-only, which on
+             * Android draws no notification at all. That is exactly why
+             * message pushes were delivered for months and never seen. So
+             * the words stay, and the name does not: the request itself is
+             * in the app, where it is read by the person it belongs to.
+             */
+            if (outcome.ok && deps.push && target.notificationsEnabled !== false) {
+              void deps.push
+                .notify(target.accountId, {
+                  kind: 'system',
+                  privacy: 'visible',
+                  urgency: 'normal',
+                  title: 'Contact request',
+                  body: 'Someone wants to add you on C7',
+                  data: { kind: 'contact-request', fromAccountId: caller.accountId },
+                  collapseId: `contact-request-${caller.accountId}`,
+                })
+                .catch(() => undefined);
+            }
             res.status(202).json({ requested: true });
             return;
           }

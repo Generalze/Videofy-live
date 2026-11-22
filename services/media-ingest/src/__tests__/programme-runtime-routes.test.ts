@@ -38,12 +38,23 @@ async function get(
   }
 }
 
+/**
+ * A guard that admits everybody, so the cases below measure the ROUTE.
+ *
+ * Explicit rather than absent: the route took no guard at all until 29 Sep
+ * 2026 and the docblock claimed otherwise, so the dependency is required now
+ * and a test has to state which one it is using. The case at the bottom
+ * exercises a guard that refuses.
+ */
+const allowEveryone: express.RequestHandler = (_req, _res, next) => next();
+
 function appWith(
   performance: ProgrammePerformanceRegistry,
   timelines: ProgrammeTimelineRegistry,
+  operatorOnly: express.RequestHandler = allowEveryone,
 ): express.Express {
   const app = express();
-  registerProgrammeRuntimeRoutes(app, { performance, timelines });
+  registerProgrammeRuntimeRoutes(app, { performance, timelines, operatorOnly });
   return app;
 }
 
@@ -179,5 +190,39 @@ describe('the runtime view carries no content', () => {
     // And the vocabulary that IS reported carries no terms.
     const vocabulary = reply.body['vocabulary'] as Record<string, unknown>;
     expect(Object.keys(vocabulary).sort()).toEqual(['revision', 'state', 'termCount']);
+  });
+});
+
+/**
+ * THE GUARD IS THE ROUTE'S, NOT THE DEPLOYMENT'S.
+ *
+ * Every other operator route on this service carried `operatorOnly`; this one
+ * carried nothing, behind `Access-Control-Allow-Origin: *`, while its own
+ * docblock asserted it sat "behind the same trust boundary as the rest of
+ * this service's operator surface".
+ *
+ * Confirmed against production from the public internet on 29 Sep 2026: a
+ * guarded route answers 401 and this one reached its handler. Anyone holding
+ * a run id -- which every listener on the channel is sent -- could read a
+ * protected broadcast's safety-buffer depth, which is a live readout of how
+ * close its compliance delay is to failing.
+ */
+describe('the runtime surface is operator-only', () => {
+  it('refuses before it looks at the run, so it is not an existence oracle', async () => {
+    const performance = new ProgrammePerformanceRegistry();
+    const timelines = new ProgrammeTimelineRegistry(8, 0);
+    const refuse: express.RequestHandler = (_req, res) => {
+      res.status(401).json({ error: 'Sign in to operate.' });
+    };
+    const app = appWith(performance, timelines, refuse);
+
+    // An unknown run and a real one must answer identically. A 404 here would
+    // tell an anonymous caller which run ids exist, which is how the guard
+    // leaks the thing it is guarding.
+    timelines.open({ runId: 'run_real', programmeId: 'prog_1', channelId: 'chan_1' });
+    for (const runId of ['run_real', 'run_missing']) {
+      const reply = await get(app, `/programmes/${runId}/runtime`);
+      expect(reply.status, runId).toBe(401);
+    }
   });
 });

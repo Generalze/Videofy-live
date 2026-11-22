@@ -103,6 +103,16 @@ function capability(over: Partial<TargetLanguageCapability> = {}): TargetLanguag
   } as TargetLanguageCapability;
 }
 
+/**
+ * Who signed the approval. The route document refuses an approved scope that
+ * does not say: a note naming the approver can be deleted, a field cannot.
+ */
+const APPROVAL = {
+  approvedBy: 'a fixture approver',
+  approvedAt: '2026-09-20T12:00:00.000Z',
+  scopes: ['messaging', 'programme-live', 'call-live'],
+};
+
 /** An approved, measured, human-cleared route for a non-Nigerian direction. */
 const QUALIFIED_EN_FR = route({
   sourceLanguage: 'en',
@@ -110,6 +120,7 @@ const QUALIFIED_EN_FR = route({
   provider: 'opus-mt',
   modelId: 'Helsinki-NLP/opus-mt-en-fr',
   productionApproved: true,
+  approval: APPROVAL,
   technicalEvidence: MEASURED,
   humanReviewStatus: 'passed',
   serviceScopes: scopes({ 'programme-live': 'approved' }),
@@ -273,7 +284,7 @@ describe('nothing else promotes a route either', () => {
   it('approval for one scope is not approval for another', () => {
     const messagingOnly = route({
       sourceLanguage: 'en', targetLanguage: 'fr',
-      provider: 'opus-mt', modelId: 'x', productionApproved: true,
+      provider: 'opus-mt', modelId: 'x', productionApproved: true, approval: APPROVAL,
       technicalEvidence: MEASURED, humanReviewStatus: 'passed',
       serviceScopes: scopes({ messaging: 'approved' }),
     });
@@ -293,7 +304,7 @@ describe('a failed stage is never hidden behind the other two', () => {
       sourceLanguage: 'ig', targetLanguage: 'fr', scope: SCOPE,
       decision: registryOf(route({
         sourceLanguage: 'ig', targetLanguage: 'fr', provider: 'opus-mt', modelId: 'x',
-        productionApproved: true, technicalEvidence: MEASURED,
+        productionApproved: true, approval: APPROVAL, technicalEvidence: MEASURED,
         humanReviewStatus: 'passed', serviceScopes: scopes({ 'programme-live': 'approved' }),
       })).mayTranslate('ig', 'fr', SCOPE),
       // Nothing transcribes Igbo.
@@ -317,7 +328,7 @@ describe('a failed stage is never hidden behind the other two', () => {
       sourceLanguage: 'en', targetLanguage: 'yo', scope: SCOPE,
       decision: registryOf(route({
         sourceLanguage: 'en', targetLanguage: 'yo', provider: 'naijalingo', modelId: 'y',
-        productionApproved: true, technicalEvidence: MEASURED,
+        productionApproved: true, approval: APPROVAL, technicalEvidence: MEASURED,
         humanReviewStatus: 'passed', serviceScopes: scopes({ 'programme-live': 'approved' }),
       })).mayTranslate('en', 'yo', SCOPE),
       sourceCapability: capability({ language: 'en' }),

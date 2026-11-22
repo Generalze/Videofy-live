@@ -56,6 +56,23 @@ export interface LiveTranslationPipelineDeps {
   readonly now?: () => number;
   readonly log?: (line: string, detail?: Record<string, unknown>) => void;
   /**
+   * THE PARTICIPANT WILL HEAR NOTHING. A separate seam from `log`, and the
+   * reason it exists is measured.
+   *
+   * On 28 Sep 2026 a French call ran 55 seconds each way and delivered no
+   * audio. The route gate was refusing every segment and the guard below
+   * reported it exactly as designed -- through `log`, which the host wires to
+   * `logger.debug`, on a deployment running at `LOG_LEVEL=info`. So the line
+   * that named the failure was written and discarded, and the investigation
+   * recorded "the guard fired 0 times" and went looking somewhere else.
+   *
+   * An absence below a threshold is not an absence of the event. `log` is for
+   * the chatter of a working stream -- a non-advancing final, an aborted
+   * synthesis -- and belongs at debug. A decision that leaves somebody in
+   * silence does not, whatever the deployment's threshold.
+   */
+  readonly warn?: (line: string, detail?: Record<string, unknown>) => void;
+  /**
    * Where this route's measurements go, when it belongs to a programme.
    *
    * Optional because a direct call has no programme to report on, and absent
@@ -136,7 +153,7 @@ export class LiveTranslationPipeline {
      */
     const confidence = event.provider?.confidence;
     if (typeof confidence === 'number' && confidence < this.deps.minSpokenConfidence) {
-      this.deps.log?.('below the confidence floor; captioned but NOT spoken', {
+      this.deps.warn?.('below the confidence floor; captioned but NOT spoken', {
         segmentId: event.segmentId,
         targetLanguage: this.deps.targetLanguage,
         confidence,
@@ -190,6 +207,39 @@ export class LiveTranslationPipeline {
         startMs: event.startMs,
         endMs: event.endMs,
       });
+      /*
+       * A NON-TRANSLATION IS NEVER SPOKEN.
+       *
+       * The gate hands back the ORIGINAL text whenever it declines -- an
+       * unapproved route, an engine that failed, a mangled phone number -- and
+       * for a message that is right, because the reader sees the original and
+       * is told it was not translated. Voicing it is a different act
+       * altogether: it replaces the speaker's own voice with a synthetic one
+       * saying the same words, in the language the listener already could not
+       * understand, and nothing on the call marks it as untranslated.
+       *
+       * Measured on two phones, 22 Sep 2026: `en->fr` unapproved, the gate
+       * correctly declined, and both people spent three minutes listening to a
+       * machine read their own sentences back. Silence would have been kinder
+       * and an outright refusal kinder still.
+       *
+       * The caption path is untouched: the words were still SAID, and a
+       * transcript of what was said is not a claim that it was translated.
+       */
+      if (result.translated === false) {
+        this.deps.warn?.('translation declined; nothing will be spoken for this segment', {
+          segmentId: event.segmentId,
+          sourceLanguage: event.detectedLanguage ?? this.deps.sourceLanguage,
+          targetLanguage: this.deps.targetLanguage,
+          provider: result.providerName ?? null,
+        });
+        this.deps.performance?.for('translation').record(
+          'error',
+          (this.deps.now?.() ?? Date.now()) - translationStartedAt,
+          this.deps.now?.() ?? Date.now(),
+        );
+        return null;
+      }
       translatedText = result.translatedText;
       this.deps.performance?.for('translation').record(
         'success',
@@ -206,7 +256,7 @@ export class LiveTranslationPipeline {
       );
       // One sentence untranslated on a call that is still running. The caption
       // stands on its own; taking the session down would be worse.
-      this.deps.log?.('translation failed', {
+      this.deps.warn?.('translation failed', {
         segmentId: event.segmentId,
         message: error instanceof Error ? error.message : 'unknown',
       });
@@ -231,6 +281,9 @@ export class LiveTranslationPipeline {
         ...(this.deps.frameSamples === undefined ? {} : { frameSamples: this.deps.frameSamples }),
         ...(this.deps.now === undefined ? {} : { now: this.deps.now }),
         ...(this.deps.log === undefined ? {} : { log: this.deps.log }),
+        // A sentence the vendor refused to speak is a silence the listener
+        // hears; it does not belong on the debug channel.
+        ...(this.deps.warn === undefined ? {} : { warn: this.deps.warn }),
       });
       const record: SpokenSegmentRecord = {
         segmentId: event.segmentId,

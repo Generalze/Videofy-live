@@ -46,8 +46,8 @@ import { useChannelInterest } from '../programmes/useChannelInterest';
 import { C7, C7Ground, Chip } from '../ui/c7';
 import { Icon } from '../ui/icons';
 
-const GATEWAY_URL = process.env['EXPO_PUBLIC_GATEWAY_URL'] ?? 'https://staging.consummate7.com';
-const LISTEN_URL = process.env['EXPO_PUBLIC_LISTEN_URL'] ?? `${GATEWAY_URL}/listen`;
+const GATEWAY_URL = process.env.EXPO_PUBLIC_GATEWAY_URL ?? 'https://staging.consummate7.com';
+const LISTEN_URL = process.env.EXPO_PUBLIC_LISTEN_URL ?? `${GATEWAY_URL}/listen`;
 
 export interface ProgrammeViewerScreenProps {
   readonly channel: ChannelSummary;

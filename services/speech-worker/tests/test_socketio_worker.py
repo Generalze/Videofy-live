@@ -9,6 +9,7 @@ class FakeSocketClient:
         self.events = {}
         self.emitted = []
         self.connected_url = None
+        self.connect_kwargs = None
 
     def event(self, handler):
         self.events[handler.__name__] = handler
@@ -23,6 +24,7 @@ class FakeSocketClient:
 
     def connect(self, url, **kwargs):
         self.connected_url = url
+        self.connect_kwargs = kwargs
         self.connected = True
         self.events["connect"]()
 
@@ -47,6 +49,7 @@ def make_config() -> WorkerConfig:
         sequence_start=1,
         log_level="ERROR",
         health_port=8001,
+        internal_service_token="f" * 64,
     )
 
 
@@ -60,6 +63,7 @@ def test_worker_connects_with_socketio_role_and_emits_translation(monkeypatch):
     worker.stop()
 
     assert fake_client.connected_url == "http://localhost:3001?role=worker"
+    assert fake_client.connect_kwargs["auth"] == {"token": "f" * 64}
     emitted_names = [name for name, _payload in fake_client.emitted]
     assert "worker:health" in emitted_names
     assert "worker:translation" in emitted_names

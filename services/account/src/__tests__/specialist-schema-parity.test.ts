@@ -127,6 +127,8 @@ const PAIRS: readonly [string, string][] = [
   ['VERDICT_COLUMNS', 'specialist_review_verdicts'],
   ['SOURCE_SET_COLUMNS', 'specialist_source_sets'],
   ['VALIDATED_SOURCE_COLUMNS', 'specialist_validated_sources'],
+  ['QA_SET_COLUMNS', 'specialist_qa_sets'],
+  ['ROUTE_EVIDENCE_COLUMNS', 'specialist_route_evidence'],
 ];
 
 describe('the port reads every column it writes', () => {
@@ -264,15 +266,34 @@ describe('the rules that live in the database', () => {
     expect(migrations).toContain('UNIQUE (assignment_id, candidate_id)');
   });
 
-  it('PIN: the four evidence tables refuse UPDATE and DELETE', () => {
+  it('PIN: the evidence tables refuse UPDATE and DELETE', () => {
     for (const table of [
       'specialist_consents',
       'specialist_source_corpora',
       'specialist_review_verdicts',
       'specialist_decisions',
+      /* 032: a QA set is content-addressed or it is not evidence; and the
+         evidence rows it produces are read later as what a specialist said. */
+      'specialist_qa_sets',
+      'specialist_route_evidence',
     ]) {
       expect(migrations, table).toContain(`BEFORE UPDATE OR DELETE ON ${table}`);
     }
+  });
+
+  it('PIN: a QA set is unique by content hash, and a pickup names its set with the hash (032)', () => {
+    // Editing a sentence must be a new set with a new hash, and evidence
+    // citing the old hash must still name the old set. The composite key on
+    // the pickup means an assignment cannot claim a set of another language
+    // or a hash the set does not have.
+    expect(migrations).toContain('UNIQUE (sha256)');
+    expect(migrations).toContain('UNIQUE (language, version)');
+    expect(migrations).toContain('FOREIGN KEY (qa_set_id, language, qa_set_sha256)');
+    expect(migrations).toContain('REFERENCES specialist_qa_sets (qa_set_id, language, sha256)');
+    // One pickup per person per set: one person counts once in a score.
+    expect(migrations).toContain('UNIQUE (account_id, qa_set_id)');
+    expect(tableColumns('specialist_assignments')).toContain('qa_set_id');
+    expect(tableColumns('specialist_assignments')).toContain('qa_set_sha256');
   });
 
   it('PIN: voice rights are pinned false by a named constraint', () => {
@@ -293,6 +314,8 @@ describe('the rules that live in the database', () => {
       'specialist_source_corpora',
       'specialist_review_verdicts',
       'specialist_decisions',
+      'specialist_qa_sets',
+      'specialist_route_evidence',
     ]) {
       const insert = port.slice(port.indexOf(`INSERT INTO ${table} (`));
       const statement = insert.slice(0, insert.indexOf('`', 1));
@@ -314,6 +337,12 @@ describe('the migration is appended, never reordered', () => {
     const entries = [...order.matchAll(/^ {2}([A-Z0-9_]+),$/gmu)].map((match) => match[1] ?? '');
     expect(entries[0]).toBe('ACCOUNTS');
     expect(entries.indexOf('SPECIALIST_SOURCE_PROVENANCE')).toBe(25);
+    // 032 is appended after everything that shipped before it, including
+    // main's 026-031, and takes the next free number: 032 was unused on every
+    // ref when it was written.
+    expect(entries.indexOf('SPECIALIST_QA_SETS')).toBeGreaterThan(entries.indexOf('LANGUAGE_CATALOGUE_CODES'));
+    const names = [...migrations.matchAll(/name: '([0-9]{3}_[a-z_]+)'/gu)].map((match) => match[1] ?? '');
+    expect(names.filter((name) => name.startsWith('032_'))).toEqual(['032_specialist_qa_sets']);
   });
 
   it('PIN: 025 follows 024, and 024 is not edited either', () => {

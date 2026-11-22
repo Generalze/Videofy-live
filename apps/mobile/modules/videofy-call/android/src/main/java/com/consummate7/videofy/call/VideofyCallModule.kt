@@ -1,8 +1,11 @@
 package com.consummate7.videofy.call
 
 import android.content.Context
+import android.content.Intent
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.Settings
 import androidx.core.app.NotificationManagerCompat
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -19,7 +22,13 @@ import org.json.JSONObject
  *   reportCallEnded(callId)               MANDATORY on every exit: stops the ring if still ringing, ends Telecom
  *   reportMediaConnected(callId)          T11: two-way audio proven
  *   timeline(callId)                      the device's T4..T11 stamps, then forgotten
+ *   pendingTimelines()                    every call with stamps still on the device, as JSON; nothing forgotten
+ *   forgetTimeline(callId)                after the gateway confirmed it has the stamps
  *   canUseFullScreenIntent()              Android 14+: the permission a person can revoke
+ *   batteryExemption()                    "granted" | "not-granted" | "not-applicable" | "unreadable", READ from PowerManager now
+ *   requestBatteryExemption()             opens Android's own allow dialog; true = the dialog was launched, nothing more
+ *   standbyBucket()                       the UsageStatsManager bucket code, -1 where there is none
+ *   translatedAudio*()                    streaming PCM16 out; see TranslatedAudioTrack
  *
  * Events: 'incoming' (the native ring is up; the app may show its own
  * surface but must not ack again), 'answer', 'decline', 'timeout'.
@@ -34,7 +43,12 @@ class VideofyCallModule : Module() {
       instance = this@VideofyCallModule
       IncomingCallService.ensureChannel(context())
     }
-    OnDestroy { if (instance === this@VideofyCallModule) instance = null }
+    OnDestroy {
+      if (instance === this@VideofyCallModule) instance = null
+      // An AudioTrack outliving the JS context holds an output stream and, on
+      // some devices, the call's audio focus with it.
+      TranslatedAudioTrack.close()
+    }
 
     // Bound to the account and the session's expiry; see RingStore.
     Function("setRingCredential") { gatewayUrl: String, token: String, accountId: String, expiresAtMs: Double ->
@@ -87,9 +101,75 @@ class VideofyCallModule : Module() {
       store.forgetTimeline(callId)
       out
     }
+    /*
+     * A PUSH THAT ARRIVED AND RANG NOBODY (27 Sep 2026 review). The stamps a
+     * push leaves at T4 used to reach the gateway only through the call
+     * screen's teardown -- so the one case being diagnosed, a push that
+     * arrived and never rang, reported nothing, because no call screen ever
+     * mounted. JS reads every timeline still on the device at each foreground
+     * (src/push/unreportedTimelines.ts), posts them, and forgets each one
+     * only once the gateway has said it has it. A JSON string rather than a
+     * bundle of bundles: the one shape that needs no marshalling assumption.
+     */
+    Function("pendingTimelines") { RingStore(context()).pendingTimelines().toString() }
+    Function("forgetTimeline") { callId: String -> RingStore(context()).forgetTimeline(callId) }
     Function("canUseFullScreenIntent") {
       if (Build.VERSION.SDK_INT >= 34) NotificationManagerCompat.from(context()).canUseFullScreenIntent() else true
     }
+
+    /*
+     * THE RIGHT TO WAKE (27 Sep 2026). Three calls rang nobody because the
+     * handset never woke for the push; see DeviceStandby for the reading.
+     * These three are the whole of what the platform lets an app do about
+     * it: read the exemption, ask for it, and read which bucket the app is
+     * in. The vendor battery managers on Samsung and the Chinese OEMs are
+     * beyond every one of them.
+     *
+     * Four words, straight from DeviceStandby: a read that could not be
+     * performed is "unreadable", and never "not-applicable" -- the second
+     * would tell the person their phone has no problem.
+     */
+    Function("batteryExemption") { DeviceStandby.batteryExemption(context()) }
+    /**
+     * Android's own "Allow app to run in the background?" dialog. Returns
+     * whether the dialog was LAUNCHED, which says nothing about the answer:
+     * JS re-reads batteryExemption() when the app returns to the foreground,
+     * and never assumes the request succeeded because it was made.
+     */
+    Function("requestBatteryExemption") {
+      if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+        false
+      } else {
+        try {
+          val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+            data = Uri.parse("package:${context().packageName}")
+          }
+          val activity = appContext.currentActivity
+          if (activity != null) activity.startActivity(intent)
+          else context().startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+          true
+        } catch (_: Exception) {
+          false
+        }
+      }
+    }
+    Function("standbyBucket") { DeviceStandby.standbyBucket(context()) }
+
+    /*
+     * TRANSLATED SPEECH OUT. Five plain functions over one AudioTrack; every
+     * rule about which frame may be played, and in what order, is decided in
+     * shared TypeScript and proved there. This is the part that cannot be, so
+     * it is kept as small as the browser's AudioContext sink.
+     *
+     * A base64 String rather than a typed array: it is the parameter type that
+     * needs no assumption about marshalling, which matters because this file
+     * cannot be compiled or run from the workstation the JS was written on.
+     */
+    Function("translatedAudioOpen") { sampleRate: Int -> TranslatedAudioTrack.open(sampleRate) }
+    Function("translatedAudioWrite") { pcmBase64: String -> TranslatedAudioTrack.write(pcmBase64) }
+    Function("translatedAudioFlush") { TranslatedAudioTrack.flush() }
+    Function("translatedAudioQueuedMs") { TranslatedAudioTrack.queuedMs() }
+    Function("translatedAudioClose") { TranslatedAudioTrack.close() }
   }
 
   private fun context(): Context = appContext.reactContext ?: throw IllegalStateException("no context")

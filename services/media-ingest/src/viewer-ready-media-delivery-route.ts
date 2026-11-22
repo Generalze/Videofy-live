@@ -12,10 +12,16 @@ export interface ViewerReadyMediaDeliveryService {
 export function registerViewerReadyMediaDeliveryRoute(
   app: express.Express,
   ingest: ViewerReadyMediaDeliveryService,
+  /**
+   * The audience door. REQUIRED, so this route cannot be registered without
+   * one -- it was registered without one until 29 Sep 2026, and the session
+   * id it keys on is broadcast to every listener on the channel.
+   */
+  audience: express.RequestHandler,
 ): void {
-  app.get('/sessions/:sessionId/viewer-media', async (req, res) => {
+  app.get('/sessions/:sessionId/viewer-media', audience, async (req, res) => {
     try {
-      const file = await ingest.getViewerReadyMediaFile(req.params.sessionId);
+      const file = await ingest.getViewerReadyMediaFile(String(req.params['sessionId']));
       sendViewerReadyMediaFile(req.headers.range, file, res);
     } catch (error) {
       sendIngestError(res, error);

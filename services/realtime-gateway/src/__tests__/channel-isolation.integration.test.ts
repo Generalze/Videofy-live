@@ -60,6 +60,14 @@ describe('two programmes on one gateway', () => {
   beforeEach(async () => {
     server = createServer(createApp());
     new Gateway(server, ['http://localhost:5173', 'http://localhost:5174'], {
+    /*
+     * These rigs connect as the media service and the speech worker. Both
+     * roles became authenticated on 29 Sep 2026 -- they were previously a
+     * query parameter anybody could type, while an ingest socket sets the
+     * delivery policy for protected broadcasts. The refusal itself is
+     * covered in internal-role-admission.test.ts.
+     */
+    internalServiceAllowed: () => true,
     call: { authorizeHost: async () => true },
       operator: { authSecret: OPERATOR_SECRET, channelSalt: 'isolation-test' },
     });

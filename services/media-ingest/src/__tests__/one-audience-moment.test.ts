@@ -64,13 +64,21 @@ function broadcast(): {
   for (let ms = 0; ms < LIVE_MS; ms += 2000) media.accept(mediaSegment(ms));
   for (let second = 0; second * 1000 < LIVE_MS; second += 1) {
     const at = second * 1000;
-    for (const [kind, tag] of [
-      ['caption', 'cap'],
-      ['generated-audio', 'aud'],
-    ] as const) {
-      const reference = `${tag}_${second}`;
+    /*
+     * ONE REFERENCE FOR BOTH, because that is what production does: the
+     * caption and the translated audio for a sentence share its segment id.
+     *
+     * This authored them under DISTINCT references -- `cap_N` and `aud_N` --
+     * which is the one shape that cannot collide, so the suite could not see
+     * that the pump keyed its held payloads on the reference alone and the
+     * generated audio silently replaced the caption on every sentence. Found
+     * by audit 29 Sep 2026, in the test named "every plane arrives at the
+     * same programme moment".
+     */
+    const reference = `seg_${second}`;
+    for (const kind of ['caption', 'generated-audio'] as const) {
       timeline.append({ programmeTimeMs: at, kind, reference, durationMs: 1000 });
-      pump.hold(reference, { kind, emit: () => emitted.push(reference) });
+      pump.hold(reference, { kind, emit: () => emitted.push(`${kind}:${reference}`) });
     }
   }
   return { registry, media, pump, emitted };
@@ -95,8 +103,8 @@ describe('every plane arrives at the same programme moment', () => {
     expect(lastMedia?.endProgrammeTimeMs).toBe(CURSOR_MS);
 
     // The caption and the translated audio for the same instant.
-    expect(emitted).toContain('cap_600');
-    expect(emitted).toContain('aud_600');
+    expect(emitted).toContain('caption:seg_600');
+    expect(emitted).toContain('generated-audio:seg_600');
   });
 
   it('withholds every plane beyond the delay', () => {
@@ -109,8 +117,8 @@ describe('every plane arrives at the same programme moment', () => {
     // Nothing from the forty-five seconds the audience has not reached, on
     // any plane. A single one leaking is the split timeline all over again.
     expect(served.segments.some((s) => s.startProgrammeTimeMs >= CURSOR_MS)).toBe(false);
-    expect(emitted).not.toContain('cap_601');
-    expect(emitted).not.toContain('aud_644');
+    expect(emitted).not.toContain('caption:seg_601');
+    expect(emitted).not.toContain('generated-audio:seg_644');
   });
 
   it('keeps original audio and video together, because they are one segment', () => {
@@ -205,5 +213,28 @@ describe('retention is bounded, and exhaustion is visible', () => {
 
     for (let ms = 10_000; ms < 60_000; ms += 2000) media.accept(mediaSegment(ms));
     expect(media.coverage('run_1', DELAY_MS).sufficient).toBe(true);
+  });
+});
+
+/**
+ * BOTH PLANES ARE OWED, NOT WHICHEVER WAS HELD LAST.
+ *
+ * The rig above now shares one reference between the caption and the
+ * translated audio, as production does. This states the property that
+ * sharing was hiding: a sentence produces two things at one programme
+ * moment and the audience is owed both.
+ */
+describe('a caption and its translation do not displace each other', () => {
+  it('emits both for the same sentence', () => {
+    const r = broadcast();
+    r.pump.tick();
+    const forOneSentence = r.emitted.filter((entry) => entry.endsWith(':seg_5'));
+    expect(forOneSentence.sort()).toEqual(['caption:seg_5', 'generated-audio:seg_5']);
+  });
+
+  it('emits each of them exactly once', () => {
+    const r = broadcast();
+    for (let tick = 0; tick < 4; tick += 1) r.pump.tick();
+    expect(new Set(r.emitted).size).toBe(r.emitted.length);
   });
 });

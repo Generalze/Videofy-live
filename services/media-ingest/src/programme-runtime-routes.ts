@@ -38,6 +38,25 @@ export interface ProgrammeRuntimeRoutesDeps {
   readonly performance: ProgrammePerformanceRegistry;
   readonly timelines: ProgrammeTimelineRegistry;
   readonly advertising?: () => AdvertisingRuntimeView;
+  /**
+   * The operator guard, REQUIRED, so a composition cannot register this
+   * surface without one.
+   *
+   * It was optional by being absent entirely, and the docblock below asserted
+   * this route sat "behind the same trust boundary as the rest of this
+   * service's operator surface". It did not: every other operator route
+   * carries `operatorOnly` and this one carried nothing, with
+   * `Access-Control-Allow-Origin: *` in front of it.
+   *
+   * Confirmed from the public internet on 29 Sep 2026. A guarded route
+   * answers 401; this one reached its handler and answered 404 for an unknown
+   * run, which is how an unauthenticated caller knows it got in. Anyone
+   * holding a run id -- and every listener on the channel is sent one --
+   * could read that broadcast's buffer depth, durability state, vocabulary
+   * size and latency percentiles. On a protected broadcast the buffer depth
+   * names the moment the compliance delay is thinnest.
+   */
+  readonly operatorOnly: express.RequestHandler;
 }
 
 export function registerProgrammeRuntimeRoutes(
@@ -47,12 +66,14 @@ export function registerProgrammeRuntimeRoutes(
   /**
    * The measured behaviour and safety state of one broadcast.
    *
-   * Not authenticated here: this is the same trust boundary the rest of this
-   * service's operator surface sits behind, and it carries no content -- only
-   * timings, counts and a cursor. It carries no vocabulary, no transcript and
-   * no campaign, which is deliberate rather than incidental.
+   * OPERATOR-ONLY, which it was not until 29 Sep 2026. It carries no content
+   * -- no vocabulary, no transcript, no campaign -- and that is why it was
+   * left open. But "no content" is not "nothing": it reports the safety
+   * buffer's depth against its target, and on a protected broadcast that is
+   * a live readout of how close the compliance delay is to failing. Timings
+   * and counts about somebody else's broadcast are theirs.
    */
-  app.get('/programmes/:runId/runtime', (req, res) => {
+  app.get('/programmes/:runId/runtime', deps.operatorOnly, (req, res) => {
     void (async () => {
       const runId = String(req.params['runId'] ?? '');
       if (!RUN_ID.test(runId)) {

@@ -211,7 +211,7 @@ export function App() {
       <Nav route={route} navigate={navigate} authed={authed} />
 
       <main id="main">
-        {route === 'c7' ? <C7Home navigate={navigate} /> : null}
+        {route === 'c7' ? <C7Home navigate={navigate} authed={authed} /> : null}
         {route === 'videofy' ? <VideofyFamily navigate={navigate} /> : null}
         {route === 'videofy-live' ? <VideofyLive /> : null}
         {/*

@@ -1,32 +1,47 @@
 /** @author masterzee001 */
 /**
- * Wiring the founder ruling of 2026-08-30: ha/ig/yo/pcm go to 9jaLingo, then
- * AZURE, then nothing -- and the boot log says which.
+ * Wiring the founder ruling of 2026-09-18: ha/ig/yo/pcm go to the APPROVED
+ * voice, nothing stands behind it, and the boot log says so.
  *
  * WHY A WIRING SUITE AND NOT JUST UNIT TESTS. The memory calls this the
- * unwired-seam pattern, and it has cost this repository four seams in one
- * session: both halves built, both halves tested, the join belonging to nobody
- * and always looking green. The specialist here is the textbook case -- an
- * adapter with thirty passing tests that the live path never reached, because
- * the wiring demanded a base URL nobody could supply.
+ * unwired-seam pattern: both halves built, both halves tested, the join
+ * belonging to nobody and always looking green. This seam is its worst
+ * recorded case. On 2026-09-18 the ruling was implemented in `ai-registry`,
+ * thirteen tests were rewritten to assert it, the change was reviewed and
+ * DEPLOYED -- and production went on speaking Yoruba with the rejected vendor,
+ * because this file restated the vendor instead of importing it. The suite that
+ * was here passed throughout. It was asserting the old ruling.
  *
- * So these tests assert the JOIN. They construct the provider the live path
- * actually gets, from the environment an operator actually edits.
+ * SO THESE TESTS DERIVE THEIR EXPECTATIONS FROM `ai-registry` RATHER THAN
+ * NAMING A VENDOR. That is the only shape that fails when the constant and the
+ * wiring disagree; a test that hardcodes "elevenlabs" would pass just as
+ * happily on the day somebody changes the ruling and forgets this file, which
+ * is precisely what happened.
  */
 import { describe, expect, it, vi } from 'vitest';
 import {
+  NIGERIAN_FALLBACK_PROVIDER_ID,
+  NIGERIAN_SPECIALIST_LANGUAGES,
+  NIGERIAN_SPECIALIST_PROVIDER_ID,
+  NIGERIAN_TTS_ROUTE_ORDER,
+} from '@videofy-live/ai-registry';
+import {
+  NIGERIAN_VOICE_VENDORS,
   buildLiveSynthesis,
   preflightNigerianSpecialist,
   readLiveProviderEnv,
+  selectNigerianVoice,
 } from '../live-provider-wiring.js';
+import { describeNigerianVoicePreflight } from '../providers/elevenlabs/preflight.js';
 
-/** Never reached: nothing in this suite synthesises. Egress would be a bug. */
+/** Never reached by the wiring tests: constructing must not call a vendor. */
 const noFetch = (async () => {
   throw new Error('no test may reach a vendor');
 }) as unknown as typeof fetch;
 
 const CONFIG = { streamingSynthesisProvider: 'chain' } as const;
 
+/** Everything a general deployment has, including the REJECTED vendor's key. */
 const GENERAL_ENV = {
   ELEVENLABS_API_KEY: 'el-key',
   ELEVENLABS_DEFAULT_VOICE_ID: 'el-voice',
@@ -39,122 +54,95 @@ function envFrom(extra: Record<string, string> = {}) {
   return readLiveProviderEnv({ ...GENERAL_ENV, ...extra } as NodeJS.ProcessEnv);
 }
 
-describe('activation is exactly "paste the key"', () => {
-  it('activates on NAIJALINGO_API_KEY ALONE, with no base URL configured', () => {
+/** The Nigerian branch of the composed provider name, which reads as the route. */
+function nigerianBranch(name: string): string {
+  return /nigerian\(([^)]*)\)/u.exec(name)?.[1] ?? '';
+}
+
+describe('the approved voice is READ from ai-registry, not restated here', () => {
+  it('routes the four languages to whichever vendor the ruling currently names', () => {
+    const built = buildLiveSynthesis(CONFIG, envFrom(), noFetch);
+    const branch = nigerianBranch(built.provider?.name ?? '');
+
     /*
-     * THE DEFECT THIS REPLACES. The previous wiring required NAIJALINGO_BASE_URL
-     * as well and silently skipped the specialist without it -- so a deployment
-     * that had pasted the key still heard the mispronouncing general vendor,
-     * and nothing said why. The host is now published by the vendor's own SDK,
-     * and refusing to default a published value turns a solved problem into an
-     * operator's problem on the night of a demo.
+     * THE TEST THE OLD SUITE DID NOT HAVE. It asserted a vendor by name, so it
+     * agreed with the wiring and with itself while both disagreed with the
+     * ruling. This reads the constant, so the two cannot drift apart silently.
      */
-    const built = buildLiveSynthesis(CONFIG, envFrom({ NAIJALINGO_API_KEY: 'k' }), noFetch);
-    expect(built.nigerian?.state().specialistConfigured).toBe(true);
-    expect(built.provider?.name).toMatch(/naijalingo/u);
-  });
-
-  it('survives the blank lines a template ships with', () => {
-    // `NAIJALINGO_BASE_URL=` is the NORMAL state of an unconfigured box, not a
-    // deliberate choice of the empty-string host.
-    const built = buildLiveSynthesis(
-      CONFIG,
-      envFrom({
-        NAIJALINGO_API_KEY: 'k',
-        NAIJALINGO_BASE_URL: '   ',
-        NAIJALINGO_VOICE_IDS: '',
-        NAIJALINGO_SAMPLE_RATE: '',
-        NAIJALINGO_RESPONSE_FORMAT: '',
-      }),
-      noFetch,
-    );
+    expect(branch).toContain(NIGERIAN_SPECIALIST_PROVIDER_ID);
+    expect(built.nigerian?.state().specialistProviderId).toBe(NIGERIAN_SPECIALIST_PROVIDER_ID);
     expect(built.nigerian?.state().specialistConfigured).toBe(true);
   });
 
-  it('refuses a response format it does not understand, by name', () => {
-    // Loud, at boot. The alternative is a vendor 4xx during a session.
-    expect(() =>
-      buildLiveSynthesis(
-        CONFIG,
-        envFrom({ NAIJALINGO_API_KEY: 'k', NAIJALINGO_RESPONSE_FORMAT: 'mp3' }),
-        noFetch,
-      ),
-    ).toThrow(/NAIJALINGO_RESPONSE_FORMAT/u);
+  it('routes exactly the four languages ai-registry lists, and nothing else', () => {
+    const built = buildLiveSynthesis(CONFIG, envFrom(), noFetch);
+    const name = built.provider?.name ?? '';
+    const routed = /routed\(([^ ]*) -> /u.exec(name)?.[1]?.split(',') ?? [];
+    expect([...routed].sort()).toEqual([...NIGERIAN_SPECIALIST_LANGUAGES].sort());
   });
 
-  it('still refuses raw PCM without a measured rate', () => {
-    // The one vendor mistake that produces no error anywhere: a wrong PCM rate
-    // plays at the wrong pitch in a language the reviewer may not speak.
-    expect(() =>
-      buildLiveSynthesis(
-        CONFIG,
-        envFrom({ NAIJALINGO_API_KEY: 'k', NAIJALINGO_RESPONSE_FORMAT: 'pcm' }),
-        noFetch,
-      ),
-    ).toThrow(/NAIJALINGO_SAMPLE_RATE/u);
+  it('puts behind it exactly what NIGERIAN_TTS_ROUTE_ORDER puts behind it', () => {
+    const built = buildLiveSynthesis(CONFIG, envFrom(), noFetch);
+    const branch = nigerianBranch(built.provider?.name ?? '');
+    const behind = NIGERIAN_TTS_ROUTE_ORDER.slice(1);
+
+    if (behind.length === 0) {
+      // Today's ruling: one entry, so a failure is SILENCE. That is the
+      // founder's preference over audio that mispronounces the language, and
+      // the name has to say it out loud rather than imply it by omission.
+      expect(branch).toContain('NOTHING');
+    } else {
+      for (const providerId of behind) expect(branch).toContain(providerId);
+    }
+  });
+
+  it('never lets the REJECTED vendor reach these languages, even fully configured', () => {
+    /*
+     * THE DEFECT THIS REPLACES, EXACTLY. Azure is configured here, as it is in
+     * production, and the general chain uses it. Before this fix the four
+     * languages resolved to `azure-speech:tts-northeurope` on the live box
+     * while every test was green.
+     */
+    const built = buildLiveSynthesis(CONFIG, envFrom(), noFetch);
+    const branch = nigerianBranch(built.provider?.name ?? '');
+    expect(branch).not.toContain(NIGERIAN_FALLBACK_PROVIDER_ID);
+
+    // And the general chain is untouched for the other ninety languages: this
+    // is a per-language route, not a whole-deployment choice.
+    expect(built.provider?.name).toContain(NIGERIAN_FALLBACK_PROVIDER_ID);
+  });
+
+  it('warmth is TRUE for a vendor that cannot go cold', () => {
+    /*
+     * NOT COSMETIC. `liveRouteEligibility` refuses a live Nigerian route unless
+     * warmth is guaranteed, so reporting false here -- for a vendor that does
+     * not scale to zero -- would block every Nigerian programme forever against
+     * a risk that cannot occur.
+     */
+    const built = buildLiveSynthesis(CONFIG, envFrom(), noFetch);
+    expect(built.nigerian?.warm).toBe(true);
   });
 });
 
-describe('the chain behind the specialist is AZURE, and only Azure', () => {
-  it('names the specialist then azure, with no elevenlabs between or behind them', () => {
-    const built = buildLiveSynthesis(CONFIG, envFrom({ NAIJALINGO_API_KEY: 'k' }), noFetch);
-    const name = built.provider?.name ?? '';
+describe('with no approved voice, these languages FAIL rather than being faked', () => {
+  const NO_APPROVED = {
+    AZURE_SPEECH_KEY: 'az-key',
+    AZURE_SPEECH_REGION: 'northeurope',
+    AZURE_DEFAULT_VOICE_ID: 'en-US-JennyNeural',
+  };
 
-    // The provider name is a composition, so it is readable as the route: the
-    // Nigerian branch must contain the specialist and Azure and nothing else.
-    const nigerianBranch = /nigerian\(([^)]*)\)/u.exec(name)?.[1] ?? '';
-    expect(nigerianBranch).toMatch(/naijalingo/u);
-    expect(nigerianBranch).toMatch(/azure/u);
-    // The defect this replaces: the WHOLE general chain sat behind the
-    // specialist, leaving ElevenLabs to answer Yoruba with confident, wrong
-    // audio whenever the first two did not.
-    expect(nigerianBranch).not.toMatch(/eleven/iu);
-
-    // The general chain is untouched for the other ninety languages.
-    expect(name).toMatch(/eleven/iu);
-  });
-
-  it('routes ha/ig/yo/pcm to that chain and nothing else to it', () => {
-    const built = buildLiveSynthesis(CONFIG, envFrom({ NAIJALINGO_API_KEY: 'k' }), noFetch);
-    expect(built.provider?.name).toMatch(/routed\(ha,ig,pcm,yo -> /u);
-  });
-
-  it('with NO Azure key, the chain is the specialist alone and says so', () => {
-    // Honest about there being nothing behind it. Silence is worse than a
-    // degraded voice, but a THIRD vendor nobody chose is worse than either,
-    // because nobody would know.
+  it('WARNS at boot, names the missing variables and the four languages', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
       const built = buildLiveSynthesis(
-        { streamingSynthesisProvider: 'elevenlabs' },
-        readLiveProviderEnv({
-          ELEVENLABS_API_KEY: 'el-key',
-          ELEVENLABS_DEFAULT_VOICE_ID: 'el-voice',
-          NAIJALINGO_API_KEY: 'k',
-        } as NodeJS.ProcessEnv),
+        { streamingSynthesisProvider: 'azure' },
+        readLiveProviderEnv(NO_APPROVED as NodeJS.ProcessEnv),
         noFetch,
       );
-      const nigerianBranch = /nigerian\(([^)]*)\)/u.exec(built.provider?.name ?? '')?.[1] ?? '';
-      expect(nigerianBranch).not.toMatch(/eleven/iu);
-      expect(warn.mock.calls.join(' ')).toMatch(/AZURE_SPEECH_KEY is not set/u);
-      expect(warn.mock.calls.join(' ')).toMatch(/SILENCE/u);
-    } finally {
-      warn.mockRestore();
-    }
-  });
-});
-
-describe('no specialist is a reported state, not a quiet one', () => {
-  it('WARNS at boot, names the four languages, and says what it costs', () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    try {
-      const built = buildLiveSynthesis(CONFIG, envFrom(), noFetch);
       const logged = warn.mock.calls.join(' ');
-      // At warn, not info. The founder ruling of 2026-08-30 makes the
-      // specialist the intended configuration, so its absence is a deviation.
-      expect(logged).toMatch(/NAIJALINGO_API_KEY is not set/u);
-      expect(logged).toMatch(/DEGRADED/u);
-      for (const language of ['ha', 'ig', 'yo', 'pcm']) {
+      expect(logged).toContain(NIGERIAN_SPECIALIST_PROVIDER_ID);
+      expect(logged).toMatch(/NOT configured/u);
+      for (const language of NIGERIAN_SPECIALIST_LANGUAGES) {
         expect(logged, language).toContain(language);
       }
       expect(built.nigerian?.state().specialistConfigured).toBe(false);
@@ -164,14 +152,50 @@ describe('no specialist is a reported state, not a quiet one', () => {
     }
   });
 
-  it('sends those four to AZURE rather than to the general chain', () => {
-    // So that switching the key on later changes WHO answers and nothing else
-    // about the path -- and so ElevenLabs never inherits them by accident.
+  it('produces NO audio and an error, instead of letting the rejected vendor speak', async () => {
+    /*
+     * THE WHOLE RULING, IN ONE ASSERTION. Azure is configured and would answer
+     * 200 with fluent, wrongly-pronounced Yoruba. Silence that reports itself
+     * beats a success nobody in the room can check.
+     */
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const built = buildLiveSynthesis(CONFIG, envFrom(), noFetch);
-      expect(built.provider?.name).toMatch(/routed\(ha,ig,pcm,yo -> /u);
-      expect(built.provider?.name).toMatch(/azure/u);
+      const built = buildLiveSynthesis(
+        { streamingSynthesisProvider: 'azure' },
+        readLiveProviderEnv(NO_APPROVED as NodeJS.ProcessEnv),
+        noFetch,
+      );
+      const errors: Error[] = [];
+      const result = await built.provider?.synthesize({
+        text: 'Bawo ni',
+        targetLanguage: 'yo',
+        voiceId: 'female-1',
+        onChunk: () => {
+          throw new Error('nothing may be spoken without an approved voice');
+        },
+        onError: (error) => errors.push(error),
+      });
+
+      expect(result?.samples).toBe(0);
+      expect(errors[0]?.message).toContain('NOT spoken');
+      // It names what to set, so the reader can act rather than investigate.
+      expect(errors[0]?.message).toContain('ELEVENLABS_API_KEY');
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('says these languages cannot be spoken, not that they are spoken badly', () => {
+    // Two different emergencies. One is a quality complaint; the other is
+    // silence in a live broadcast, and the text has to distinguish them.
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const built = buildLiveSynthesis(
+        { streamingSynthesisProvider: 'azure' },
+        readLiveProviderEnv(NO_APPROVED as NodeJS.ProcessEnv),
+        noFetch,
+      );
+      expect(built.nigerian?.state().degradedReason).toMatch(/CANNOT BE SPOKEN/u);
     } finally {
       warn.mockRestore();
     }
@@ -185,41 +209,309 @@ describe('no specialist is a reported state, not a quiet one', () => {
   });
 });
 
-describe('the preflight the boot log is built from', () => {
-  it('reports an ABSENT key as absent, without attempting a request', async () => {
+describe('selecting a vendor is a lookup, which is what makes the ruling reach here', () => {
+  it('builds NO warm keeper for a vendor that cannot go cold', () => {
+    /*
+     * A KEEPER IS NOT A GENERAL NICETY. Against a vendor that is always up it
+     * is an unread request every four minutes on somebody's bill, forever, and
+     * it would report warmth as something this deployment achieved rather than
+     * something the vendor never lacked. `warm-keeper-join` proves the opposite
+     * case for a vendor that does sleep.
+     */
+    const selection = selectNigerianVoice(NIGERIAN_SPECIALIST_PROVIDER_ID, envFrom(), noFetch);
+    expect(selection.kind).toBe('built');
+    if (selection.kind === 'built') expect(selection.build.warmKeeper).toBeNull();
+  });
+
+  it('refuses a vendor it has no builder for, by name, at startup', () => {
+    // A constant changed without a builder added is a programming error. The
+    // failure mode of tolerating it is these four languages quietly rejoining
+    // the general chain, which is the defect this seam exists to close.
+    expect(() => selectNigerianVoice('a-vendor-nobody-wrote', envFrom(), noFetch)).toThrow(
+      /no builder/u,
+    );
+  });
+
+  it('reports an unconfigured vendor as unconfigured, naming its variables', () => {
+    const selection = selectNigerianVoice(
+      NIGERIAN_SPECIALIST_PROVIDER_ID,
+      readLiveProviderEnv({} as NodeJS.ProcessEnv),
+      noFetch,
+    );
+    expect(selection.kind).toBe('unconfigured');
+    if (selection.kind === 'unconfigured') {
+      expect(selection.missing.length).toBeGreaterThan(0);
+      // NAMES, never values: this text reaches logs.
+      for (const name of selection.missing) expect(name).toMatch(/^[A-Z0-9_]+$/u);
+    }
+  });
+
+  it('keeps the previous specialist BUILDABLE though nothing routes to it', () => {
+    /*
+     * A DELIBERATE DECISION, recorded as a test so it is not mistaken for
+     * dead code and deleted. 9jaLingo is the only working implementation this
+     * repository has of a vendor whose capacity SCALES TO ZERO -- a shape that
+     * cost a measured staging programme on 2026-08-31 -- and its warm keeper is
+     * the lesson from that day.
+     */
+    expect(Object.keys(NIGERIAN_VOICE_VENDORS)).toContain('naijalingo');
+    const selection = selectNigerianVoice(
+      'naijalingo',
+      envFrom({ NAIJALINGO_API_KEY: 'k' }),
+      noFetch,
+    );
+    expect(selection.kind).toBe('built');
+    if (selection.kind === 'built') {
+      // The keeper exists ONLY for a vendor that can go cold, so its presence
+      // here and its absence for the approved voice are both the point.
+      expect(selection.build.warmKeeper).not.toBeNull();
+    }
+  });
+
+  it('still refuses a 9jaLingo response format it does not understand', () => {
+    // Loud, at boot. The alternative is a vendor 4xx during a session.
+    expect(() =>
+      selectNigerianVoice(
+        'naijalingo',
+        envFrom({ NAIJALINGO_API_KEY: 'k', NAIJALINGO_RESPONSE_FORMAT: 'mp3' }),
+        noFetch,
+      ),
+    ).toThrow(/NAIJALINGO_RESPONSE_FORMAT/u);
+  });
+
+  it('survives the blank lines a template ships with', () => {
+    // `ELEVENLABS_VOICE_IDS=` is the NORMAL state of an unconfigured box, not a
+    // deliberate choice of the empty mapping.
+    const built = buildLiveSynthesis(
+      CONFIG,
+      envFrom({ ELEVENLABS_VOICE_IDS: '   ', ELEVENLABS_MODEL: '' }),
+      noFetch,
+    );
+    expect(built.nigerian?.state().specialistConfigured).toBe(true);
+  });
+});
+
+describe('the boot preflight asks the vendor that is actually routed', () => {
+  it('reports an ABSENT credential as absent, without attempting a request', async () => {
     let attempted = false;
     const fetchImpl = (async () => {
       attempted = true;
       return new Response('{}');
     }) as unknown as typeof fetch;
 
-    const preflight = await preflightNigerianSpecialist(envFrom(), fetchImpl);
+    const preflight = await preflightNigerianSpecialist(
+      readLiveProviderEnv({} as NodeJS.ProcessEnv),
+      fetchImpl,
+    );
+    expect(preflight.providerId).toBe(NIGERIAN_SPECIALIST_PROVIDER_ID);
     expect(preflight.keyConfigured).toBe(false);
+    // Absent and rejected need opposite actions; no request is made at all, so
+    // nothing in a log can be mistaken for a rejection.
     expect(attempted).toBe(false);
     // Reported as unserved rather than as "no problems found".
-    expect(preflight.languagesWithoutSpeakers).toEqual(['ha', 'ig', 'yo', 'pcm']);
+    expect([...preflight.languagesWithoutSpeakers].sort()).toEqual(
+      [...NIGERIAN_SPECIALIST_LANGUAGES].sort(),
+    );
   });
 
-  it('uses the configured header and host, and never carries a key into its report', async () => {
+  it('is satisfied when the configured voice is really in the account', async () => {
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ voices: [{ voice_id: 'el-voice' }] }), {
+        headers: { 'content-type': 'application/json' },
+      })) as unknown as typeof fetch;
+
+    const preflight = await preflightNigerianSpecialist(envFrom(), fetchImpl);
+    expect(preflight.reachable).toBe(true);
+    expect(preflight.problem).toBeNull();
+    expect(preflight.languagesWithoutSpeakers).toEqual([]);
+  });
+
+  it('catches the quiet failure: a valid key whose account lacks the voice', async () => {
+    /*
+     * THE ONE THIS EXISTS FOR. It answers 200 to every check a deployment
+     * normally runs and 400 to the first sentence of a broadcast, which is the
+     * worst possible moment to find out.
+     */
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ voices: [{ voice_id: 'somebody-elses-voice' }] }), {
+        headers: { 'content-type': 'application/json' },
+      })) as unknown as typeof fetch;
+
+    const preflight = await preflightNigerianSpecialist(envFrom(), fetchImpl);
+    expect(preflight.reachable).toBe(true);
+    expect(preflight.problem).toMatch(/not in this account/u);
+    expect([...preflight.languagesWithoutSpeakers].sort()).toEqual(
+      [...NIGERIAN_SPECIALIST_LANGUAGES].sort(),
+    );
+  });
+
+  it('a SCOPED key is reported as working, with the catalogue marked unchecked', async () => {
+    /*
+     * MEASURED IN PRODUCTION, 18 Sep 2026, and this preflight's own first
+     * defect. The key there is scoped to synthesis alone, so `/v1/voices`
+     * answers 401 `missing_permissions` while a real Yoruba sentence answers
+     * 200 with a second of audio. Reported as unreachable it marked a working
+     * vendor unhealthy on /health and blocked the live Nigerian routes -- a
+     * check that invented its own outage. A narrow key is good practice.
+     */
+    const fetchImpl = (async () =>
+      new Response(
+        JSON.stringify({
+          detail: { status: 'missing_permissions', message: 'missing the permission voices_read' },
+        }),
+        { status: 401, headers: { 'content-type': 'application/json' } },
+      )) as unknown as typeof fetch;
+
+    const preflight = await preflightNigerianSpecialist(envFrom(), fetchImpl);
+    expect(preflight.keyConfigured).toBe(true);
+    expect(preflight.reachable).toBe(true);
+    expect(preflight.problem).toBeNull();
+    // Nothing was learned, so nothing is claimed in either direction.
+    expect(preflight.voiceCatalogueChecked).toBe(false);
+    expect(preflight.languagesWithoutSpeakers).toEqual([]);
+  });
+
+  it('a genuinely rejected credential is still a failure, not a scope note', async () => {
+    // The distinction is the point: one is a narrow key, the other is nothing
+    // being spoken at all, and they must not read the same.
+    const fetchImpl = (async () =>
+      new Response(JSON.stringify({ detail: { status: 'invalid_api_key' } }), {
+        status: 401,
+        headers: { 'content-type': 'application/json' },
+      })) as unknown as typeof fetch;
+
+    const preflight = await preflightNigerianSpecialist(envFrom(), fetchImpl);
+    expect(preflight.reachable).toBe(false);
+    expect(preflight.problem).toMatch(/REJECTED/u);
+  });
+
+  it('never carries a credential into its report', async () => {
     const seen: { url: string; headers: Record<string, string> }[] = [];
     const fetchImpl = (async (url: unknown, init: unknown) => {
       seen.push({
         url: String(url),
         headers: (init as RequestInit).headers as Record<string, string>,
       });
-      return new Response(JSON.stringify({ status: 'ok', speakers: [] }), {
+      return new Response(JSON.stringify({ voices: [] }), {
         headers: { 'content-type': 'application/json' },
       });
     }) as unknown as typeof fetch;
 
     const preflight = await preflightNigerianSpecialist(
-      envFrom({ NAIJALINGO_API_KEY: 'super-secret-value', NAIJALINGO_BASE_URL: 'https://h.invalid' }),
+      envFrom({ ELEVENLABS_API_KEY: 'super-secret-value' }),
       fetchImpl,
     );
-    expect(seen[0]?.url).toBe('https://h.invalid/v1/health');
-    expect(seen[0]?.headers['x-api-key']).toBe('super-secret-value');
-    // NAMES ONLY. A preflight that leaked its key into a boot log would be a
-    // worse failure than the one it exists to catch.
+    /*
+     * TWO REQUESTS SINCE 2 Oct 2026, and the order is deliberate: the
+     * synthesis probe runs first because "can this account speak" does not
+     * depend on whether the key may list voices. Production listed 29 voices
+     * happily while every call came back 401 payment_issue.
+     */
+    const urls = seen.map((request) => request.url);
+    expect(urls.some((url) => /\/v1\/text-to-speech\//u.test(url))).toBe(true);
+    expect(urls.some((url) => /\/v1\/voices$/u.test(url))).toBe(true);
+    // The credential travels on every one of them...
+    for (const request of seen) {
+      expect(request.headers['xi-api-key']).toBe('super-secret-value');
+    }
+    // ...and reaches none of the report. A preflight that leaked its key into
+    // a boot log would be a worse failure than the one it exists to catch.
     expect(JSON.stringify(preflight)).not.toContain('super-secret-value');
+  });
+
+  it('reports a vendor that cannot be reached as unreachable, not as absent', async () => {
+    const fetchImpl = (async () => {
+      throw new Error('ECONNREFUSED');
+    }) as unknown as typeof fetch;
+
+    const preflight = await preflightNigerianSpecialist(envFrom(), fetchImpl);
+    expect(preflight.keyConfigured).toBe(true);
+    expect(preflight.reachable).toBe(false);
+    expect(preflight.problem).toMatch(/could not be reached/u);
+  });
+});
+
+/**
+ * AN ACCOUNT THAT LISTS VOICES AND CANNOT SPEAK.
+ *
+ * MEASURED IN PRODUCTION, 2 Oct 2026. `GET /v1/voices` answered 200 with 29
+ * voices, the boot line read "elevenlabs preflight: reachable, 29 voice(s) in
+ * account, ha=1 ig=1 yo=1 pcm=1", and every sentence of every translated call
+ * came back 401 `payment_issue` -- the subscription had a failed payment.
+ *
+ * Every clause of that boot line was true. Together they described a vendor
+ * that worked at everything except speaking, which is the only thing it is
+ * there to do. The product delivered captions and silence while its health
+ * surface said the vendor was fine, because listing a catalogue and
+ * synthesising a word are different permissions and, as this showed,
+ * different billing states.
+ *
+ * A check that only reads cannot fail in the way that takes the product down.
+ */
+describe('a vendor that can list but cannot speak', () => {
+  function vendor(synthesisStatus: number, body: string) {
+    return (async (url: unknown) => {
+      if (/\/v1\/text-to-speech\//u.test(String(url))) {
+        return new Response(body, { status: synthesisStatus });
+      }
+      return new Response(
+        JSON.stringify({ voices: [{ voice_id: 'neMPCpWtBwWZhxEC8qpe' }] }),
+        { headers: { 'content-type': 'application/json' } },
+      );
+    }) as unknown as typeof fetch;
+  }
+
+  const PAYMENT = JSON.stringify({
+    detail: { status: 'payment_issue', message: 'Complete the latest invoice to continue usage.' },
+  });
+
+  it('reports that it cannot speak, however healthy the catalogue looks', async () => {
+    const preflight = await preflightNigerianSpecialist(
+      envFrom({ ELEVENLABS_API_KEY: 'k', ELEVENLABS_DEFAULT_VOICE_ID: 'neMPCpWtBwWZhxEC8qpe' }),
+      vendor(401, PAYMENT),
+    );
+    expect(preflight.canSynthesise).toBe(false);
+    expect(preflight.synthesisProblem).toContain('401');
+  });
+
+  it('leads the boot line with the refusal, not with the voice count', () => {
+    // The sentence an operator reads at 2 a.m. must not open with good news
+    // about a deployment that will deliver silence.
+    const sentence = describeNigerianVoicePreflight({
+      providerId: 'elevenlabs',
+      keyConfigured: true,
+      reachable: true,
+      voiceCatalogueChecked: true,
+      canSynthesise: false,
+      synthesisProblem: 'HTTP 401: payment_issue',
+      engineReady: null,
+      totalSpeakers: 29,
+      speakerIdsByLanguage: { yo: ['a'] },
+      languagesWithoutSpeakers: [],
+      problem: null,
+    });
+    expect(sentence).toContain('CANNOT SPEAK');
+    expect(sentence).toContain('SILENCE');
+    expect(sentence).not.toMatch(/^elevenlabs preflight: reachable/u);
+  });
+
+  it('still says so plainly when the vendor CAN speak', async () => {
+    const preflight = await preflightNigerianSpecialist(
+      envFrom({ ELEVENLABS_API_KEY: 'k', ELEVENLABS_DEFAULT_VOICE_ID: 'neMPCpWtBwWZhxEC8qpe' }),
+      vendor(200, 'audio-bytes'),
+    );
+    expect(preflight.canSynthesise).toBe(true);
+    expect(describeNigerianVoicePreflight(preflight)).toContain('it can speak');
+  });
+
+  it('does not claim a probe it could not run', async () => {
+    // No voice id configured: unknown is a third state and must not read as
+    // either a pass or a refusal.
+    const preflight = await preflightNigerianSpecialist(
+      envFrom({ ELEVENLABS_API_KEY: 'k', ELEVENLABS_DEFAULT_VOICE_ID: '' }),
+      vendor(200, 'audio-bytes'),
+    );
+    expect(preflight.canSynthesise).toBeNull();
+    expect(describeNigerianVoicePreflight(preflight)).toContain('NOT verified');
   });
 });

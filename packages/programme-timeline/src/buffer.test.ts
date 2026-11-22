@@ -293,3 +293,136 @@ describe('a protective delay requires every plane, or none', () => {
     expect(buffer.status().protected).toBe(true);
   });
 });
+
+/**
+ * A TRANSLATION ARRIVES AFTER THE SENTENCE IT TRANSLATES.
+ *
+ * `append` documents this as the normal case: "Events do not arrive in
+ * programme order -- a translation of a sentence lands after later audio has
+ * already been written." The cursor released a half-open TIME window, so an
+ * event written at a programme time already passed fell outside it for ever.
+ *
+ * MEASURED BY AUDIT, 29 Sep 2026. On a programme every `generated-audio`
+ * event was authored behind the cursor and released to nobody for the life of
+ * the process, while captions and media went out normally -- so the broadcast
+ * looked healthy and the interpreted voice simply never existed.
+ *
+ * Emission is exactly-once by IDENTITY now. These hold both halves: the late
+ * arrival gets out, and nothing gets out twice.
+ */
+describe('an event written behind the cursor still reaches the audience', () => {
+  it('releases a translation authored at a moment already passed', () => {
+    const timeline = new ProgrammeTimeline(RUN);
+    const buffer = bufferFor(timeline, 0);
+    authorSeconds(timeline, 10);
+    const first = buffer.advance();
+    expect(first.length).toBeGreaterThan(0);
+
+    // The translation of the sentence that began at second 2, produced now.
+    timeline.append({
+      programmeTimeMs: 2_000,
+      kind: 'generated-audio',
+      reference: 'seg_2',
+      durationMs: 1_000,
+    });
+
+    const late = buffer.advance();
+    expect(late.map((event) => event.kind)).toContain('generated-audio');
+    expect(late.map((event) => event.reference)).toContain('seg_2');
+  });
+
+  it('never releases the same event twice, however often it advances', () => {
+    const timeline = new ProgrammeTimeline(RUN);
+    const buffer = bufferFor(timeline, 0);
+    authorSeconds(timeline, 6);
+
+    const seen: number[] = [];
+    for (let tick = 0; tick < 5; tick += 1) {
+      for (const event of buffer.advance()) seen.push(event.sequence);
+    }
+    timeline.append({
+      programmeTimeMs: 1_000,
+      kind: 'generated-audio',
+      reference: 'seg_1',
+      durationMs: 1_000,
+    });
+    for (let tick = 0; tick < 5; tick += 1) {
+      for (const event of buffer.advance()) seen.push(event.sequence);
+    }
+    expect(new Set(seen).size).toBe(seen.length);
+  });
+
+  it('holds a late arrival that is still behind a real delay', () => {
+    // The fix must not become a way past the compliance delay.
+    const timeline = new ProgrammeTimeline(RUN);
+    const buffer = bufferFor(timeline, 45_000);
+    authorSeconds(timeline, 60);
+    buffer.advance();
+    timeline.append({
+      programmeTimeMs: 59_000,
+      kind: 'generated-audio',
+      reference: 'seg_59',
+      durationMs: 1_000,
+    });
+    // 59 s is inside the last 45 s of a 60 s broadcast, so it is not due.
+    expect(buffer.advance().map((event) => event.reference)).not.toContain('seg_59');
+  });
+
+  it('does not replay the broadcast to an audience that already heard it', () => {
+    // Recovery restores the cursor; the released set has to come with it or
+    // the first tick after a restart replays everything so far.
+    const timeline = new ProgrammeTimeline(RUN);
+    const buffer = bufferFor(timeline, 0);
+    authorSeconds(timeline, 20);
+    buffer.restoreReleasedThrough(10_000);
+    const afterRecovery = buffer.advance();
+    expect(afterRecovery.every((event) => event.programmeTimeMs > 10_000)).toBe(true);
+  });
+});
+
+/**
+ * A HICCUP MUST NOT COST A BROADCAST THAT PROMISED NOTHING.
+ *
+ * `failed` makes `advance` return nothing for the rest of the run, and only
+ * `configure` clears it -- which no service calls. That is right when a
+ * compliance delay is at stake: releasing held material unprotected would
+ * break the undertaking the delay exists to keep.
+ *
+ * At zero delay it protects nothing and costs everything. Production runs at
+ * zero delay, so one transient journal write failure ended captions, adverts
+ * and translated audio for the remainder of the broadcast. Found by audit
+ * 29 Sep 2026.
+ */
+describe('a persistence failure is weighed against what was promised', () => {
+  it('stops a DELAYED broadcast, because the promise is the point', () => {
+    const timeline = new ProgrammeTimeline(RUN);
+    const buffer = bufferFor(timeline, 45_000);
+    authorSeconds(timeline, 120);
+    buffer.advance();
+    buffer.fail('the programme timeline could not be persisted');
+    expect(buffer.status().state).toBe('failed');
+    expect(buffer.advance()).toEqual([]);
+  });
+
+  it('does NOT stop a live broadcast, which promised no delay at all', () => {
+    const timeline = new ProgrammeTimeline(RUN);
+    const buffer = bufferFor(timeline, 0);
+    authorSeconds(timeline, 10);
+    buffer.advance();
+    buffer.fail('the programme timeline could not be persisted');
+
+    expect(buffer.status().state).not.toBe('failed');
+    authorSeconds(timeline, 20);
+    // The audience keeps receiving the programme.
+    expect(buffer.advance().length).toBeGreaterThan(0);
+  });
+
+  it('still says what went wrong rather than absorbing it', () => {
+    const timeline = new ProgrammeTimeline(RUN);
+    const buffer = bufferFor(timeline, 0);
+    buffer.fail('the programme timeline could not be persisted');
+    expect(buffer.status().detail).toContain('could not be persisted');
+    // And it is not reported as a protected broadcast.
+    expect(buffer.status().protected).toBe(false);
+  });
+});

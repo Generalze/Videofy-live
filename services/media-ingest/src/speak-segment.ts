@@ -35,6 +35,11 @@ export interface SpeakSegmentInput {
   readonly frameSamples?: TranslatedAudioFramerDeps['frameSamples'];
   readonly now?: () => number;
   readonly log?: (line: string, detail?: Record<string, unknown>) => void;
+  /**
+   * For a sentence that reached nobody. See the failure branch below for why
+   * this is separate from `log`, which is a debug channel.
+   */
+  readonly warn?: (line: string, detail?: Record<string, unknown>) => void;
 }
 
 export interface SpeakSegmentOutcome {
@@ -97,11 +102,35 @@ export async function speakSegment(input: SpeakSegmentInput): Promise<SpeakSegme
     // spoken, and marking it final would tell everything downstream that a
     // truncated translation is a complete one.
     framer.abandon();
-    input.log?.('segment not spoken through', {
+    /*
+     * A SENTENCE NOBODY HEARD IS NOT DEBUG CHATTER.
+     *
+     * This reported through `log`, which the live path wires to
+     * `logger.debug`, on deployments running at info. On 2 Oct 2026 every
+     * segment of a translated call failed here with the vendor's own words
+     * -- `401 payment_issue`, a lapsed subscription -- and every one of
+     * those lines was written and discarded. The call delivered captions and
+     * silence, the boot line said the vendor was reachable with 29 voices,
+     * and the service had to be put into debug on a live box to find out
+     * why. The answer had been printed eight times and thrown away.
+     *
+     * ABORTED IS DIFFERENT AND STAYS QUIET. A superseded or cancelled
+     * segment is the pipeline working: a revised final arrived, or the
+     * speaker moved on. Warning on those would bury the failures in the
+     * ordinary traffic of a healthy call, which is how a channel stops
+     * being read.
+     */
+    const report = aborted ? input.log : (input.warn ?? input.log);
+    report?.('segment not spoken through', {
       segmentId: input.segmentId,
       generation: input.generation,
       aborted,
       failure: providerError,
+      ...(aborted
+        ? {}
+        : {
+            consequence: 'this sentence reached nobody; the listener heard silence for it',
+          }),
     });
     return {
       framesEmitted: framer.framesEmitted,

@@ -189,9 +189,29 @@ ship_engine() {
 # Removed however this command ends, so /tmp does not fill with the machinery
 # of every deployment ever run. Never removes another transaction's directory:
 # the name contains this invocation's nonce.
+#
+# A CLEANUP THAT CANNOT REACH THE BOX SAYS SO.
+#
+# This swallowed every failure, and the failure it swallows most often is the
+# one that matters: when a deploy ends because the ssh transport died, this
+# runs over that same dead transport and silently does nothing. Three engine
+# directories and a 24MB bundle had accumulated in /tmp on the production box
+# by 28 Sep 2026, each from a run whose log looked finished.
+#
+# It still never fails the deploy -- debris is not a reason to report a good
+# release as bad -- but it names what it left, so a sweep is a thing somebody
+# can decide to do rather than discover a year later.
 cleanup_transaction_tooling() {
   [ -n "${REMOTE_LIB:-}" ] || return 0
-  ssh "$VIDEOFY_SSH_HOST" "rm -rf '$REMOTE_LIB' '$REMOTE_LIB.stage' '$REMOTE_BUNDLE'" 2>/dev/null || true
+  if ! ssh "$VIDEOFY_SSH_HOST" \
+      "rm -rf '$REMOTE_LIB' '$REMOTE_LIB.stage' '$REMOTE_BUNDLE'" 2>/dev/null; then
+    echo "NOTE: could not remove this transaction's tooling from the box." >&2
+    echo "  Left behind (harmless, but yours to sweep):" >&2
+    echo "    $REMOTE_LIB" >&2
+    echo "    $REMOTE_LIB.stage" >&2
+    echo "    $REMOTE_BUNDLE" >&2
+  fi
+  return 0
 }
 
 # ---------------------------------------------------------------- read-only
@@ -273,13 +293,33 @@ cat >/dev/null
 HOLD
   local answer=""
   # The far end answers once, before it starts waiting.
-  IFS= read -r -t 60 answer <&"${LOCKHOLD[0]}" || true
+  #
+  # READ THROUGH A LOCAL COPY, for the same reason the close does.
+  #
+  # `${LOCKHOLD[0]}` is unbound the moment bash reaps the coprocess, and under
+  # `set -u` an unbound expansion is fatal. That is not a rare path: the
+  # coprocess dies exactly when the far end refuses or the connection drops,
+  # which is precisely when this block runs. Seen on 30 Sep 2026 -- a deploy
+  # correctly refused a busy lock, printed who held it, and then died with
+  # "LOCKHOLD[0]: unbound variable" instead of its own explanation, so the
+  # operator got a stack noise line where the remedy should have been.
+  #
+  # Same family as the close below, and missed there because only the write
+  # descriptor was fixed.
+  local reader="${LOCKHOLD[0]:-}"
+  if [ -n "$reader" ]; then
+    IFS= read -r -t 60 answer <&"$reader" || true
+  fi
   if [ "$answer" != "LOCK_HELD" ]; then
-    echo "REFUSED: could not take the deployment transaction lock ($answer)." >&2
+    echo "REFUSED: could not take the deployment transaction lock (${answer:-no answer})." >&2
     echo "  prepare, deploy and rollback are one transaction each and cannot" >&2
     echo "  interleave. Another operation owns it; wait, or inspect with:" >&2
     echo "    bash deploy/atomic-deploy.sh $ENV_NAME state" >&2
-    while IFS= read -r -t 2 answer <&"${LOCKHOLD[0]}"; do echo "  $answer" >&2; done
+    echo "  A holder left behind by a dropped connection is killed by PROCESS" >&2
+    echo "  GROUP -- kill -TERM -<pgid> -- never by matching a command line." >&2
+    if [ -n "$reader" ]; then
+      while IFS= read -r -t 2 answer <&"$reader"; do echo "  $answer" >&2; done
+    fi
     return 1
   fi
   LOCK_HELD=yes
@@ -290,9 +330,36 @@ HOLD
 }
 
 release_transaction_lock() {
-  [ "$LOCK_HELD" = yes ] || return 0
-  exec {LOCKHOLD[1]}>&- 2>/dev/null || true
+  [ "${LOCK_HELD:-no}" = yes ] || return 0
+  #
+  # THE LINE THAT LOOKED LIKE THE CAUSE. Seen in production 28 Sep 2026,
+  # reproduced exactly.
+  #
+  # `exec {NAME}>&-` takes a VARIABLE NAME, and bash reads whatever fd number
+  # that variable holds. `LOCKHOLD[1]` is not a name, it is a subscript, and
+  # bash resolves it by expansion instead -- which works for exactly as long
+  # as the coprocess is alive. When the ssh connection drops, bash reaps the
+  # coprocess and UNSETS the array, so the redirect target is empty and the
+  # line dies with "LOCKHOLD[1]: ambiguous redirect".
+  #
+  # WHAT IT ACTUALLY COST, measured rather than assumed. The `|| true` does
+  # catch the failure and the EXIT trap runs to completion, so nothing leaks
+  # here. The redirect error is emitted BEFORE `2>/dev/null` takes effect --
+  # redirections are applied left to right and this is the one that failed --
+  # so the message escapes to stderr and lands as the LAST line of a failed
+  # deploy, under the real error, reading exactly like its cause. It is not.
+  # A first guess that it aborted the trap was wrong, and the probe in
+  # deploy/tests pins the true behaviour so the next reader is not misled the
+  # same way.
+  #
+  # Closing is belt-and-braces regardless: a dead coprocess has already
+  # released the flock, because the far end got EOF when the connection died.
+  local hold="${LOCKHOLD[1]:-}"
+  if [ -n "$hold" ]; then
+    exec {hold}>&- 2>/dev/null || true
+  fi
   LOCK_HELD=no
+  return 0
 }
 
 # Released however this script ends -- success, failure, or Ctrl-C. And if the
@@ -334,6 +401,45 @@ remote_active_record() {
 }
 
 # Record the deployment on the box, AFTER the public smoke has passed here.
+#
+# DID IT FAIL, OR DID THE ANSWER GET LOST?
+#
+# 28 Sep 2026. A production deploy published, restarted, proved every unit was
+# running the release and passed the public smoke. `atomic_finalize` then ran
+# on the box and DID write DEPLOY-STATE.md -- and the ssh connection carrying
+# its reply was reset before "DEPLOYED <sha>" came back. The script reported
+# "DEPLOY FINALIZATION FAILED: DEPLOY-STATE.md was not updated" and exited 1,
+# about a file that had just been updated correctly.
+#
+# A lost acknowledgement is not a failed action, and on a transport that can
+# drop these are indistinguishable from the caller's side. So the caller ASKS
+# THE BOX instead of guessing. Re-running finalize is safe by construction:
+# `atomic_finalize` refuses unless `current` still names this sha, the seal
+# still matches and the processes are still running it, so a retry either
+# re-confirms the same fact or refuses loudly.
+#
+finalize_with_confirmation() {
+  local sha="$1" previous="$2"
+  if remote_finalize "$sha" "$previous"; then return 0; fi
+  echo "[$ENV_NAME] finalize did not answer; asking the box what it recorded" >&2
+  # A second attempt reaches a box that is either already finalised (the
+  # record matches and this re-confirms it) or genuinely not, in which case
+  # it refuses and says why.
+  if remote_finalize "$sha" "$previous"; then
+    echo "[$ENV_NAME] the first answer was lost in transit; the box had recorded it" >&2
+    return 0
+  fi
+  # Last resort: read the record directly. If it already names this sha, the
+  # deployment is a fact whatever the finalize channel managed to say.
+  local recorded
+  recorded="$(remote_active_record 2>/dev/null || true)"
+  if [ "$recorded" = "$sha" ]; then
+    echo "[$ENV_NAME] DEPLOY-STATE.md already names $sha; treating it as recorded" >&2
+    return 0
+  fi
+  return 1
+}
+
 remote_finalize() {
   local sha="$1" previous="$2"
   # shellcheck disable=SC2029
@@ -398,7 +504,7 @@ if [ "$ACTION" = "rollback" ]; then
     echo "  release, is the thing to look at."
     exit 1
   fi
-  if ! remote_finalize "$TARGET" "rolled-back"; then
+  if ! finalize_with_confirmation "$TARGET" "rolled-back"; then
     echo "ROLLBACK FINALIZATION FAILED. The target is active on the box, but"
     echo "  DEPLOY-STATE.md was not updated. Inspect the host before proceeding."
     exit 1
@@ -560,7 +666,7 @@ fi
 
 # THE RECORD IS WRITTEN LAST, and only here. Everything above it is reversible
 # or already reversed; this is the deployment becoming a fact.
-if ! remote_finalize "$SHA" "$PREVIOUS_RECORDED"; then
+if ! finalize_with_confirmation "$SHA" "$PREVIOUS_RECORDED"; then
   echo "DEPLOY FINALIZATION FAILED: $SHA is active on the box, but"
   echo "  DEPLOY-STATE.md was not updated. No DEPLOYED line is being emitted."
   echo "  Inspect current, DEPLOY-STATE.md and service state before proceeding."

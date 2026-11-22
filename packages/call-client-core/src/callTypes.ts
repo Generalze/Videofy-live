@@ -71,7 +71,15 @@ export interface CallPlaybackPayload {
   atMs: number;
 }
 
-export type CallLanguage = 'en' | 'es' | 'fr';
+/**
+ * A LANGUAGE CATALOGUE CODE. Byte-compatible with call-wire's CallLanguage,
+ * which carries the full account of why this is no longer a three-way union.
+ *
+ * In short: this union was the last thing telling the phone that a Hausa
+ * profile had no call language, so the join carried none and the session
+ * opened with nothing to translate into.
+ */
+export type CallLanguage = string;
 export type CallVoiceGender = 'male' | 'female';
 export type CallAudioMode = 'translated' | 'interpretation' | 'original';
 

@@ -40,6 +40,11 @@ import { registerTariffRoutes } from './tariff-routes.js';
 import { DeviceStore } from './device-store.js';
 import { createPostgresDeviceRecords } from './db/device-records-postgres.js';
 import { registerDeviceRoutes } from './device-routes.js';
+import { createFederatedProviders } from './federated-config.js';
+import { FederatedSignIn } from './federated-sign-in.js';
+import { registerFederatedRoutes } from './federated-routes.js';
+import { createEphemeralAccountIdentities } from './account-identities.js';
+import { createPostgresAccountIdentities } from './db/account-identities-postgres.js';
 import { PushDispatcher } from './push/push-dispatcher.js';
 import { registerPushRoutes } from './push-routes.js';
 import { MessageStore, createInMemoryMessagePort } from './message-store.js';
@@ -318,8 +323,41 @@ if (accountStoreKind === 'postgres') {
 
 const store = new AccountStore(records);
 
+/**
+ * WHAT THIS SERVICE CAN ACTUALLY DO, not merely that it is answering.
+ *
+ * This returned a bare `{status:'ok'}`. On 2026-09-17 production could not ring
+ * a single phone for weeks -- `FCM_PROJECT_ID` was empty and the credential
+ * file absent, so no push provider was built -- and this endpoint said `ok`
+ * throughout. The one place that knew was a boot log line, long gone by the
+ * time anyone asked. Hours went into diagnosing a fault the service could have
+ * reported in a field.
+ *
+ * So it reports the capabilities whose absence is invisible from outside:
+ *
+ *   push  a deployment with no provider CANNOT RING ANY PHONE, and every
+ *         other signal looks identical to one nobody happened to call. The
+ *         provider NAMES are safe to publish; no credential is.
+ *   store `ephemeral` means accounts, messages and devices do not survive a
+ *         restart -- which reads as data loss, not as a health problem, until
+ *         somebody asks this.
+ *
+ * `status` stays `ok` while the service answers: these are capability facts,
+ * not liveness, and conflating them would make a checker restart a service
+ * that is working perfectly and merely unconfigured. The point is that the
+ * facts are READABLE, not that they trip an alarm.
+ */
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', service: 'account', timestamp: new Date().toISOString() });
+  res.json({
+    status: 'ok',
+    service: 'account',
+    push: {
+      configured: push.configured,
+      providers: pushProviders.map((provider) => provider.name),
+    },
+    store: databasePool ? 'postgres' : 'ephemeral',
+    timestamp: new Date().toISOString(),
+  });
 });
 
 /*
@@ -481,6 +519,14 @@ registerAccountRoutes(app, {
   store,
   contacts,
   presence,
+  /*
+   * Deliberately lazy. The dispatcher is built further down, after the device
+   * store it reads from, and these routes are registered here -- so the
+   * reference is resolved when a request arrives, long after boot, rather
+   * than at this line. Reordering the whole device/push block up here to
+   * avoid one arrow function would move more than it is worth.
+   */
+  push: { notify: (accountId, notification) => push.notify(accountId, notification) },
   secret,
   organizations,
   abuse,
@@ -625,19 +671,6 @@ console.log(
   }),
 );
 
-registerDeviceRoutes(app, {
-  devices,
-  callerAccountId: createCallerResolver({
-    store,
-    secret,
-    nowSeconds: () => Math.floor(Date.now() / 1000),
-  }),
-  onEvent: (event, detail) => {
-    // eslint-disable-next-line no-console
-    console.log(JSON.stringify({ service: 'account', event, ...detail }));
-  },
-});
-
 /*
  * PUSH.
  *
@@ -675,6 +708,90 @@ console.log(
     note: push.configured ? undefined : 'No push provider: phones cannot be rung.',
   }),
 );
+
+/*
+ * Registered AFTER the dispatcher, because a first sign-in on a new device
+ * tells the account's other devices about it.
+ */
+registerDeviceRoutes(app, {
+  devices,
+  callerAccountId: createCallerResolver({
+    store,
+    secret,
+    nowSeconds: () => Math.floor(Date.now() / 1000),
+  }),
+  push,
+  notificationsEnabled: (accountId) => store.get(accountId)?.notificationsEnabled !== false,
+  onEvent: (event, detail) => {
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify({ service: 'account', event, ...detail }));
+  },
+});
+
+/*
+ * SIGNING IN WITH GOOGLE OR KINGSCHAT.
+ *
+ * Selection happens HERE, at boot, and throws rather than returning a broken
+ * provider -- so a deployment with a switch on and a value missing stops at
+ * startup instead of showing a button that answers 503 to everybody who
+ * presses it.
+ *
+ * Both switches ship off. An off provider is not an absent one: the routes
+ * stay mounted and refuse honestly, and `GET /oauth/providers` tells the
+ * sign-in page which buttons to draw, so nothing renders a control that
+ * cannot work.
+ */
+const federatedProviders = createFederatedProviders(process.env, {
+  warn: (message) => {
+    // eslint-disable-next-line no-console
+    console.warn(JSON.stringify({ service: 'account', level: 'warn', message }));
+  },
+  onSelected: (message) => {
+    // eslint-disable-next-line no-console
+    console.log(JSON.stringify({ service: 'account', message }));
+  },
+});
+
+registerFederatedRoutes(app, {
+  store,
+  signIn: new FederatedSignIn({
+    accounts: store,
+    identities: databasePool
+      ? createPostgresAccountIdentities(databasePool)
+      : createEphemeralAccountIdentities(),
+    warn: (message) => {
+      /*
+       * At WARN, on purpose. These lines report an identity pointing at a
+       * missing account, or a lost creation race -- conditions that should
+       * not happen and that nobody goes looking for. Logged at debug they
+       * would be invisible on an info-level box, which is how guards here
+       * have been misread before as never having fired.
+       */
+      // eslint-disable-next-line no-console
+      console.warn(JSON.stringify({ service: 'account', level: 'warn', message }));
+    },
+  }),
+  providers: federatedProviders,
+  secret,
+  /*
+   * From configuration, NEVER from a request header. The callback redirect is
+   * built from this, and one built from the Host header sends somebody who
+   * has just signed in to whichever host an attacker wrote there.
+   */
+  publicOrigin: process.env['C7_PUBLIC_ORIGIN'] ?? 'http://127.0.0.1:3106',
+  /*
+   * The mobile app's url scheme, matching `expo.scheme` in
+   * apps/mobile/app.json. A phone runs the same KingsChat web login in a
+   * system browser and comes back through this; if the two ever disagree,
+   * the browser lands on a scheme no app claims and the sign-in completes
+   * into nothing.
+   */
+  appScheme: process.env['C7_APP_URL_SCHEME'] ?? 'videofy',
+  warn: (message) => {
+    // eslint-disable-next-line no-console
+    console.warn(JSON.stringify({ service: 'account', level: 'warn', message }));
+  },
+});
 
 /*
  * CALL HISTORY. A finished direct call is part of the account pair's
@@ -1159,6 +1276,17 @@ console.log(
  */
 const specialists = new SpecialistStore({
   port: databasePool ? createPostgresSpecialistPort(databasePool) : createInMemorySpecialistPort(),
+  /*
+   * THE SPECIALIST SIGNS THE EVIDENCE BY NAME. The name is the one on their
+   * C7 account -- the profile the founder's ruling refers to -- read here and
+   * nowhere else, so the specialist store never grows its own copy of a name
+   * that could drift from the account's.
+   */
+  accountName: async (accountId) => {
+    const record = store.get(accountId);
+    if (record === null || record === undefined) return null;
+    return { displayName: record.displayName ?? null, username: record.username ?? null };
+  },
   onEvent: (event, detail) => {
     /*
      * IDS, LANGUAGE CODES, COUNTS AND THE CORPUS HASH. Never a source message,

@@ -121,6 +121,88 @@ describe('only a Videofy final may be spoken', () => {
   });
 });
 
+describe('a NON-TRANSLATION is never spoken', () => {
+  /**
+   * MEASURED ON TWO PHONES IN PRODUCTION, 22 Sep 2026, and the worst defect
+   * this product has shipped.
+   *
+   * The route gate hands back the ORIGINAL text whenever it declines -- an
+   * unapproved route, an engine that failed, a phone number it mangled -- and
+   * marks the result `translated: false`. For a MESSAGE that is right: the
+   * reader sees the original and is told it was not translated.
+   *
+   * This pipeline SPOKE it. `en->fr` was unapproved, the gate correctly
+   * declined, the English came back, and it was synthesised and delivered as
+   * translated audio. Two people spent three minutes listening to a machine
+   * voice read their own sentences back at them -- in the language the
+   * listener already could not understand, with the speaker's real voice
+   * suppressed, and nothing anywhere marking it as untranslated.
+   */
+  function decliningRig() {
+    const translation: TimestampedTranslationProvider = {
+      name: 'gated:mock-mt',
+      // Exactly what GatedTranslationProvider returns on a refusal: the
+      // source text, unchanged, flagged as not a translation.
+      translate: async (input) => ({
+        translatedText: input.sourceText,
+        providerName: 'gated:mock-mt',
+        translated: false,
+      }),
+    };
+    return rig({ translation });
+  }
+
+  it('speaks NOTHING when the gate declined the direction', async () => {
+    const r = decliningRig();
+    const record = await r.pipeline.onTranscriptEvent(transcript());
+    expect(record, 'nothing was spoken').toBeNull();
+    expect(r.delivered, 'and not one frame of audio was delivered').toHaveLength(0);
+  });
+
+  it('is decided by the FLAG, not by comparing the text', async () => {
+    /*
+     * The tempting shortcut is "if the output equals the input, it was not
+     * translated". It is wrong in both directions: a proper name or a greeting
+     * can translate to itself, and a declined result can differ from the
+     * source once identifiers have been restored. The provider says whether it
+     * translated; nobody infers it.
+     */
+    const r = rig({
+      translation: {
+        name: 'mock-mt',
+        translate: async () => ({ translatedText: 'quite different words', translated: false }),
+      },
+    });
+    expect(await r.pipeline.onTranscriptEvent(transcript())).toBeNull();
+    expect(r.delivered).toHaveLength(0);
+  });
+
+  it('still speaks a real translation that happens to equal its source', async () => {
+    // The other half of the same rule: "Bonjour" into French is "Bonjour".
+    const r = rig({
+      translation: {
+        name: 'mock-mt',
+        translate: async (input) => ({ translatedText: input.sourceText, translated: true }),
+      },
+    });
+    const record = await r.pipeline.onTranscriptEvent(transcript());
+    expect(record?.translatedText).toBe('good afternoon');
+    expect(r.delivered.length).toBeGreaterThan(0);
+  });
+
+  it('treats a provider that says nothing as a translation, so nothing else changes', async () => {
+    /*
+     * `translated` is optional and absent means translated. Every provider
+     * that really translates keeps working untouched; only the paths that hand
+     * back an original have to declare themselves.
+     */
+    const r = rig();
+    const record = await r.pipeline.onTranscriptEvent(transcript());
+    expect(record?.translatedText).toBe('[es] good afternoon');
+    expect(r.delivered.length).toBeGreaterThan(0);
+  });
+});
+
 describe('generations are the platform own', () => {
   it('PIN: each attempt at a segment gets the next generation', async () => {
     const r = rig();
@@ -302,5 +384,91 @@ describe('confidence floor on synthesis', () => {
   it('a floor of 0 speaks everything, for a deployment that wants the old behaviour', () => {
     expect(DEFAULT_MIN_SPOKEN_CONFIDENCE).toBeGreaterThan(0);
     expect(DEFAULT_MIN_SPOKEN_CONFIDENCE).toBeLessThan(1);
+  });
+});
+
+/**
+ * THE REPORT MUST SURVIVE THE DEPLOYMENT'S LOG LEVEL.
+ *
+ * 28 Sep 2026. A French call produced no audio for 55 seconds in each
+ * direction. The route gate was refusing every segment, the guard below
+ * reported it on every segment exactly as written, and the report went to
+ * `log` -- which the live session host wires to `logger.debug` -- on a box
+ * running `LOG_LEVEL=info`. Every line was written and discarded.
+ *
+ * The investigation then read the empty log as "the guard fired 0 times" and
+ * spent its time elsewhere. That is this project's other signature defect: a
+ * number, or an absence, read without the context that gives it meaning. An
+ * event below a threshold is not an event that did not happen.
+ *
+ * So the decisions that leave somebody hearing nothing go to `warn`, a
+ * separate seam, and these pin WHICH seam rather than merely that something
+ * was said. A test asserting "it logged" would have passed throughout the
+ * outage.
+ */
+describe('a decision that silences a participant is not debug chatter', () => {
+  function seams() {
+    const debug: string[] = [];
+    const warned: string[] = [];
+    return {
+      debug,
+      warned,
+      wiring: {
+        log: (line: string) => void debug.push(line),
+        warn: (line: string) => void warned.push(line),
+      },
+    };
+  }
+
+  it('warns when the gate declines, and does not merely whisper it', async () => {
+    const s = seams();
+    const { pipeline } = rig({
+      ...s.wiring,
+      translation: {
+        name: 'gated:mock-mt',
+        // What the gate hands back when it refuses: the ORIGINAL, flagged.
+        translate: async (input) => ({
+          translatedText: input.sourceText,
+          providerName: 'gated:mock-mt',
+          translated: false,
+        }),
+      },
+    });
+    await pipeline.onTranscriptEvent(transcript());
+    expect(s.warned).toContain('translation declined; nothing will be spoken for this segment');
+    expect(s.debug).not.toContain('translation declined; nothing will be spoken for this segment');
+  });
+
+  it('warns when the engine fails', async () => {
+    const s = seams();
+    const { pipeline } = rig({
+      ...s.wiring,
+      translation: {
+        name: 'mock-mt',
+        translate: async () => { throw new Error('provider exploded'); },
+      },
+    });
+    await pipeline.onTranscriptEvent(transcript());
+    expect(s.warned).toContain('translation failed');
+    expect(s.debug).not.toContain('translation failed');
+  });
+
+  it('warns when the confidence floor withholds a voice', async () => {
+    const s = seams();
+    const { pipeline } = rig(s.wiring);
+    await pipeline.onTranscriptEvent(
+      transcript({ provider: { name: 'mock', confidence: 0.2 } }),
+    );
+    expect(s.warned).toContain('below the confidence floor; captioned but NOT spoken');
+    expect(s.debug).not.toContain('below the confidence floor; captioned but NOT spoken');
+  });
+
+  it('leaves the chatter of a working stream where it was', async () => {
+    // A stream that works must not start warning on every segment, or the
+    // channel stops meaning anything and the next outage hides in the noise.
+    const s = seams();
+    const { pipeline } = rig(s.wiring);
+    await pipeline.onTranscriptEvent(transcript());
+    expect(s.warned).toEqual([]);
   });
 });

@@ -203,7 +203,46 @@ describe('the playlist describes the cursor, not the encoder', () => {
     // next forty-five seconds of a protected broadcast.
     expect(reply.text).not.toContain(live.spool);
     expect(reply.text).not.toContain('.m4s');
-    expect(reply.text).toContain('/programmes/run_1/segments/');
+    expect(reply.text).toContain('segments/run_1_seg_');
+  });
+
+  /*
+   * THE FRAGMENT REFERENCE MUST SURVIVE A MOUNT PREFIX.
+   *
+   * FOUND BY AUDIT, 29 Sep 2026. This emitted `/programmes/<run>/segments/<id>`
+   * -- root-absolute. Behind the edge the service is mounted under `/media`
+   * with the prefix stripped, and the manifest the client holds came from
+   * `/media/programmes/<run>/playlist.m3u8`. A root-absolute reference throws
+   * the `/media` away, so the player asked the WEBSITE for every fragment and
+   * got the page shell back with a 200.
+   *
+   * The old test asserted `toContain('/programmes/run_1/segments/')`, which
+   * the correct relative form also satisfies as a substring, against an app
+   * with no prefix at all. It could not fail either way. This mounts the
+   * routes under a prefix and resolves the reference the way a player does.
+   */
+  it('names fragments relative to the playlist, so a mount prefix survives', async () => {
+    const live = rig();
+    live.produce(180_000);
+
+    const mounted = express();
+    mounted.use('/media', live.app);
+    const playlistPath = '/media/programmes/run_1/playlist.m3u8';
+    const reply = await request(mounted, playlistPath);
+
+    const reference = reply.text
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .find((line) => line !== '' && !line.startsWith('#'));
+    expect(reference, 'the manifest names no fragment at all').toBeDefined();
+
+    // Exactly what a player does with the reference it just read.
+    const resolved = new URL(reference as string, `https://example.test${playlistPath}`);
+    expect(resolved.pathname).toBe('/media/programmes/run_1/segments/run_1_seg_0');
+
+    // And the bytes really are there at the address the manifest gave.
+    const fragment = await request(mounted, resolved.pathname);
+    expect(fragment.status).toBe(200);
   });
 
   it('is never cacheable, because it describes a moving cursor', async () => {
@@ -386,11 +425,50 @@ describe('the running service composes this door', () => {
   it('gives them the real access policy, not a permissive stand-in', () => {
     // A composition that answered 'allow' unconditionally would pass every
     // other test in this file and publish every locked broadcast.
-    expect(source).toContain('access: createProgrammeAudienceAccess({');
+    expect(source).toContain('access: audienceDoor()');
     expect(source).toContain('channelOf: (runId) => programmeTimelines.channelOf(runId)');
   });
 
-  it('falls back to refusing everybody when visibility cannot be resolved', () => {
-    expect(source).toContain('VISIBILITY_UNRESOLVABLE');
+  /*
+   * ONE DOOR, READ BY EVERY SURFACE THAT ADMITS A VIEWER.
+   *
+   * There used to be two constructions of the same arguments -- one for the
+   * live egress and one for replay -- which is how a hardening gets applied
+   * to one of them and not the other. An audit on 29 Sep 2026 found three
+   * further routes with no door at all.
+   */
+  it('builds the policy exactly once, so the surfaces cannot drift apart', () => {
+    expect(count(source, 'createProgrammeAudienceAccess({')).toBe(1);
+    // Every reader goes through the accessor rather than its own copy.
+    expect(count(source, 'audienceDoor()')).toBeGreaterThan(1);
+  });
+
+  /*
+   * THE FALLBACK, MEASURED RATHER THAN SPELLED.
+   *
+   * This asserted that the source contained the words
+   * `VISIBILITY_UNRESOLVABLE`, under the title "falls back to refusing
+   * everybody" -- which passes just as happily if the ternary choosing it is
+   * inverted, and passed throughout a period when an earlier branch made the
+   * fallback unreachable. The behaviour is covered for real in
+   * programme-audience-access.test.ts; what belongs here is that the
+   * composition selects it on the condition that matters.
+   */
+  it('selects the refusing visibility source when it cannot ask the account service', () => {
+    const composition = source.slice(
+      source.indexOf('const channelVisibility ='),
+      source.indexOf('programmeAudience = createProgrammeAudienceAccess'),
+    );
+    // The real client only where BOTH the url and the token exist...
+    expect(composition).toContain('config.accountServiceUrl !== null');
+    expect(composition).toContain('config.internalIngressAuth.token !== null');
+    // ...and the refusing one is what the other branch yields.
+    expect(composition.indexOf('createChannelVisibilityClient')).toBeLessThan(
+      composition.indexOf('VISIBILITY_UNRESOLVABLE'),
+    );
   });
 });
+
+function count(haystack: string, needle: string): number {
+  return haystack.split(needle).length - 1;
+}

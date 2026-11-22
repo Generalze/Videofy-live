@@ -33,6 +33,7 @@ import {
 const PROGRESSIVE_TRANSLATED_AUDIO =
   (import.meta.env['VITE_PROGRESSIVE_TRANSLATED_AUDIO'] ?? '') === 'true';
 import { CallRemoteSlotBinder, type CallReceiveTrackMapping } from '@videofy-live/call-client-core';
+import { isCatalogueLanguage } from '@videofy-live/language-catalogue';
 import {
   CallRemoteSpeakerAudioController,
   type RemoteSpeakerAudio,
@@ -312,8 +313,16 @@ export default function App() {
           } | null,
         ) => {
           if (cancelled || body === null) return;
-          const valid = (value: unknown): value is 'en' | 'es' | 'fr' =>
-            value === 'en' || value === 'es' || value === 'fr';
+          /*
+           * THE CATALOGUE, not a hand-written three. This discarded the signed-in
+           * person's OWN saved language whenever it was not one of en/es/fr, and
+           * did it silently: a Yoruba speaker opened the call form and found
+           * English selected, with nothing anywhere saying their preference had
+           * been dropped. The selector beside it already offers every catalogue
+           * language (see CALL_LANGUAGES); only the restore was still caged.
+           */
+          const valid = (value: unknown): value is CallLanguage =>
+            typeof value === 'string' && isCatalogueLanguage(value);
           const primary = body.profile?.defaultLanguage;
           const speak = body.profile?.spokenLanguage ?? primary;
           const hear = body.profile?.listeningLanguage ?? primary;

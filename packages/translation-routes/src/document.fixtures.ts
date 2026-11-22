@@ -7,7 +7,7 @@
  *
  * Not part of the built package: excluded in tsconfig.json alongside the tests.
  */
-import type { ScopeApproval, ServiceScope } from './route-record.js';
+import { SERVICE_SCOPES, type ScopeApproval, type ServiceScope } from './route-record.js';
 
 export const MEASURED = {
   sampleCount: 5,
@@ -22,6 +22,41 @@ export const PERMISSIVE_LICENCE = {
   commercialUse: 'permitted',
   evidence: 'fixture',
 };
+
+/**
+ * A complete review block. `model` matches `route()`'s `modelId` on purpose: a
+ * review of another model is refused, and a fixture that quietly disagreed
+ * would make every test using it a test of that refusal.
+ */
+export const REVIEWED = {
+  engine: 'opus-mt',
+  model: 'facebook/m2m100_418M',
+  modelVersion: 'a1b2c3d',
+  corpusHash: 'sha256:9f2c',
+  corpusVersion: '2026-09-01',
+  evaluator: 'A. Reader',
+  assessedAt: '2026-09-19T09:00:00.000Z',
+  method: 'read all eight lines against the source',
+  score: 8,
+  scale: 'sentences materially correct out of 8',
+  scaleMaximum: 8,
+  passThreshold: 7,
+  evidenceReference: 'docs/reviews/fixture.md',
+};
+
+/**
+ * Who signed it. The validator refuses an approved route that does not say, so
+ * a fixture that approves a scope says who. Named explicitly at each call site
+ * rather than defaulted into `route()`, because an approval nobody wrote down
+ * is the thing this field exists to prevent.
+ */
+export function approvedBy(...approved: readonly ServiceScope[]): Record<string, unknown> {
+  return {
+    approvedBy: 'a fixture approver',
+    approvedAt: '2026-09-20T12:00:00.000Z',
+    scopes: approved.length === 0 ? [...SERVICE_SCOPES] : [...approved],
+  };
+}
 
 export function scopes(
   overrides: Partial<Record<ServiceScope, ScopeApproval>> = {},

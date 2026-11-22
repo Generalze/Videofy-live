@@ -1,0 +1,355 @@
+/** @author masterzee001 */
+/**
+ * Ask ElevenLabs, before anybody needs an answer, whether this deployment can
+ * actually speak.
+ *
+ * WHY THIS EXISTS AT ALL. Until the founder ruling of 2026-09-18 the Nigerian
+ * languages were served by a specialist whose capacity scaled to zero, so the
+ * boot check that mattered was "is the vendor awake". ElevenLabs does not scale
+ * to zero, and the question that replaces it is narrower and just as quiet: a
+ * key that is valid but whose account does NOT contain the voice id this
+ * deployment is configured to use. That combination returns 200 on `/v1/voices`
+ * and 400 on the first sentence of a broadcast, which is the worst possible
+ * moment to discover it.
+ *
+ * WHAT IT DELIBERATELY DOES NOT CLAIM. Nothing here is evidence that the Yoruba
+ * is GOOD. Voice quality in ha/ig/yo/pcm was settled by a person listening --
+ * see `NIGERIAN_SPECIALIST_PROVIDER_ID` in ai-registry -- and no endpoint can
+ * re-decide it. This answers "can it speak at all", and says so in those words.
+ *
+ * NEVER THROWS, and never names a value. It reports; the caller decides. A
+ * preflight that could fail a boot would turn a vendor's outage into ours.
+ */
+import type { NigerianVoicePreflight } from '../../nigerian-synthesis-route.js';
+
+export interface ElevenLabsPreflightConfig {
+  readonly apiKey?: string | undefined;
+  readonly baseUrl?: string | undefined;
+  /** The vendor voice every unmapped platform voice falls back to. */
+  readonly defaultVoiceId?: string | undefined;
+  /** Every other vendor voice this deployment can reach, from ELEVENLABS_VOICE_IDS. */
+  readonly mappedVoiceIds?: readonly string[] | undefined;
+  /** Which languages this preflight is reporting FOR. */
+  readonly languages: readonly string[];
+  readonly providerId: string;
+  readonly fetchImpl?: typeof fetch | undefined;
+  readonly signal?: AbortSignal | undefined;
+}
+
+interface VoicesResponse {
+  readonly voices?: readonly { readonly voice_id?: unknown }[];
+}
+
+/**
+ * A report shaped for the Nigerian seam, because that is the surface that has
+ * to be able to say who speaks these four languages and whether it can.
+ */
+
+/**
+ * Can this deployment speak at all? Asked by speaking.
+ *
+ * ONE CHARACTER, the cheapest model, and the answer thrown away. Listing a
+ * catalogue and synthesising a word are different permissions and different
+ * billing states: on 2 Oct 2026 production listed 29 voices happily while
+ * every sentence of every call came back 401 `payment_issue`. The boot line
+ * said the vendor was fine, and it was fine at everything except the one
+ * thing the product needs.
+ *
+ * NEVER THROWS and never names the key. A probe that could fail a boot would
+ * turn a vendor's outage into ours -- the same rule the rest of this file
+ * follows.
+ */
+async function probeSynthesis(
+  base: string,
+  apiKey: string,
+  voiceId: string,
+  doFetch: typeof fetch,
+  signal: AbortSignal | undefined,
+): Promise<{ ok: boolean | null; problem: string | null }> {
+  if (voiceId.length === 0) {
+    return { ok: null, problem: 'no voice id is configured to probe with' };
+  }
+  try {
+    const reply = await doFetch(`${base}/v1/text-to-speech/${encodeURIComponent(voiceId)}`, {
+      method: 'POST',
+      headers: { 'xi-api-key': apiKey, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: '.', model_id: 'eleven_flash_v2_5' }),
+      ...(signal === undefined ? {} : { signal }),
+    });
+    if (reply.ok) return { ok: true, problem: null };
+    /*
+     * The vendor's own sentence, trimmed. A payment failure and a revoked
+     * key both answer 401 and need completely different actions, so the
+     * body is what gets reported rather than the status alone.
+     */
+    const body = (await reply.text().catch(() => '')).slice(0, 300);
+    return { ok: false, problem: `HTTP ${reply.status}${body === '' ? '' : `: ${body}`}` };
+  } catch (error) {
+    return {
+      ok: null,
+      problem: `could not be reached: ${error instanceof Error ? error.message : 'unknown failure'}`,
+    };
+  }
+}
+
+export async function preflightElevenLabsVoices(
+  config: ElevenLabsPreflightConfig,
+): Promise<NigerianVoicePreflight> {
+  const languages = [...config.languages];
+  const apiKey = config.apiKey?.trim() ?? '';
+  const defaultVoiceId = config.defaultVoiceId?.trim() ?? '';
+
+  /*
+   * AN ABSENT KEY IS REPORTED AS ABSENT, not as a failed request, and no
+   * network call is made at all. The two need opposite actions -- paste a key
+   * versus chase a vendor -- and a log line that confuses them costs an
+   * afternoon.
+   */
+  if (apiKey.length === 0) {
+    return {
+      providerId: config.providerId,
+      keyConfigured: false,
+      reachable: false,
+      voiceCatalogueChecked: false,
+      canSynthesise: null,
+      synthesisProblem: null,
+      engineReady: null,
+      totalSpeakers: null,
+      speakerIdsByLanguage: {},
+      languagesWithoutSpeakers: languages,
+      problem: null,
+    };
+  }
+
+  const base = (config.baseUrl ?? 'https://api.elevenlabs.io').replace(/\/+$/u, '');
+  const doFetch = config.fetchImpl ?? fetch;
+
+  /*
+   * ASKED FIRST, AND INDEPENDENTLY OF THE CATALOGUE. Whether the account can
+   * speak does not depend on whether the key may list voices -- that is the
+   * whole lesson of 2 Oct 2026 -- so they are separate questions with
+   * separate answers, and every return below carries this one.
+   */
+  const spoke = await probeSynthesis(base, apiKey, defaultVoiceId, doFetch, config.signal);
+
+  let response: Response;
+  try {
+    response = await doFetch(`${base}/v1/voices`, {
+      headers: { 'xi-api-key': apiKey, accept: 'application/json' },
+      ...(config.signal === undefined ? {} : { signal: config.signal }),
+    });
+  } catch (error) {
+    return {
+      providerId: config.providerId,
+      keyConfigured: true,
+      reachable: false,
+      voiceCatalogueChecked: false,
+      canSynthesise: spoke.ok,
+      synthesisProblem: spoke.problem,
+      engineReady: null,
+      totalSpeakers: null,
+      speakerIdsByLanguage: {},
+      languagesWithoutSpeakers: languages,
+      problem: `could not be reached: ${error instanceof Error ? error.message : 'unknown failure'}`,
+    };
+  }
+
+  /*
+   * A SCOPED KEY IS NOT A BROKEN KEY, and telling them apart is the whole value
+   * of this branch.
+   *
+   * MEASURED IN PRODUCTION, 18 Sep 2026. The key there is scoped to synthesis
+   * alone: `/v1/voices`, `/v1/user/subscription` and `/v1/models` all answer
+   * 401 `missing_permissions`, while a real Yoruba sentence through
+   * `/v1/text-to-speech` answers 200 with a second of audio. Treating that 401
+   * as unreachable marked a working vendor unhealthy on /health and blocked the
+   * very live Nigerian routes this wave exists to open -- a check that invented
+   * its own outage.
+   *
+   * A narrow key is good practice, so this reports the truth: the vendor
+   * answered, the credential works, and the catalogue COULD NOT BE READ. Any
+   * other 401 is a genuinely rejected credential and stays a failure.
+   */
+  if (response.status === 401) {
+    const scoped = await response
+      .json()
+      .then((body: unknown) => {
+        const detail = (body as { detail?: { status?: unknown } } | null)?.detail;
+        return detail?.status === 'missing_permissions';
+      })
+      .catch(() => false);
+
+    if (scoped) {
+      return {
+        providerId: config.providerId,
+        keyConfigured: true,
+        // It answered. What it declined was a question about itself.
+        reachable: true,
+        voiceCatalogueChecked: false,
+        canSynthesise: spoke.ok,
+        synthesisProblem: spoke.problem,
+        engineReady: null,
+        totalSpeakers: null,
+        speakerIdsByLanguage: {},
+        /*
+         * EMPTY, not every language. Nothing was learned, and "no voice for
+         * Yoruba" is a claim -- the opposite one to the truth, which is that
+         * this credential may not say.
+         */
+        languagesWithoutSpeakers: [],
+        problem: null,
+      };
+    }
+
+    return {
+      providerId: config.providerId,
+      keyConfigured: true,
+      reachable: false,
+      voiceCatalogueChecked: false,
+      canSynthesise: spoke.ok,
+      synthesisProblem: spoke.problem,
+      engineReady: null,
+      totalSpeakers: null,
+      speakerIdsByLanguage: {},
+      languagesWithoutSpeakers: languages,
+      problem: 'the credential was REJECTED (401), so nothing can be spoken',
+    };
+  }
+
+  if (!response.ok) {
+    return {
+      providerId: config.providerId,
+      keyConfigured: true,
+      reachable: false,
+      voiceCatalogueChecked: false,
+      canSynthesise: spoke.ok,
+      synthesisProblem: spoke.problem,
+      engineReady: null,
+      totalSpeakers: null,
+      speakerIdsByLanguage: {},
+      languagesWithoutSpeakers: languages,
+      // The STATUS, never the body: a rejected request can echo what it rejected.
+      problem: `/v1/voices answered ${response.status}`,
+    };
+  }
+
+  let body: VoicesResponse;
+  try {
+    body = (await response.json()) as VoicesResponse;
+  } catch {
+    return {
+      providerId: config.providerId,
+      keyConfigured: true,
+      reachable: true,
+      voiceCatalogueChecked: false,
+      canSynthesise: spoke.ok,
+      synthesisProblem: spoke.problem,
+      engineReady: null,
+      totalSpeakers: null,
+      speakerIdsByLanguage: {},
+      languagesWithoutSpeakers: languages,
+      problem: '/v1/voices answered 200 with something that is not JSON',
+    };
+  }
+
+  const available = new Set(
+    (body.voices ?? [])
+      .map((voice) => (typeof voice.voice_id === 'string' ? voice.voice_id : null))
+      .filter((id): id is string => id !== null),
+  );
+
+  /*
+   * EVERY VOICE THIS DEPLOYMENT CAN REACH, not just the default. A mapped voice
+   * that is missing from the account is invisible until the one participant who
+   * chose it speaks -- which on a call is a single person hearing silence while
+   * everyone else is fine, the hardest shape of bug to have reported to you.
+   */
+  const reachableVoices = [defaultVoiceId, ...(config.mappedVoiceIds ?? [])].filter(
+    (id) => id.length > 0,
+  );
+  const missing = [...new Set(reachableVoices.filter((id) => !available.has(id)))];
+
+  /*
+   * The default voice is what these four languages actually use, so its absence
+   * -- and only its absence -- means they cannot be spoken at all.
+   */
+  const defaultUsable = defaultVoiceId.length > 0 && available.has(defaultVoiceId);
+  const speakerIdsByLanguage: Record<string, readonly string[]> = {};
+  for (const language of languages) {
+    speakerIdsByLanguage[language] = defaultUsable ? [defaultVoiceId] : [];
+  }
+
+  return {
+    providerId: config.providerId,
+    keyConfigured: true,
+    reachable: true,
+    voiceCatalogueChecked: true,
+    canSynthesise: spoke.ok,
+    synthesisProblem: spoke.problem,
+    // ElevenLabs has no readiness flag: it does not scale to zero, which is the
+    // whole reason this replaced a vendor that did.
+    engineReady: null,
+    totalSpeakers: available.size,
+    speakerIdsByLanguage,
+    languagesWithoutSpeakers: defaultUsable ? [] : languages,
+    problem:
+      missing.length === 0
+        ? null
+        : `${missing.length} configured voice id(s) are not in this account, so any sentence ` +
+          'that reaches them fails mid-session',
+  };
+}
+
+/** One line, for a boot log. Contains no credential and no value of one. */
+export function describeNigerianVoicePreflight(preflight: NigerianVoicePreflight): string {
+  const who = preflight.providerId;
+  /*
+   * THE REFUSAL TO SPEAK OUTRANKS EVERY OTHER ANSWER, and it is checked
+   * first for that reason.
+   *
+   * On 2 Oct 2026 this function returned "reachable, 29 voice(s) in account"
+   * -- a perfectly true sentence -- about a deployment whose every call came
+   * back 401 `payment_issue`. Each clause below was accurate; together they
+   * described a vendor that worked at everything except speaking, which is
+   * the only thing it is here to do. Whatever else is true, a deployment
+   * that cannot synthesise produces captions and silence, and that is the
+   * headline.
+   */
+  if (preflight.canSynthesise === false) {
+    return (
+      `${who} preflight: CANNOT SPEAK — ${preflight.synthesisProblem ?? 'synthesis was refused'}. ` +
+      'Translated calls and programmes will deliver captions and SILENCE until this is fixed.'
+    );
+  }
+  if (!preflight.keyConfigured) {
+    return `${who} preflight: key absent — ha/ig/yo/pcm CANNOT be spoken by the approved voice`;
+  }
+  if (!preflight.reachable) {
+    return `${who} preflight: NOT reachable — ${preflight.problem ?? 'unknown'}`;
+  }
+  if (!preflight.voiceCatalogueChecked) {
+    /*
+     * SAID PLAINLY, because this is the line somebody reads at 2 a.m. and it
+     * must not be mistaken for a pass. Nothing was verified; the credential is
+     * simply not permitted to verify itself.
+     */
+    return (
+      `${who} preflight: reachable and the credential works, but the voice catalogue was ` +
+      'NOT CHECKED (this key is scoped to synthesis). A voice id missing from the account ' +
+      'would not be caught here — grant voices_read to restore the check.'
+    );
+  }
+  const counts = Object.entries(preflight.speakerIdsByLanguage)
+    .map(([language, ids]) => `${language}=${ids.length}`)
+    .join(' ');
+  const voices = preflight.totalSpeakers ?? 0;
+  const tail = preflight.problem === null ? '' : ` — ${preflight.problem}`;
+  // `canSynthesise` is null when no voice id was configured to probe with, so
+  // the happy sentence says which of the two it is rather than implying a
+  // check that did not run.
+  const spoken =
+    preflight.canSynthesise === true
+      ? ', and it can speak'
+      : `, speech NOT verified (${preflight.synthesisProblem ?? 'no probe was possible'})`;
+  return `${who} preflight: reachable, ${voices} voice(s) in account, ${counts}${spoken}${tail}`;
+}

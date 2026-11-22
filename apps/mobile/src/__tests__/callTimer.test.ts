@@ -1,6 +1,11 @@
 /** @author masterzee001 */
 import { describe, expect, it } from 'vitest';
-import { elapsedSinceMs, formatElapsed, observeServerClock } from '../call/callTimer';
+import {
+  elapsedSinceMs,
+  formatCallClock,
+  formatElapsed,
+  observeServerClock,
+} from '../call/callTimer';
 
 describe('call timer', () => {
   it('measures the server clock offset once, from the first wire, and never again', () => {
@@ -27,5 +32,19 @@ describe('call timer', () => {
     expect(formatElapsed(7_400)).toBe('0:07');
     expect(formatElapsed(252_000)).toBe('4:12');
     expect(formatElapsed(3_753_000)).toBe('1:02:33');
+  });
+
+  it('pads the CLOCK FACE, which is the largest type on the call screen', () => {
+    /*
+     * Set in tabular figures, and the board reads `03:48`. A clock that changes
+     * width at ten minutes shifts the whole centred column sideways, which is
+     * the one thing tabular numerals are chosen to prevent. The history list
+     * keeps the unpadded form above: a duration inside a line of text.
+     */
+    expect(formatCallClock(0)).toBe('00:00');
+    expect(formatCallClock(7_400)).toBe('00:07');
+    expect(formatCallClock(228_000)).toBe('03:48');
+    expect(formatCallClock(600_000)).toBe('10:00');
+    expect(formatCallClock(3_753_000)).toBe('1:02:33');
   });
 });

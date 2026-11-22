@@ -87,9 +87,16 @@ class IncomingCallService : Service() {
 
     val store = RingStore(this)
     executor.execute {
+      /*
+       * EVERY EXIT THAT IS NOT A RING IS STAMPED (RingStore.notRung), so a
+       * push that arrived and rang nobody leaves its reason on the device
+       * for the next foreground to report. Before this the only report
+       * came from the call screen's teardown, which never ran here.
+       */
       val credential = store.credential()
       if (credential == null) {
         Log.i(TAG, "no bound ring credential; the call is not for this phone")
+        store.notRung(callId, NOT_RUNG_NO_CREDENTIAL)
         handler.post { finish(callId, "no-credential") }
         return@execute
       }
@@ -98,6 +105,14 @@ class IncomingCallService : Service() {
       store.mark(callId, "t5_validated")
       if (verdict == null || !verdict.ring) {
         if (verdict?.unauthorized == true) store.clearAll()
+        store.notRung(
+          callId,
+          when {
+            verdict == null -> NOT_RUNG_UNREACHABLE
+            verdict.unauthorized -> NOT_RUNG_UNAUTHORIZED
+            else -> NOT_RUNG_NOT_RINGING
+          },
+        )
         handler.post { finish(callId, if (verdict == null) "unreachable" else verdict.state) }
         return@execute
       }
@@ -106,6 +121,7 @@ class IncomingCallService : Service() {
       val live = validator.ackRinging(callId)
       store.mark(callId, "t6_ringing_acked")
       if (!live) {
+        store.notRung(callId, NOT_RUNG_ACK_REFUSED)
         handler.post { finish(callId, "not-live") }
         return@execute
       }
@@ -223,7 +239,9 @@ class IncomingCallService : Service() {
   /** The silent stand-in while the call is checked: no sound, no vibration, no full-screen. */
   private fun buildSilentNotification(): Notification =
     NotificationCompat.Builder(this, SILENT_CHANNEL_ID)
-      .setSmallIcon(android.R.drawable.sym_call_incoming)
+      .setSmallIcon(SMALL_ICON)
+      .setColor(BRAND_TINT)
+      .setColorized(true)
       .setContentTitle("Checking a call")
       .setPriority(NotificationCompat.PRIORITY_LOW)
       .setSilent(true)
@@ -240,7 +258,9 @@ class IncomingCallService : Service() {
     val answer = CallActionReceiver.pendingIntent(this, CallActionReceiver.ACTION_ANSWER, callId, callerId, callerName, mode, 2)
     val decline = CallActionReceiver.pendingIntent(this, CallActionReceiver.ACTION_DECLINE, callId, callerId, callerName, mode, 3)
     val builder = NotificationCompat.Builder(this, CHANNEL_ID)
-      .setSmallIcon(android.R.drawable.sym_call_incoming)
+      .setSmallIcon(SMALL_ICON)
+      .setColor(BRAND_TINT)
+      .setColorized(true)
       .setContentTitle(callerName)
       .setContentText(if (validating) "Incoming C7 call" else if (mode == "translated") "Incoming translated call" else "Incoming C7 call")
       .setCategory(NotificationCompat.CATEGORY_CALL)
@@ -300,6 +320,36 @@ class IncomingCallService : Service() {
   companion object {
     @Volatile private var instance: IncomingCallService? = null
 
+    /**
+     * THE RING CARRIES THE C7 MARK, IN TEAL. Founder ruling, 20 Sep 2026.
+     *
+     * A call push is sent DATA-ONLY (services/account/src/push/fcm-provider.ts:
+     * `dataOnly = notification.kind === 'call'`), so Android draws nothing from
+     * the payload and the default icon and colour that app.json hands the
+     * expo-notifications plugin never reach a call. Every notification this
+     * file posts -- the ring, the silent "Checking a call" stand-in and the
+     * "Missed call" stub -- has to name the icon itself, and until now all
+     * three named Android's stock telephone glyph. The most-seen notification
+     * in the product was the one place the brand did not appear.
+     *
+     * The drawable is this module's own resource, res/drawable/ic_c7_notification.xml:
+     * the favicon's two strokes as a white silhouette on transparency, because
+     * Android throws a small icon's colour channels away and tints the alpha
+     * with `setColor`. That is the only colour that reaches the glyph, so it
+     * is set on all three.
+     *
+     * NOT `const val`: R fields in a library module are not compile-time
+     * constants, so `const` would not compile.
+     */
+    private val SMALL_ICON = R.drawable.ic_c7_notification
+
+    /**
+     * #3ec9c0, the teal the app's own UI uses (src/ui/c7.tsx `teal`), which
+     * app.json now declares too so the tray and the ring match. The favicon's
+     * own C stroke is #93a1bd; the ruling is that the product's teal wins.
+     */
+    private val BRAND_TINT = 0xFF3EC9C0.toInt()
+
     /** Telecom accepted the call and asks for the UI; the running service presents it. */
     fun presentValidated(context: Context, callId: String, callerId: String, callerName: String, mode: String) {
       val service = instance
@@ -330,6 +380,13 @@ class IncomingCallService : Service() {
      * network stretches the interval instead of stacking requests on it.
      */
     private const val RING_POLL_MS = 1_000L
+
+    /** RingStore.notRung reason codes stamped by this service; the table lives on RingStore.notRung. */
+    private const val NOT_RUNG_NO_CREDENTIAL = 1L
+    private const val NOT_RUNG_UNREACHABLE = 2L
+    private const val NOT_RUNG_UNAUTHORIZED = 3L
+    private const val NOT_RUNG_NOT_RINGING = 4L
+    private const val NOT_RUNG_ACK_REFUSED = 5L
 
     const val ACTION_RING = "com.consummate7.videofy.call.RING"
     const val ACTION_STOP = "com.consummate7.videofy.call.STOP"
@@ -395,14 +452,18 @@ class IncomingCallService : Service() {
       ensureChannel(context)
       val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
       val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-        .setSmallIcon(android.R.drawable.sym_call_missed)
+        .setSmallIcon(SMALL_ICON)
+        .setColor(BRAND_TINT)
+        .setColorized(true)
         .setContentTitle("Missed call")
         .setPriority(NotificationCompat.PRIORITY_LOW)
         .setSilent(true)
         .build()
       manager.notify(NOTIFICATION_ID + 1, notification)
       manager.cancel(NOTIFICATION_ID + 1)
-      RingStore(context).forgetTimeline(callId)
+      // The timeline is NOT forgotten here any more: an expired push is a
+      // diagnosis, and it is reported at the next foreground and forgotten
+      // only once the gateway has it (src/push/unreportedTimelines.ts).
     }
 
     fun payload(callId: String, callerId: String, callerName: String, mode: String): JSONObject =

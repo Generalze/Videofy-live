@@ -38,7 +38,11 @@ export type ReviewLock =
   /** Validation track: the supplied source has not been validated through. */
   | 'source-validation-incomplete'
   /** Validation track: validated, not frozen. */
-  | 'source-not-frozen';
+  | 'source-not-frozen'
+  /** Route QA: the track is not QUALIFIED in this language. */
+  | 'not-qualified'
+  /** Route QA: qualified, but TRANSLATION_REVIEWER has not been granted here. */
+  | 'capability-not-granted';
 
 export type ReviewAccess =
   | { readonly unlocked: true }
@@ -101,9 +105,48 @@ function lockFor(requirement: SourceRequirement, complete: boolean): ReviewLock 
   return complete ? 'source-not-frozen' : 'source-validation-incomplete';
 }
 
+/**
+ * Whether somebody may pick up and review a language's ROUTE QA SET.
+ *
+ * A different question from `reviewAccess`. That gate opens the qualification
+ * packet -- the review that decides whether a person qualifies -- and it is
+ * keyed to an attempt and a frozen source. This gate opens the review that
+ * decides whether a ROUTE is approvable, and it asks two things of the person:
+ * that their track is QUALIFIED in this language, and that a named operator has
+ * granted them TRANSLATION_REVIEWER for it. Both, per language. A specialist
+ * qualified in Yoruba does not review the Hausa set, and a qualified specialist
+ * nobody has granted the capability to does not review anything -- otherwise
+ * six capabilities that authorise nothing are a permission model that only
+ * looks like one.
+ *
+ * The capability is checked AFTER qualification, so a grant that outlived a
+ * suspension (grants are not revoked by a state change) still opens nothing.
+ */
+export interface QaReviewGateInput {
+  readonly language: string;
+  readonly qualificationState: QualificationState | null;
+  /** The capabilities granted to this account FOR THIS LANGUAGE. */
+  readonly capabilities: readonly string[];
+}
+
+export function qaReviewAccess(input: QaReviewGateInput): ReviewAccess {
+  if (trackFor(input.language) === null) return { unlocked: false, reason: 'not-a-track' };
+  if (input.qualificationState === null) return { unlocked: false, reason: 'not-applied' };
+  if (input.qualificationState === 'SUSPENDED') return { unlocked: false, reason: 'suspended' };
+  if (input.qualificationState !== 'QUALIFIED') return { unlocked: false, reason: 'not-qualified' };
+  if (!input.capabilities.includes('TRANSLATION_REVIEWER')) {
+    return { unlocked: false, reason: 'capability-not-granted' };
+  }
+  return { unlocked: true };
+}
+
 /** The sentence shown to somebody whose review is locked. */
 export function reviewLockMessage(reason: ReviewLock): string {
   switch (reason) {
+    case 'not-qualified':
+      return 'Route QA sets open once you are qualified in this language.';
+    case 'capability-not-granted':
+      return 'You are qualified, but reviewing route QA sets needs the Translation Reviewer role for this language. Ask languages@consummate7.com.';
     case 'not-a-track':
       return 'This language is not open for specialist qualification.';
     case 'not-applied':

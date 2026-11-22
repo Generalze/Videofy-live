@@ -69,7 +69,18 @@ function canonicalItem(item: ElicitationItem): Record<string, string | number> {
   };
 }
 
-/** Python's `json.dumps` with sorted keys, default separators, no ASCII escaping. */
+/**
+ * Python's `json.dumps` with sorted keys, default separators, no ASCII escaping.
+ *
+ * Exported as `canonicalJson` so the route QA set (`qa-set.ts`) hashes its
+ * content the same way a corpus does. Two canonical forms in one package would
+ * be two hashes for one body of text, and the second form would be the one
+ * nobody remembered to keep in step with the Python script.
+ */
+export function canonicalJson(value: unknown): string {
+  return serialise(value);
+}
+
 function serialise(value: unknown): string {
   if (value === null) return 'null';
   if (typeof value === 'number') return Number.isInteger(value) ? String(value) : String(value);

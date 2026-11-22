@@ -2092,6 +2092,22 @@ describe('CallRuntime: a personal call is a telephone call', () => {
     expect(harness.runtime.directCalls.get('ring-pair')?.answeredAtMs).not.toBeNull();
   });
 
+  /*
+   * THE SEAM, not the function. `directCallLanguageTag` and the lifecycle
+   * field are proven in direct-call-caller-language.test.ts, and proving them
+   * is worth nothing on its own: this repository's signature defect is a pair
+   * of working halves whose JOIN belongs to nobody, and it has been shipped
+   * four times. So this asserts the one thing those tests cannot -- that the
+   * RUNTIME actually hands the caller's spoken language to the telephone when
+   * a real join creates a real call. Delete the line in call-runtime.ts that
+   * passes it and every other test here still passes.
+   */
+  it('the caller’s spoken language reaches the telephone from a real join', async () => {
+    const { harness } = await connectedPair();
+    // JOIN_A speaks 'en'; the callee's ringing screen is what reads this.
+    expect(harness.runtime.directCalls.get('ring-pair')?.callerSpeakLanguage).toBe('en');
+  });
+
   it('the join ack carries the telephone state, so a late socket never holds an old word', async () => {
     const { ackB } = await connectedPair();
     expect(ackB.ok && ackB.directState?.state).toBe('connecting');

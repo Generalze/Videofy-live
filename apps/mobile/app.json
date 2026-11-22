@@ -23,7 +23,8 @@
         "android.permission.FOREGROUND_SERVICE_PHONE_CALL",
         "android.permission.MANAGE_OWN_CALLS",
         "android.permission.VIBRATE",
-        "android.permission.WAKE_LOCK"
+        "android.permission.WAKE_LOCK",
+        "android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"
       ],
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
@@ -33,7 +34,13 @@
     "plugins": [
       "expo-dev-client",
       "expo-audio",
-      "expo-notifications",
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/notification-icon.png",
+          "color": "#3ec9c0"
+        }
+      ],
       "@config-plugins/react-native-webrtc",
       [
         "expo-splash-screen",
@@ -50,7 +57,8 @@
             "backgroundColor": "#0b0f14"
           }
         }
-      ]
+      ],
+      "expo-web-browser"
     ],
     "extra": {
       "eas": {

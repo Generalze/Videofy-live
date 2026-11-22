@@ -17,6 +17,14 @@
       "types": "./dist/document-file.d.ts",
       "import": "./dist/document-file.js"
     },
+    "./promotion": {
+      "types": "./dist/promotion.d.ts",
+      "import": "./dist/promotion.js"
+    },
+    "./document-write": {
+      "types": "./dist/document-write.d.ts",
+      "import": "./dist/document-write.js"
+    },
     "./routes/translation-routes.seed.json": "./routes/translation-routes.seed.json"
   },
   "files": [

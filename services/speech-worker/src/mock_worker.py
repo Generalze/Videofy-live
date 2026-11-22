@@ -64,7 +64,7 @@ class MockWorker:
             transports=["websocket", "polling"],
             socketio_path="socket.io",
             wait_timeout=10,
-            auth=None,
+            auth={"token": self.config.internal_service_token},
             headers=None,
             namespaces=["/"],
         )

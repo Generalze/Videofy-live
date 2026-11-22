@@ -15,10 +15,23 @@
  */
 import { useEffect, useState } from 'react';
 import { writeSession, type SessionStorageLike } from './session';
+import { ProviderSignIn } from './ProviderSignIn';
+import { describeSignInError } from './federatedSignIn';
 
 const ACCOUNT_URL = (
   (import.meta.env['VITE_ACCOUNT_URL'] as string | undefined) ?? 'http://localhost:3006'
 ).replace(/\/$/, '');
+
+/**
+ * The Google web client id.
+ *
+ * PUBLIC, and compiled into the bundle on purpose: it travels in every
+ * request Google's own script makes, so anyone using the site can read it.
+ * What protects it is the authorised-origins list registered beside it, not
+ * secrecy. Absent means the Google button is not drawn -- which is the right
+ * failure, because a button Google would reject is worse than none.
+ */
+const GOOGLE_CLIENT_ID = import.meta.env['VITE_GOOGLE_WEB_CLIENT_ID'] as string | undefined;
 
 type Mode = 'create' | 'signin' | 'reset';
 
@@ -118,6 +131,29 @@ export function JoinC7({ sessionEnded = false }: { readonly sessionEnded?: boole
   const [session, setSession] = useState<SessionResult | null>(null);
   /** Set once a reset has been asked for. Never says whether the address existed. */
   const [resetAsked, setResetAsked] = useState(false);
+
+  /*
+   * A provider round trip that failed comes back as ?error=<reason> on this
+   * page, because the account service sends a REASON and not a sentence -- a
+   * redirect is a url, and a url ends up in history and in logs. The wording
+   * lives in describeSignInError. The parameter is cleared from the address
+   * bar so a reload does not reproduce an error that is already over.
+   */
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const params = new URLSearchParams(window.location.search);
+    const reason = params.get('error');
+    if (reason === null) return;
+    setMode('signin');
+    setError(describeSignInError(reason));
+    params.delete('error');
+    const query = params.toString();
+    window.history.replaceState(
+      null,
+      '',
+      `${window.location.pathname}${query ? `?${query}` : ''}${window.location.hash}`,
+    );
+  }, []);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -356,6 +392,23 @@ export function JoinC7({ sessionEnded = false }: { readonly sessionEnded?: boole
                   </button>
                 ) : null}
               </form>
+
+              {/*
+                Offered for BOTH modes. "Create account" and "sign in" are one
+                action with a provider -- the person does not know or care
+                which of the two it turns out to be, and asking them to pick
+                the right tab first invents a decision that has no answer.
+              */}
+              <ProviderSignIn
+                accountUrl={ACCOUNT_URL}
+                returnPath="/app/"
+                {...(GOOGLE_CLIENT_ID ? { googleClientId: GOOGLE_CLIENT_ID } : {})}
+                onError={(message) => setError(message)}
+                onSignedIn={(result) => {
+                  persistJoinSession(result);
+                  window.location.assign('/app/');
+                }}
+              />
             </>
           ) : (
             <div className="join-done">

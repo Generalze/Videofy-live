@@ -31,7 +31,12 @@ const FULLY_CREDENTIALLED = [
   'mms-tts',
 ];
 
-const WITHOUT_THE_SPECIALIST = FULLY_CREDENTIALLED.filter((id) => id !== 'naijalingo');
+/*
+ * The APPROVED voice for the Nigerian languages is ElevenLabs since the
+ * founder ruling of 2026-09-18 (9jaLingo does not work). Removing it is what
+ * leaves those languages with only general vendors.
+ */
+const WITHOUT_THE_SPECIALIST = FULLY_CREDENTIALLED.filter((id) => id !== 'elevenlabs');
 import {
   buildTargetLanguageOutputs,
   capRecentEvents,
@@ -156,7 +161,7 @@ describe('target language outputs', () => {
     });
   });
 
-  it('tells the truth about the Nigerian languages when 9jaLingo is not configured', () => {
+  it('tells the truth about the Nigerian languages when the approved voice is absent', () => {
     /*
      * THE FINDING THIS WHOLE WAVE EXISTS FOR (2026-08-26, founder-confirmed).
      * With only the general vendors credentialled, Hausa, Igbo, Yoruba and
@@ -171,20 +176,26 @@ describe('target language outputs', () => {
     });
     for (const language of ['ha', 'ig', 'yo']) {
       const row = catalogue.find((item) => item.language === language);
-      expect(row?.degraded, language).toBe(true);
-      expect(row?.providers?.tts, language).toBe('azure');
-      expect(row?.reason, language).toMatch(/DEGRADED/);
+      /*
+       * STRONGER SINCE 2026-09-18. This used to assert `degraded` with Azure
+       * serving: imperfect Yoruba beat silence while Azure was the named
+       * fallback. The chain is now the approved voice alone, so with it absent
+       * NOTHING serves these languages -- which is the honest answer, because
+       * the alternative is audio that plays and is wrong in a way no signal
+       * and no non-speaker can detect.
+       */
+      expect(row?.providers?.tts, language).not.toBe('azure');
       expect(row?.state, language).not.toBe('available');
     }
 
     const withSpecialist = buildTargetLanguageCatalogue({
       supportedTranslationLanguages: ['yo'],
       supportedVoiceLanguages: ['yo'],
-      configuredProviderIds: [...WITHOUT_THE_SPECIALIST, 'naijalingo'],
+      configuredProviderIds: [...WITHOUT_THE_SPECIALIST, 'elevenlabs'],
     });
     const yoruba = withSpecialist.find((item) => item.language === 'yo');
     expect(yoruba?.degraded).toBeUndefined();
-    expect(yoruba?.providers?.tts).toBe('naijalingo');
+    expect(yoruba?.providers?.tts).toBe('elevenlabs');
   });
 
   it('reads which providers are configured from NAMES, never from values', () => {

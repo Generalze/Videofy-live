@@ -266,6 +266,29 @@ export class TranslationRouteRegistry {
       };
     }
 
+    /*
+     * `not-required` is not a way to clear a review-required language. The
+     * document validator refuses to load such a record at all; the gate says no
+     * as well, because a registry can be built from records that never went
+     * through the document path and a guard that only works when the other
+     * guard worked is not a guard. Declaring the review unnecessary is the
+     * editor asserting precisely what the list says is not theirs to assert.
+     */
+    if (
+      route.humanReviewStatus === 'not-required' &&
+      (this.#reviewRequired.has(source) || this.#reviewRequired.has(target))
+    ) {
+      return {
+        allowed: false,
+        reason: 'human-review-outstanding',
+        explanation:
+          `${where} touches a review-required language and its record declares human review ` +
+          '"not-required". That list exists because no one here may decide a speaker of the ' +
+          'language is unnecessary; only a review that PASSED moves this.',
+        route,
+      };
+    }
+
     if (route.serviceScopes[scope] !== 'approved') {
       return {
         allowed: false,

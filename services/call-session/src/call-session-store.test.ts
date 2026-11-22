@@ -194,8 +194,18 @@ describe('CallSessionStore.createOrJoin', () => {
       { callId: 'x'.repeat(65) },
       { displayName: '' },
       { displayName: '   ' },
-      { speakLanguage: 'de' as CallJoinInput['speakLanguage'] },
-      { hearLanguage: 'yo' as CallJoinInput['hearLanguage'] },
+      /*
+       * NOT 'de' AND 'yo', WHICH THIS ASSERTED UNTIL 2026-09-19. Those are real
+       * catalogue languages, and refusing them was the defect: the product
+       * offered ninety-eight while `createOrJoin` answered "must be English,
+       * Spanish, or French". A test that pinned German and Yoruba as invalid
+       * input agreed with the bug and would have failed the fix -- which is
+       * what it did. What must still be refused is a code that names no
+       * language at all.
+       */
+      { speakLanguage: 'zz' as CallJoinInput['speakLanguage'] },
+      { hearLanguage: 'klingon' as CallJoinInput['hearLanguage'] },
+      { speakLanguage: '' as CallJoinInput['speakLanguage'] },
       { voiceGender: 'robot' as CallJoinInput['voiceGender'] },
       { audioMode: 'dubbed' as CallJoinInput['audioMode'] },
       { captionsEnabled: 'yes' as unknown as boolean },
