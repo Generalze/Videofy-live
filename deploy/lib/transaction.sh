@@ -149,11 +149,11 @@ atomic_bootstrap_state() {
     # be able to rewrite it, passed. Masking with 0022 asks the question that
     # was meant: may anyone but the owner write this?
     local helper_mode
-    helper_mode="$(stat -c '%a' "$helper" 2>/dev/null)"
+    helper_mode="$(stat -L -c '%a' "$helper" 2>/dev/null)"
     if [ -z "$helper_mode" ] || [ $(( 0$helper_mode & 0022 )) -ne 0 ]; then
       printf 'publication-helper-writable'; return 1
     fi
-    [ "$(stat -c '%U' "$helper" 2>/dev/null)" = 'root' ] || {
+    [ "$(stat -L -c '%U' "$helper" 2>/dev/null)" = 'root' ] || {
       printf 'publication-helper-not-root-owned'; return 1; }
     # Invocability, proven rather than assumed: an installed helper the deploy
     # account may not actually run is the same outage, discovered later.
@@ -162,11 +162,11 @@ atomic_bootstrap_state() {
     [ -e "$state_helper" ] || { printf 'missing-state-helper'; return 1; }
     [ -x "$state_helper" ] || { printf 'state-helper-not-executable'; return 1; }
     local state_helper_mode
-    state_helper_mode="$(stat -c '%a' "$state_helper" 2>/dev/null)"
+    state_helper_mode="$(stat -L -c '%a' "$state_helper" 2>/dev/null)"
     if [ -z "$state_helper_mode" ] || [ $(( 0$state_helper_mode & 0022 )) -ne 0 ]; then
       printf 'state-helper-writable'; return 1
     fi
-    [ "$(stat -c '%U' "$state_helper" 2>/dev/null)" = 'root' ] || {
+    [ "$(stat -L -c '%U' "$state_helper" 2>/dev/null)" = 'root' ] || {
       printf 'state-helper-not-root-owned'; return 1; }
     sudo -n "$state_helper" --check >/dev/null 2>&1 || {
       printf 'state-authority-unavailable'; return 1; }
